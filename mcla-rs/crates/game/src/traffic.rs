@@ -10005,6 +10005,57 @@ pub enum PathSpawn {
     Removed,
 }
 
+/// F-90496: on the rail's list (the car itself left out by the caller; a car's phase its behaviour +208, 0 without one)
+/// the car behind has the greatest phase under ours (above -FLT_MAX), the car ahead the least over ours (under FLT_MAX),
+/// the first of equals; none ahead: the least under FLT_MAX on the next rail's list. Returns (ahead, behind)
+/// (tools/start_neighbours_reference.py, test `start_neighbours_match_the_original`).
+pub fn start_neighbours(ph: f32, here: &[(usize, f32)], next: Option<&[(usize, f32)]>) -> (Option<usize>, Option<usize>) {
+    let (mut lo, mut hi) = (f32::MIN, f32::MAX);
+    let (mut ahead, mut behind) = (None, None);
+    for &(j, f) in here {
+        if f < ph && f > lo {
+            (lo, behind) = (f, Some(j));
+        }
+        if f > ph && f < hi {
+            (hi, ahead) = (f, Some(j));
+        }
+    }
+    if ahead.is_none() {
+        for &(j, f) in next.unwrap_or(&[]) {
+            if f < hi {
+                (hi, ahead) = (f, Some(j));
+            }
+        }
+    }
+    (ahead, behind)
+}
+
+/// F-84149's lane test: the lane is ours, or its first point (slot 12) equals our last (slot 13), or its last our first
+/// (xyz compared as floats: +0 = -0, a NaN never equal).
+pub fn lanes_joined(same: bool, ours: (Vec3, Vec3), other: (Vec3, Vec3)) -> bool {
+    same || other.0 == ours.1 || other.1 == ours.0
+}
+
+/// F-84149 over one lane's car list (its own car left out by the caller): a car within 5 m of the spot P in height (|dy|
+/// > 5 skips it; a NaN does not) blocks when fmadds(dz, dz, dx dx) < ((its size + ours) x 0.5)^2 - the lengths (slot 6,
+/// our size +8) on a joined lane, else the widths (slot 4, our +0). `own` = (width, length); `cars` (place, width,
+/// length). True: clear (tools/slot_test_reference.py, test `slot_test_matches_the_original`).
+pub fn slot_lane_clear(p: Vec3, own: (f32, f32), joined: bool, cars: &[(Vec3, f32, f32)]) -> bool {
+    use crate::physics::exact::fma;
+    for &(q, w, l) in cars {
+        if (q.y - p.y).abs() > 5.0 {
+            continue;
+        }
+        let (dx, dz) = (q.x - p.x, q.z - p.z);
+        let d2 = fma(dz, dz, dx * dx);
+        let m = if joined { l + own.1 } else { w + own.0 } * 0.5;
+        if d2 < m * m {
+            return false;
+        }
+    }
+    true
+}
+
 impl Vehicles {
     /// The shared random numbers (the MWC at 0x82860890) for the race script's draws.
     pub fn shared_mwc(&mut self) -> &mut super::parked::Mwc {
@@ -10081,27 +10132,12 @@ impl Vehicles {
         // the first 64, the car itself among them and then passed over): the greatest phase
         // under ours behind, the least over ours ahead (the first of equals); none ahead: the
         // least phase on the next rail's list (behaviour +192)
-        let (mut ahead, mut behind): (Option<(usize, f32)>, Option<(usize, f32)>) = (None, None);
-        for (j, f) in self.rail_list(nav, here, 64) {
-            if Some(j) == me {
-                continue;
-            }
-            if f < ph && behind.map_or(true, |b| f > b.1) {
-                behind = Some((j, f));
-            }
-            if f > ph && ahead.map_or(true, |a| f < a.1) {
-                ahead = Some((j, f));
-            }
-        }
-        if ahead.is_none() {
-            if let Some(nk) = next {
-                for (j, f) in self.rail_list(nav, nk, 64) {
-                    if Some(j) != me && ahead.map_or(true, |a| f < a.1) {
-                        ahead = Some((j, f));
-                    }
-                }
-            }
-        }
+        let not_me = |v: Vec<(usize, f32)>| v.into_iter().filter(|&(j, _)| Some(j) != me).collect::<Vec<_>>();
+        let here_list = not_me(self.rail_list(nav, here, 64));
+        let next_list = next.map(|nk| not_me(self.rail_list(nav, nk, 64)));
+        let (ahead, behind) = start_neighbours(ph, &here_list, next_list.as_deref());
+        let ahead = ahead.map(|j| (j, 0.0));
+        let behind = behind.map(|j| (j, 0.0));
         let gap = |j: usize| self.cars[j].state.pos.distance(pos) - half_len - half_size(&self.cars[j]).0;
         let mut why: Option<String> = None;
         // f24: the car ahead's cap
@@ -10602,25 +10638,23 @@ impl Vehicles {
         rails.extend(ends.get(&key(first)).map_or(&[][..], |v| v.as_slice()).iter().copied().filter(|&o| o != lane));
         for o in rails {
             let oc = &nav.curves[o];
-            let joined = o == lane || oc.pts.first() == Some(&last) || oc.pts.last() == Some(&first);
-            for (k, x) in self.cars.iter().enumerate() {
-                if Some(k) == me || !x.rail.as_ref().is_some_and(|r| r.state == 1 && r.route.is_none() && nav.links[r.link].lane == o) {
-                    continue;
+            let (Some(&of), Some(&ol)) = (oc.pts.first(), oc.pts.last()) else { continue };
+            let joined = lanes_joined(o == lane, (first, last), (of, ol));
+            let on: Vec<(Vec3, f32, f32)> = self
+                .cars
+                .iter()
+                .enumerate()
+                .filter(|&(k, x)| Some(k) != me && x.rail.as_ref().is_some_and(|r| r.state == 1 && r.route.is_none() && nav.links[r.link].lane == o))
+                .map(|(_, x)| {
+                    let (hl, hw) = half_size(x);
+                    (x.state.pos, 2.0 * hw, 2.0 * hl)
+                })
+                .collect();
+            if !slot_lane_clear(p, size, joined, &on) {
+                if std::env::var_os("MCLA_START_LOG").is_some() {
+                    log::info!("  slot: a car on lane {o} ({}) blocks the spot", if joined { "joined" } else { "beside" });
                 }
-                let q = x.state.pos;
-                if (q.y - p.y).abs() > 5.0 {
-                    continue;
-                }
-                let d2 = (q.x - p.x) * (q.x - p.x) + (q.z - p.z) * (q.z - p.z);
-                let (hl, hw) = half_size(x);
-                let (f1, f0) = if joined { (2.0 * hl, size.1) } else { (2.0 * hw, size.0) };
-                let m = (f1 + f0) * 0.5;
-                if d2 < m * m {
-                    if std::env::var_os("MCLA_START_LOG").is_some() {
-                        log::info!("  slot: {} on lane {o} ({}) {:.2} m from the spot", x.model.name, if joined { "joined" } else { "beside" }, d2.sqrt());
-                    }
-                    return false;
-                }
+                return false;
             }
         }
         true
@@ -13044,6 +13078,53 @@ mod controller_pick_tests {
             yes += got as usize;
         }
         assert_eq!((n, yes), (13725, 1617));
+    }
+
+    #[test]
+    fn start_neighbours_match_the_original() {
+        // tools/start_neighbours_reference.py: F-90496 run offline, the rail-list copy F-83161 stubbed: ahead, behind
+        let mut n = 0;
+        for l in include_str!("testdata/start_neighbours_ref.txt").lines() {
+            let (c, o) = l.split_once(" -> ").unwrap();
+            let c: Vec<u32> = c.split(' ').map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let phase = |i: usize| if c[21 + 2 * i] != 0 { f32::from_bits(c[22 + 2 * i]) } else { 0.0 };
+            let list = |at: usize| -> Vec<(usize, f32)> {
+                c[at + 1..at + 1 + c[at] as usize].iter().map(|&i| i as usize).filter(|&i| i != 15).map(|i| (i, phase(i))).collect()
+            };
+            let beh = c[0] != 0;
+            let (here, next) = if beh { (list(3), (c[1] != 0).then(|| list(12))) } else { (vec![], None) };
+            let ph = if beh { f32::from_bits(c[2]) } else { 0.0 };
+            let (a, b) = start_neighbours(ph, &here, next.as_deref());
+            let s = |x: Option<usize>| x.map_or("-".to_string(), |i| format!("{i:x}"));
+            assert_eq!(format!("{} {}", s(a), s(b)), o, "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 4000);
+    }
+
+    #[test]
+    fn slot_test_matches_the_original() {
+        // tools/slot_test_reference.py: F-84149 run offline on one lane's list (the walk stubbed, the lanes' points and
+        // the cars' sizes dispatched): the answer
+        let mut n = 0;
+        for l in include_str!("testdata/slot_test_ref.txt").lines() {
+            let (c, o) = l.split_once(" -> ").unwrap();
+            let c: Vec<u32> = c.split(' ').map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let f = |i: usize| f32::from_bits(c[i]);
+            let v = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+            let joined = lanes_joined(c[0] != 0, (v(1), v(4)), (v(7), v(10)));
+            let cars: Vec<(Vec3, f32, f32)> = (0..c[18] as usize)
+                .filter(|&i| c[19] != i as u32)
+                .map(|i| {
+                    let w = 20 + 6 * i;
+                    (v(w + 1), f(w + 4), f(w + 5))
+                })
+                .collect();
+            let got = slot_lane_clear(v(13), (f(16), f(17)), joined, &cars);
+            assert_eq!(got as u32, u32::from_str_radix(o, 16).unwrap(), "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 4000);
     }
 
     #[test]
