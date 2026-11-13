@@ -18789,7 +18789,8 @@ mod tests {
             for _ in 0..3 {
                 g.career.series_race(&race, "RIVAL");
             }
-            assert_eq!((shown(&g), g.career.ext[i].obj_always[1], g.career.ext[i].obj_hidden[1]), (1, true, true));
+            // (CITY_CHAMP_CORE 0x19b0 / 0x19c3: AlwaysHide(1, 1) first, so Hide(1, 1) leaves +118 as it is)
+            assert_eq!((shown(&g), g.career.ext[i].obj_always[1], g.career.ext[i].obj_hidden[1]), (1, true, false));
         }
         // (the scripts: GARAGE_HOLLYWOOD's starts the garage once, though its script runs again)
         let mut c = Career::default();

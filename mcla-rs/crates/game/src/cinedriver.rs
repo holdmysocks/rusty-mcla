@@ -641,6 +641,27 @@ pub fn no_driver(scene: &str, label: &str) -> bool {
     NO_DRIVER.iter().any(|&(s, l)| s == scene && l == label)
 }
 
+/// The story scenes whose slot-1 car is the CORE's own opponent: the core makes him with
+/// OpponentManager_CreateOpponent / LoadOpponent(opponent, mcHookman_GetCarConfigName(his hookman), ...) - the set-up his
+/// mission's slot request gave him, not the character's first - parks or stands him, and before its scene gives slot 0
+/// the player and slot 1 that racer (its helper: Racer_SetUID, Cars_AssignIdToSlot, Characters_AssignNameToSlot); the
+/// generated scene script poses `Racer_FindFromUID(CineScript_Cars_ReadSlotId(1))` as its mover. (scene, mover label,
+/// the missions whose cores play it): BESTOF_SH_05_CORE (`Story/0x007eebc2` 0xb4..0xe5, 0x99f / 0x9a8),
+/// BEAT_SH_02_EXOTIC_CORE (`0x7e804c05`), FIND_SH_02_CORE (`0xe83e2f54`), FIND_SH_03B_CORE (`0xe604e9f6`) and
+/// FIND_GH_27_CORE (`sc/.../0x4e56ff33`). CITY_CHAMP_CORE's scene opponent is a second one loaded from its own array, the
+/// district champs' and FIND_SH_02C's scenes move only the player's car.
+pub const CORE_OPPONENT_MOVERS: &[(&str, &str, &[&str])] = &[
+    ("story/cut_story_bestof_sh_05", "hugo", &["BESTOF_SH_05"]),
+    ("story/cut_story_beat_sh_02_exotic", "karol", &["BEAT_SH_02_EXOTIC"]),
+    ("story/cut_story_hangout_pinkslip_hills", "karol", &["FIND_SH_02"]),
+    ("story/cut_story_races_in_beach", "annie", &["FIND_SH_03B", "FIND_GH_27"]),
+];
+
+/// The missions whose core's opponent is the scene's car `label` (`CORE_OPPONENT_MOVERS`).
+pub fn core_opponent(scene: &str, label: &str) -> Option<&'static [&'static str]> {
+    CORE_OPPONENT_MOVERS.iter().find(|r| r.0.eq_ignore_ascii_case(scene) && r.1 == label).map(|r| r.2)
+}
+
 /// The scene cars whose caller loads a fixed set-up (OpponentManager_LoadOpponent with a literal config, put in the
 /// mover's slot by Cars_AssignIdToSlot): (scene, mover label, car, set-up). REDLIGHT_GH_01_GARAGE_ON_ENTER (0xd1 .. 0x147):
 /// CreateOpponent, LoadOpponent 'CIN_01_vp_chv_camaross_69' at the origin, AddOpponentToWorld, no driver, exhaust and
@@ -775,6 +796,12 @@ mod tests {
         // a pre-roll row keeps the script's negative time (`pushf 7.23333; fneg`): it begins at the clock's first step
         assert!(DRIVER_EVENTS.contains(&("story/cut_story_hangout_series_downtown", false, 0, -7.23333)));
         assert_eq!(slot_label("story/cut_story_race_gh_06", 1), Some("henry"));
+        // (a core's own opponent is the slot-1 mover of its scene, a car without a driver)
+        for (s, l, _) in CORE_OPPONENT_MOVERS {
+            assert_eq!(slot_label(s, 1), Some(*l), "{s}");
+            assert!(no_driver(s, l), "{s}");
+        }
+        assert_eq!(core_opponent("story/cut_story_bestof_sh_05", "hugo"), Some(&["BESTOF_SH_05"][..]));
         assert_eq!(hookman_set("GH_06"), Some("drv_mb_02_set"));
         // the script's pushes (0x1529a945): GH_25 29, GH_26 32, GH_33 39, GH_34 41, GH_36 43; never registered 0
         assert_eq!(HOOKMAN_FLASH_IDS.len(), HOOKMAN_SETS.len());

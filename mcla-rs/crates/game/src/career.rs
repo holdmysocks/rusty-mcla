@@ -2748,8 +2748,10 @@ impl Career {
         if let Some(p) = self.state[i].progress.first_mut() {
             *p = 0;
         }
+        // AlwaysHide(1, 1) sets +117 first, so the Hide(1, 1) after it writes nothing: the Hide
+        // native F-82003 stores +118 only while +117 is clear. The saved +118 keeps its value (0 since
+        // the meeting), which is why the original's autosave after the quit shows objective 1.
         self.ext[i].obj_always[1] = true;
-        self.ext[i].obj_hidden[1] = true;
     }
 
     /// The text the mission log puts after an objective (the condition's +40 routine, for the
@@ -4515,6 +4517,8 @@ mod tests {
         c.series_drop("BESTOF_SH_05");
         c.story_series_left("BESTOF_SH_05");
         assert!(c.story_cut_near(at), "the series quit: the meeting is back");
+        let i = c.index["BESTOF_SH_05"];
+        assert!(c.ext[i].obj_always[1] && !c.ext[i].obj_hidden[1], "AlwaysHide set, the saved Hide byte untouched");
         assert_eq!(c.story_meet_at(at, false).as_deref(), Some("BESTOF_SH_05"));
     }
 

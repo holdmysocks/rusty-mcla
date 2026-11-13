@@ -433,6 +433,9 @@ struct App {
     cine_audio: Option<String>,
     /// the running scene keeps its own time (start-line cameras) instead of a story scene's
     cine_free: bool,
+    /// a story man's own car the scene borrowed as its mover (`cinedriver::core_opponent`): uid, his driver tag and
+    /// brain, given back when the scene ends
+    cine_kept: Vec<(u32, String, Option<ai::AiDriver>)>,
     /// the arrest scene's hands-up has been given (police::arrest_hands_up)
     arrest_hands: bool,
     /// the pull-over scene playing and how many of its acts (police::pullover_acts) have been given
@@ -1544,6 +1547,7 @@ impl App {
             cut_audio_objects: false,
             cine_audio: None,
             cine_free: false,
+            cine_kept: Vec::new(),
             arrest_hands: false,
             pullover_acts: (String::new(), 0),
             arrest_form: None,
@@ -5173,6 +5177,13 @@ impl App {
                         self.cine.release();
                     } else {
                         self.cine.stop();
+                    }
+                    // (a story man's car the scene borrowed is his core's racer: it stays where the scene left it)
+                    for (uid, drv, brain) in std::mem::take(&mut self.cine_kept) {
+                        if let Some(c) = self.vehicles.cars.iter_mut().find(|c| c.uid == uid) {
+                            c.driver = drv;
+                            c.ai = brain;
+                        }
                     }
                     // (a cruiser the scene borrowed stays in the world: CopPullover gives it back to the police)
                     self.vehicles.cars.retain(|c| !c.driver.starts_with("cine:") || c.cop);
@@ -15544,7 +15555,18 @@ impl App {
                     continue;
                 }
             }
-            let Some((car, color, plate, config)) = self.cine_car_of(&scene, &label) else { continue };
+            // (a story core's own opponent, slot 1: the racer it parked is the scene's car - `cinedriver::core_opponent`)
+            let core_man = cinedriver::core_opponent(&scene, &label).and_then(|ms| self.roam.men.iter().find(|m| ms.iter().any(|x| m.mission.eq_ignore_ascii_case(x))).cloned());
+            if let Some(i) = core_man.as_ref().and_then(|m| self.vehicles.cars.iter().position(|c| m.owns(c))) {
+                let c = &mut self.vehicles.cars[i];
+                log::info!("cine car: {} is {}'s own car {} ({}), borrowed", label, core_man.as_ref().map_or("", |m| m.mission.as_str()), c.model.name, c.vinyl_name);
+                self.cine_kept.push((c.uid, std::mem::take(&mut c.driver), c.ai.take()));
+                c.driver = format!("cine:{label}");
+                self.vehicles.pose_car(i, pos, rot);
+                continue;
+            }
+            let own = core_man.map(|m| { let r = self.game.rivals.with_config(&m.name, &m.car, &m.config); (r.car, r.color, r.plate, r.config) });
+            let Some((car, color, plate, config)) = own.or_else(|| self.cine_car_of(&scene, &label)) else { continue };
             let dirs = self.game.car_dirs.clone();
             if !self.vehicles.models.iter().any(|m| m.name.eq_ignore_ascii_case(&car)) {
                 if let Some(d) = dirs.iter().find(|d| d.file_name().map_or(false, |f| f.to_string_lossy().eq_ignore_ascii_case(&car))) {
