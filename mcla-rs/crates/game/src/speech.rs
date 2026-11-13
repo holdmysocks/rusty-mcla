@@ -696,6 +696,10 @@ impl Speech {
     }
 
     fn step(&mut self, a: &mut Audio) {
+        if self.wait <= 0.0 && self.line_wait {
+            log::debug!("speech: line over (clock {:.2})", self.clock);
+            self.line_wait = false;
+        }
         while self.wait <= 0.0 {
             let Some(step) = self.queue.pop_front() else {
                 self.wait = 0.0;

@@ -1107,10 +1107,10 @@ impl Sound {
             // PAUSE (F-99037): paused, not the map, not the replay viewer playing outside the race end
             let endrace = lib.scene_on("DYNAMIC_MIXER_ENDRACE") || lib.scene_on("DYNAMIC_MIXER_ENDRACE_BEATMETHERE");
             let viewer = game.replay.as_ref().is_some_and(|r| !r.paused);
-            lib.scene("DYNAMIC_MIXER_PAUSE", game.mode == Mode::Paused && !lib.scene_on("DYNAMIC_MIXER_NAVMAP") && !(viewer && !endrace));
+            lib.scene("DYNAMIC_MIXER_PAUSE", game.audio_paused() && !lib.scene_on("DYNAMIC_MIXER_NAVMAP") && !(viewer && !endrace));
             // the audio timer 0 (F-99037: engine+580): paused while the game is, unless the replay viewer is open outside the
             // race end; (approx.) only the speech lines run on it in the port, the original's other game sounds do too
-            lib.timer_paused[0] = game.mode == Mode::Paused && !(game.replay.is_some() && !endrace);
+            lib.timer_paused[0] = game.audio_paused() && !(game.replay.is_some() && !endrace);
             // the line at the player's car follows it (F-32206 each update: the entity's position)
             if let Some(h) = self.speech_line {
                 match vehicles.player().map(|c| c.state.pos) {

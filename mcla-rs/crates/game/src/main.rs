@@ -9452,7 +9452,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // (the save's own step where it lies between two of the port's: `mc4`)
             physics::vehsim::STEER_SENS.store((0.5 + self.game.sens_exact() * 0.1).to_bits(), std::sync::atomic::Ordering::Relaxed);
             // (the speech clock adds G+92, the frame's real time, not clamped - F-85023; a line holds while timer 0 is paused)
-            self.speech.paused = self.game.mode == Mode::Paused && self.game.replay.is_none();
+            self.speech.paused = self.game.audio_paused() && self.game.replay.is_none();
             // (the frame's real time once, by the frame's first tick: was the whole frame's time on every tick, so a
             // frame of 2 ticks ran the waits twice as fast and a call's second line started over the first, GitHub #48)
             let real_dt = if self.opt.fixed_dt > 0.0 || self.test_render_dt.is_some() { dt } else {

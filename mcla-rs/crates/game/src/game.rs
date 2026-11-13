@@ -3896,6 +3896,15 @@ impl Game {
         self.hud_map_big = !self.hud_map_big;
     }
 
+    /// The pause manager's paused byte (+4, set by `game.pause()` F-23567, cleared by `game.resume()`
+    /// F-35144) as the audio reads it - F-99037: timer 0 (the speech lines) held and the PAUSE scene, and the speech
+    /// line's hold (F-89113). The pause menu and the race list (the arcade race-type menu calls game.pause(); the
+    /// telephone list's leave hook F-20561 resumes the game), so the call's line waits under RACE SELECT.
+    /// *(approx.)* the other game.pause() screens (the GPS map, the repair and fine panels, the garage) are not counted yet.
+    pub fn audio_paused(&self) -> bool {
+        matches!(self.mode, Mode::Paused | Mode::RaceSelect)
+    }
+
     /// The original's menu flag (renderer +373; UI.md "UI edge smoothing", `work/ui-sharp/agent_menu/notes.md`):
     /// the scene and the UI pass go 4x while it is set. `game.pause()` (F-23567) sets it, `game.resume()`
     /// (F-35144) or the warper's end (F-31347) puts the old value back. Set by: the pause menu and every
