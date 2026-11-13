@@ -18530,11 +18530,8 @@ mod tests {
         g.race_defs.push(crate::races::RaceDef { id: "Game/Race/Hollywood/Ordered/hw_ordered_jp_11".into(), ..Default::default() });
         g.current_race = Some(g.race_defs.len() - 1);
         assert!(g.rgh06_race());
-        // (no opponent arrows on its map; the man's race of a mission that keeps him listed has them)
-        assert!(g.story_race_hides_opponents());
         g.hookman_race = false;
         assert!(!g.rgh06_race());
-        assert!(!g.story_race_hides_opponents());
     }
 
     /// The first career race (RACE_GH_06) runs at Easy: its core script sets the man's

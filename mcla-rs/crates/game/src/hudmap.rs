@@ -637,9 +637,7 @@ pub fn elements(game: &crate::game::Game, vehicles: &crate::vehicles::Vehicles, 
     }
     // the red light's and the freeway's man keep their racer element through the race, which the
     // racer renderer draws as the arrow in RacerColor while a race is current - work/hookmen2
-    // `cap/rl_14`, `rl_15`, `fw_06` (the green arrow by the player's, a cop's blue one beside); four
-    // story races show none for their opponents (`Game::story_race_hides_opponents`; RACE_GH_06 in
-    // work/ui/ref/ng_race_044..047)
+    // `cap/rl_14`, `rl_15`, `fw_06` (the green arrow by the player's, a cop's blue one beside)
     // the beat me there run: the hookman keeps his own element (SetVehicleElement subtype 3,
     // `CruisingHookmen/0x897fb23f` 0x1a8) and his icon is shown (Racer_HideIcon(him, 0), 0x1311); with
     // the run's race current the racer renderer draws him as the plain arrow in RacerColor. The port
@@ -659,8 +657,13 @@ pub fn elements(game: &crate::game::Game, vehicles: &crate::vehicles::Vehicles, 
     // TournamentCore `race/0x039dd301` 0x4b7, OrderedSeriesCore `race/0xb8b948b6` 0x455) and the
     // original draws them: the walkthrough's tournament at 4:18:50, 4:19:44, 4:21:40, a race at 0:17:30.
     // The story races list the man (subtype 2, kept added through the race) and, with more racers,
-    // subtype-6 elements - save the four whose scripts add neither
-    if let Some(race) = game.race.as_ref().filter(|r| r.kind == crate::game::RaceKind::Race && !game.story_race_hides_opponents()) {
+    // subtype-6 elements. The man's element is added by CruisingHookmanCore (`CruisingHookmen/0x0d18ab57`
+    // 0x14d, 0x3cc, 0x63b, 0x715), which his mission's core starts with it (RACE_GH_06 `Story/0x40a56c35`
+    // 0x431, RACE_GH_02 `0x81d83d96` 0xc94, BEAT_GH_04 / 05 `0xb38e82b5` 0x343, `0xdfb43920` 0x344); on
+    // its way out the core hides the racer's icon (0xe7d) but leaves the element listed, so the race
+    // draws him: the walkthrough's RACE_GH_06 at 2:27 - 3:22 and RACE_GH_02 at 10:21 - 10:57. Both
+    // renderers draw the same plain arrow in RacerColor while a race is current
+    if let Some(race) = game.race.as_ref().filter(|r| r.kind == crate::game::RaceKind::Race) {
         for (k, &i) in race.participants.iter().enumerate() {
             let Some(c) = vehicles.cars.get(i).filter(|c| !c.is_player) else { continue };
             let (pos, back) = shown(c, alpha);
