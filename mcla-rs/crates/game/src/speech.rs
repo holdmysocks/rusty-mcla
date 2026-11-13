@@ -757,9 +757,63 @@ impl Speech {
     }
 }
 
+/// The speech clock's real time (F-85023 adds G+92, the frame's real time, once a frame): the frame banks its time and
+/// the next speech update takes all of it - the port runs 0 - n game ticks a frame, and giving every tick the whole
+/// frame's time ran a call's waits n times too fast (GitHub #48: the hookman's line over the player's).
+#[derive(Default)]
+pub struct RealClock {
+    banked: f32,
+}
+
+impl RealClock {
+    /// A frame's real time; none while the world loads (no ticks run).
+    pub fn frame(&mut self, wall_dt: f32, loading: bool) {
+        self.banked = if loading { 0.0 } else { self.banked + wall_dt };
+    }
+
+    /// The time for this speech update: everything since the last.
+    pub fn take(&mut self) -> f32 {
+        std::mem::take(&mut self.banked)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// GitHub #48: the speech clock sums to real time however many ticks a frame runs (0, 1, 2, 3 here), so a call's
+    /// WaitTime and line lengths last as long as they should and its second line starts after the first.
+    #[test]
+    fn the_speech_clock_is_real_time_whatever_the_ticks() {
+        let mut c = RealClock::default();
+        let mut sp = Speech::load("D:/nonexistent", Path::new("D:/nonexistent"));
+        sp.queue.push_back(Step::Wait(0.9));
+        let (mut real, mut fired) = (0.0f32, None);
+        for (i, ticks) in [0usize, 1, 2, 3, 1, 0, 2].iter().cycle().take(200).enumerate() {
+            let wall = 0.012 + 0.003 * (i % 5) as f32;
+            c.frame(wall, false);
+            real += wall;
+            for _ in 0..*ticks {
+                let dt = c.take();
+                if !sp.paused {
+                    sp.wait -= dt;
+                }
+                if sp.wait <= 0.0 && fired.is_none() && sp.queue.is_empty() {
+                    fired = Some(real);
+                }
+                if sp.wait <= 0.0 {
+                    if let Some(Step::Wait(t)) = sp.queue.pop_front() {
+                        sp.wait = t;
+                    }
+                }
+            }
+        }
+        let f = fired.expect("the wait ended");
+        assert!((0.9..0.9 + 0.06).contains(&f), "the 0.9 s wait ended after {f} s of real time");
+        // loading: nothing banked
+        c.frame(0.5, false);
+        c.frame(0.2, true);
+        assert_eq!(c.take(), 0.0);
+    }
 
     /// The speech manager's gate and script pick (F-95157) against the running original (work/slipstream/audio3/cap,
     /// recorder sst_audio: GATE / PICK / SCEN lines): the generator's state words before the draws, the clock, the outcome.

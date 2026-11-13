@@ -265,7 +265,12 @@ impl Write for Tee {
 
 fn init_logging() {
     let env = env_logger::Env::default().default_filter_or("info,wgpu_core=warn,wgpu_hal=warn,naga=warn");
-    let _ = env_logger::Builder::from_env(env).target(env_logger::Target::Pipe(Box::new(Tee))).try_init();
+    let mut b = env_logger::Builder::from_env(env);
+    // (MCLA_LOG_MS=1: milliseconds in the log's time stamps, for timing checks)
+    if std::env::var_os("MCLA_LOG_MS").is_some() {
+        b.format_timestamp_millis();
+    }
+    let _ = b.target(env_logger::Target::Pipe(Box::new(Tee))).try_init();
 }
 
 pub fn timestamp() -> String {

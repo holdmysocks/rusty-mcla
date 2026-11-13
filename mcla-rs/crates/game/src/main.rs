@@ -335,6 +335,8 @@ struct App {
     last: Instant,
     fps: f32,
     frame_ms: f32,
+    /// the speech clock's real time, each frame's once (`speech::RealClock`)
+    speech_real: speech::RealClock,
     // (MCLA_FRAMELOG=<ms>: the worst-frame log - docs/PERFORMANCE.md)
     framelog: Option<f32>,
     fl_prev: [f32; 9],
@@ -1521,6 +1523,7 @@ impl App {
             last: Instant::now(),
             fps: 0.0,
             frame_ms: 0.0,
+            speech_real: Default::default(),
             framelog: std::env::var("MCLA_FRAMELOG").ok().map(|v| v.parse::<f32>().unwrap_or(25.0)),
             fl_prev: [0.0; 9],
             fl_ui: [0.0; 7],
@@ -9429,7 +9432,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             physics::vehsim::STEER_SENS.store((0.5 + self.game.sens_exact() * 0.1).to_bits(), std::sync::atomic::Ordering::Relaxed);
             // (the speech clock adds G+92, the frame's real time, not clamped - F-85023; a line holds while timer 0 is paused)
             self.speech.paused = self.game.mode == Mode::Paused && self.game.replay.is_none();
-            let real_dt = if self.opt.fixed_dt > 0.0 || self.test_render_dt.is_some() { dt } else { self.frame_ms * 0.001 };
+            // (the frame's real time once, by the frame's first tick: was the whole frame's time on every tick, so a
+            // frame of 2 ticks ran the waits twice as fast and a call's second line started over the first, GitHub #48)
+            let real_dt = if self.opt.fixed_dt > 0.0 || self.test_render_dt.is_some() { dt } else {
+                let r = self.speech_real.take();
+                // (MCLA_SPEECH_DT_OLD=1: the frame's whole time on every tick, as before - for an A/B check)
+                if std::env::var_os("MCLA_SPEECH_DT_OLD").is_some() { self.frame_ms * 0.001 } else { r }
+            };
             talk_sync(&mut self.speech, &mut self.radio);
             self.speech.update(a, real_dt);
             // (F-85023 took the radio's request out of the one ring: asked again through the radio's whole gate)
@@ -9778,6 +9787,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         if self.gpu.is_none() || self.world.is_none() {
             return;
         }
+        // (test hook MCLA_FRAME_SLEEP_MS=<ms>: every frame that much longer, a slow machine's frames of several ticks)
+        if let Some(ms) = std::env::var("MCLA_FRAME_SLEEP_MS").ok().and_then(|v| v.parse::<u64>().ok()) {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+        }
         let now = Instant::now();
         let wall_seconds = (now - self.last).as_secs_f64();
         let wall_dt = wall_seconds as f32;
@@ -9856,6 +9869,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         let ticks = if loading { self.sim_clock.reset(); 0 }
             else if self.opt.fixed_dt > 0.0 { 1 }
             else { self.sim_clock.advance(render_seconds) };
+        // (the speech clock's real time: kept for the next tick, none while the world loads)
+        self.speech_real.frame(wall_dt, loading);
         let sim_t0 = Instant::now();
         if let Some(w) = self.world.as_mut() {
             w.new_frame(6.0);
