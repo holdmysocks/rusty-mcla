@@ -3994,6 +3994,7 @@ impl Game {
         if let Some(c) = course.as_ref() {
             log::info!("race course: {} of {} checkpoints are gates, {} route nodes in {} routes ({} driven in the race), {} cop zones", c.cps.iter().filter(|p| p.gate.is_some()).count(), c.cps.len(), c.nodes.len(), c.routes.len(), c.routes.iter().filter(|r| r.weight > 0.0).count(), c.cop_zones.len());
         }
+        crate::ticktimes::pt("race: course");
         let lap_cps: Vec<Vec3> = match course.as_ref() {
             Some(c) => c.cps.iter().map(|p| p.mark()).collect(),
             None => def.checkpoints.clone(),
@@ -4196,6 +4197,7 @@ impl Game {
             Some(c) => (Some(course_line(c, None)), opp_legs.iter().map(|per_leg| course_build(c, per_leg)).collect()),
             None => (None, Vec::new()),
         };
+        crate::ticktimes::pt("race: lines");
         let from_course = own_line.filter(|(l, _, _)| l.len() > 4);
         // (MCLA_ROAD_LINE_ALWAYS=1: the road route made as before, also when the script's line replaces it)
         let road = (from_course.is_none() || std::env::var("MCLA_ROAD_LINE_ALWAYS").is_ok()).then(road_line);
@@ -4208,6 +4210,7 @@ impl Game {
             (None, Some((l, off, _))) => (l, off),
             (None, None) => unreachable!(),
         };
+        crate::ticktimes::pt("race: road");
         let mut total = 0.0;
         for w in path.windows(2) {
             total += w[0].distance(w[1]);

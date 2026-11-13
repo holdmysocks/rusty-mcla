@@ -222,6 +222,100 @@ impl BufPart {
     }
 }
 
+/// The sectors' vertices and indices in shared slabs of 32 MB, a range each (GitHub #48: as a buffer each, ~960 of them came and
+/// went in gpu-allocator's 256 MB blocks on DX12 - ~130 MB a minute - and their holes kept the blocks from ever emptying; a slab
+/// of 16 MB or more is a committed resource of its own there, `commit_own`). First fit on 256-byte steps, a freed range merged
+/// with its neighbours, an empty slab let go (one is kept). A range is given back when its sector is dropped: a later sector's
+/// `write_buffer` into it runs on the queue after the frames already submitted. `MCLA_SECTOR_POOL=0`: a buffer each, as before.
+pub(crate) mod sector_pool {
+    use std::sync::{Arc, Mutex, OnceLock};
+
+    const SLAB: u64 = 32 << 20;
+    const STEP: u64 = 256;
+
+    struct Slab {
+        buf: Arc<wgpu::Buffer>,
+        // (offset, length), sorted by offset
+        free: Vec<(u64, u64)>,
+    }
+
+    fn slabs() -> &'static Mutex<Vec<Slab>> {
+        static S: OnceLock<Mutex<Vec<Slab>>> = OnceLock::new();
+        S.get_or_init(|| Mutex::new(Vec::new()))
+    }
+
+    pub fn on() -> bool {
+        static ON: OnceLock<bool> = OnceLock::new();
+        *ON.get_or_init(|| std::env::var("MCLA_SECTOR_POOL").map_or(true, |v| v.trim() != "0"))
+    }
+
+    /// A range of a slab, given back when dropped.
+    pub struct Range {
+        buf: Arc<wgpu::Buffer>,
+        off: u64,
+        len: u64,
+    }
+
+    impl Drop for Range {
+        fn drop(&mut self) {
+            let Ok(mut s) = slabs().lock() else { return };
+            let Some(k) = s.iter().position(|x| Arc::ptr_eq(&x.buf, &self.buf)) else { return };
+            let free = &mut s[k].free;
+            let at = free.partition_point(|f| f.0 < self.off);
+            free.insert(at, (self.off, self.len));
+            // (merged with the next, then with the one before)
+            if at + 1 < free.len() && free[at].0 + free[at].1 == free[at + 1].0 {
+                free[at].1 += free[at + 1].1;
+                free.remove(at + 1);
+            }
+            if at > 0 && free[at - 1].0 + free[at - 1].1 == free[at].0 {
+                free[at - 1].1 += free[at].1;
+                free.remove(at);
+            }
+            let empty = s[k].free.len() == 1 && s[k].free[0] == (0, SLAB);
+            if empty && s.len() > 1 {
+                s.remove(k);
+            }
+        }
+    }
+
+    /// `bytes` written into a free range: the range to draw from and its keeper. None when it is larger than half a slab.
+    pub fn put(gpu: &crate::render::Gpu, bytes: &[u8]) -> Option<(super::BufPart, Range)> {
+        let len = (bytes.len() as u64).div_ceil(STEP) * STEP;
+        if len == 0 || len > SLAB / 2 {
+            return None;
+        }
+        let mut s = slabs().lock().ok()?;
+        let hit = s.iter().enumerate().find_map(|(k, x)| x.free.iter().position(|f| f.1 >= len).map(|i| (k, i)));
+        let (k, i) = match hit {
+            Some(h) => h,
+            None => {
+                let buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("sector pool"),
+                    size: SLAB,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                s.push(Slab { buf: Arc::new(buf), free: vec![(0, SLAB)] });
+                log::info!("sector pool: {} slabs of {} MB", s.len(), SLAB >> 20);
+                (s.len() - 1, 0)
+            }
+        };
+        let slab = &mut s[k];
+        let (off, flen) = slab.free[i];
+        if flen == len {
+            slab.free.remove(i);
+        } else {
+            slab.free[i] = (off + len, flen - len);
+        }
+        let buf = slab.buf.clone();
+        drop(s);
+        // (write_buffer wants a multiple of 4 bytes: the vertices and u32 indices are)
+        gpu.queue.write_buffer(&buf, off, bytes);
+        Some((super::BufPart { buf: buf.clone(), off, len: bytes.len() as u64 }, Range { buf, off, len }))
+    }
+}
+
 pub struct GpuBatch {
     pub shader: String,
     pub vb: BufPart,
@@ -468,8 +562,10 @@ pub enum SectorEv {
 
 pub struct GpuSector {
     /// all batches of the sector share one vertex and one index buffer
-    pub vb: Option<wgpu::Buffer>,
-    pub ib: Option<wgpu::Buffer>,
+    pub vb: Option<BufPart>,
+    pub ib: Option<BufPart>,
+    /// their ranges of the shared slabs, given back when the sector goes (`sector_pool`)
+    pub pool: Vec<sector_pool::Range>,
     pub batches: Vec<SectorBatch>,
     /// index range of the plain opaque shadow casters (they come first in the buffer)
     pub caster_count: u32,
@@ -2397,13 +2493,19 @@ impl World {
             }
             batches.push(SectorBatch { interior: b.interior, shader: b.shader, first, count, bind, mode: b.mode, min: b.min, max: b.max, parts });
         }
+        let mut pool = Vec::new();
         let (vb, ib) = if indices.is_empty() {
             (None, None)
         } else {
-            (
-                Some(gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("sector vb"), contents: bytemuck::cast_slice(&verts), usage: wgpu::BufferUsages::VERTEX })),
-                Some(gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("sector ib"), contents: bytemuck::cast_slice(&indices), usage: wgpu::BufferUsages::INDEX })),
-            )
+            let own = |label: &'static str, bytes: &[u8], usage: wgpu::BufferUsages| BufPart::whole(gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents: bytes, usage }));
+            let mut part = |label: &'static str, bytes: &[u8], usage: wgpu::BufferUsages| match sector_pool::on().then(|| sector_pool::put(gpu, bytes)).flatten() {
+                Some((p, r)) => {
+                    pool.push(r);
+                    p
+                }
+                None => own(label, bytes, usage),
+            };
+            (Some(part("sector vb", bytemuck::cast_slice(&verts), wgpu::BufferUsages::VERTEX)), Some(part("sector ib", bytemuck::cast_slice(&indices), wgpu::BufferUsages::INDEX)))
         };
         // (a detailed sector comes in over a third of a second; interiors and far models are just there)
         let u = if sector_id < SET_ID { 0.0 } else { 1.0 };
@@ -2416,7 +2518,7 @@ impl World {
         };
         // (its CPU copy is many blocks: freed off the frame)
         rayon::spawn(move || drop(cs));
-        GpuSector { vb, ib, batches, caster_count, caster_min, caster_max, caster_batches, tris, obj, u, shown: u, far, bundle: Default::default() }
+        GpuSector { vb, ib, pool, batches, caster_count, caster_min, caster_max, caster_batches, tris, obj, u, shown: u, far, bundle: Default::default() }
     }
 }
 

@@ -6766,9 +6766,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     let name = names[n as usize % names.len().max(1)];
                     self.game.current_race = self.game.race_defs.iter().position(|r| r.name.contains(name));
                     log::info!("soak: cycle {} race {} ({:?})", n, name, self.game.current_race);
-                    if self.game.current_race.is_some() {
-                        self.pending_action = MenuAction::StartRace;
-                    }
+                } else if k == (per as f32 * 0.25) as u64 + 300 && self.game.mode == Mode::FreeRoam && self.game.race.is_none() && self.game.current_race.is_some() {
+                    // (started 5 s after it was chosen, as a player's start comes after the event panel: the grid is
+                    // guessed, read and built ahead meanwhile - `grid_ahead`; started in the same tick it had all 7 cars
+                    // read and built cold in the start's tick, 208 - 264 ms - docs/PERFORMANCE.md 2026-11-13)
+                    log::info!("soak: cycle {} start race", n);
+                    self.pending_action = MenuAction::StartRace;
                 } else if at(0.60) && matches!(self.game.mode, Mode::Race | Mode::Results) {
                     log::info!("soak: cycle {} quit race ({:?})", n, self.game.mode);
                     self.pending_action = MenuAction::QuitRace;
@@ -6780,14 +6783,21 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     if self.game.mode == Mode::Garage {
                         self.pending_action = MenuAction::Back;
                     }
-                } else if at(0.86) && self.game.mode == Mode::FreeRoam && std::env::var("MCLA_SOAK_HANGOUT").is_ok_and(|v| v == "1") {
+                } else if (at(0.86) || k + 300 == (per as f32 * 0.86) as u64) && self.game.mode == Mode::FreeRoam && std::env::var("MCLA_SOAK_HANGOUT").is_ok_and(|v| v == "1") {
                     // (the hangouts this career has open, by the set-up's entry line)
                     let open: Vec<(usize, Vec3)> = hangoutin::SETUPS
                         .iter()
                         .enumerate()
                         .filter_map(|(si, su)| self.hangouts.iter().find(|h| su.scene.starts_with(&format!("{}_", h.0))).filter(|h| self.game.mc4_hangout_open(&h.0)).map(|h| (si, h.1)))
                         .collect();
-                    if let Some(&(si, spot)) = open.get(n as usize % open.len().max(1)) {
+                    if !at(0.86) {
+                        // (5 s before: its cars read ahead as a player's drive in reads them from 250 m - put at the entry
+                        // at once they had been read cold in the entry's tick, 127 - 152 ms - docs/PERFORMANCE.md 2026-11-13)
+                        if let Some(&(si, _)) = open.get(n as usize % open.len().max(1)) {
+                            self.hscene.read_ahead(&self.game, &mut self.vehicles, &world, hangoutin::SETUPS[si].key);
+                            log::info!("soak: cycle {} hangout {} read ahead", n, hangoutin::SETUPS[si].key);
+                        }
+                    } else if let Some(&(si, spot)) = open.get(n as usize % open.len().max(1)) {
                         let [a, b] = hangoutin::SETUPS[si].line;
                         let m = (a + b) * 0.5;
                         let along = (b - a).with_y(0.0).normalize_or_zero();
@@ -14454,6 +14464,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     for (s, r) in &draws {
                         log::info!("grid rim: {s} wears {} (rim table {r})", self.game.rim_shop.entry(*r).map_or("?", |e| e.resource.as_str()));
                     }
+                    crate::ticktimes::pt("start: picked");
                     modcars::set_rim_draws(draws);
                     for pk in picks {
                         log::info!("grid pick: {} drew {} -> {} in {} ({}), difficulty {} player {:.4}", if pk.driver.is_empty() { "-" } else { &pk.driver }, pk.drawn, pk.driver, pk.car, pk.setup, d, p);
@@ -14467,6 +14478,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             s.rivals = grid.clone();
                         }
                     }
+                    crate::ticktimes::pt("start: grid");
                     // (the grid's cars read side by side on worker threads first, then built - docs/PERFORMANCE.md 2026-10-23 (5))
                     for r in &grid {
                         if let Some(d) = dirs.iter().find(|d| d.file_name().map_or(false, |f| f.to_string_lossy().eq_ignore_ascii_case(&r.car))) {
@@ -14484,6 +14496,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             }
                         }
                     }
+                    crate::ticktimes::pt("start: built");
                     // (and their set-ups' builds made on workers now, read as they are: the dressing a tick later takes them -
                     // `Vehicles::dress_setups`, which started them itself and waited, docs/PERFORMANCE.md 2026-11-10 (1))
                     for r in &grid {
@@ -14493,6 +14506,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                     log::info!("grid: {}", grid.iter().map(|r| format!("{} {} [{}]", self.game.career.name_of(&r.id), r.car, r.plate)).collect::<Vec<_>>().join(", "));
                     self.game.grid_rivals = grid;
+                    crate::ticktimes::pt("start: set-ups");
                 }
                 // (diagnostics, docs/AI.md: the cars MCLA_GRID_CARS puts on the grid)
                 if let Ok(v) = std::env::var("MCLA_GRID_CARS") {
@@ -14577,6 +14591,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         }
                     }
                 }
+                crate::ticktimes::pt("start: player car");
                 let flag_def = self.game.current_race.and_then(|i| self.game.race_defs.get(i)).filter(|d| flags::FlagGame::is_flag_event(d)).cloned();
                 let started = match (flag_def, self.game.current_race) {
                     (Some(def), _) => {
@@ -14606,6 +14621,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                     (None, None) => self.game.start_race(world, &mut self.vehicles, gpu),
                 };
+                crate::ticktimes::pt("start: race");
                 // (a race against a red light or freeway man: its checkpoints' radius; a freeway
                 // race goes on from where the two are - althk.rs)
                 if started {
@@ -17256,7 +17272,7 @@ fn far_bundles_on() -> bool {
 /// checks and tracks every set and draw of a pass when the pass ends - about 1.5 us a draw here, 8 - 10 ms for the GPS
 /// map's ~10,000 far draws at DRAW DISTANCE 3x (GitHub #47); a bundle's are checked once, when it is made. The same
 /// commands in the same order with the same state, so the same picture (docs/PERFORMANCE.md 2026-11-09 (6)).
-fn far_bundle(gpu: &Gpu, sec: &world::GpuSector, vb: &wgpu::Buffer, ib: &wgpu::Buffer) -> (Arc<wgpu::RenderBundle>, usize) {
+fn far_bundle(gpu: &Gpu, sec: &world::GpuSector, vb: &world::BufPart, ib: &world::BufPart) -> (Arc<wgpu::RenderBundle>, usize) {
     let cur = render::ms::current();
     let mut key = cur.slot() as u64;
     for b in sec.batches.iter().filter(|b| !matches!(b.mode, MatMode::Blend | MatMode::StoreGlass)) {
