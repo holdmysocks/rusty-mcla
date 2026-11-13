@@ -173,6 +173,10 @@ pub struct Vertex {
     pub emissive: [f32; 3],
     /// the depth offset (render state 12) the strip is drawn with - `set_depth_offset`
     pub depth: f32,
+    /// the strip matrix's z axis in the world (VS_Font's normal: gWorld's third row, normalised in the program)
+    pub normal: [f32; 3],
+    /// the player car's fill (ambYPos: the sky's ambient + rgb, x w when w > 0 - fillmap::player_now)
+    pub fill: [f32; 4],
 }
 
 /// The in-car view's depth offset at the readouts: the car draw F-73214 runs them right after the part loop F-92759, which
@@ -186,7 +190,8 @@ pub fn set_depth_offset(v: f32) {
 
 /// One readout's quads in the world (`world` = the car's drawn matrix): glyph k < count, its four corners as F-57755
 /// lays them, the cell's uv as the programs compute it.
-pub fn quads(world: Mat4, r: [Vec3; 3], t: &Text, color: [f32; 4], emissive: [f32; 3], out: &mut Vec<Vertex>) {
+pub fn quads(world: Mat4, r: [Vec3; 3], normal: Vec3, t: &Text, color: [f32; 4], emissive: [f32; 3], fill: [f32; 4], out: &mut Vec<Vertex>) {
+    let normal = world.transform_vector3(normal).to_array();
     for k in 0..t.count.min(GLYPHS) {
         let x0 = (k as f32 - 1.0) * STEP;
         let x1 = k as f32 * STEP;
@@ -194,7 +199,7 @@ pub fn quads(world: Mat4, r: [Vec3; 3], t: &Text, color: [f32; 4], emissive: [f3
         for (x, y, u, v) in [(x0, -STEP, 0.0, 1.0), (x0, 0.0, 0.0, 0.0), (x1, 0.0, 1.0, 0.0), (x0, -STEP, 0.0, 1.0), (x1, 0.0, 1.0, 0.0), (x1, -STEP, 1.0, 1.0)] {
             let local = r[0] * x + r[1] * y + r[2];
             let p = world * Vec4::new(local.x, local.y, local.z, 1.0);
-            out.push(Vertex { pos: p.truncate().into(), uv: [u * 0.125 + cell[0], v * 0.125 + cell[1]], color, emissive, depth: 0.0 });
+            out.push(Vertex { pos: p.truncate().into(), uv: [u * 0.125 + cell[0], v * 0.125 + cell[1]], color, emissive, depth: 0.0, normal, fill });
         }
     }
 }
@@ -207,6 +212,8 @@ pub struct Frame<'a> {
     pub tune: [[f32; 6]; 5],
     /// emIntColor: DashGaugeColor x the head lamp state (the car object's +168)
     pub emissive: [f32; 3],
+    /// the player car's fill (fillmap::player_now), for ambYPos as the car's programs take it
+    pub fill: [f32; 4],
     pub speed: f32,
     pub odo: f32,
     pub trip_start: f32,
@@ -259,12 +266,14 @@ pub fn load(gpu: &mut Gpu, data_dir: &str) {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("readouts"), source: wgpu::ShaderSource::Wgsl(include_str!("render/readouts.wgsl").into()) });
     let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("readouts pl"), bind_group_layouts: &[&globals_layout, &layout], push_constant_ranges: &[] });
     let pipe = crate::render::ms::MsPipe::new(device, move |device, v| {
-        let attrs = [
+        let attrs: [wgpu::VertexAttribute; 7] = [
             wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 0, shader_location: 0 },
             wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 12, shader_location: 1 },
             wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 20, shader_location: 2 },
             wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 36, shader_location: 3 },
             wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32, offset: 48, shader_location: 4 },
+            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 52, shader_location: 5 },
+            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 64, shader_location: 6 },
         ];
         // (the technique's pass: AlphaBlendEnable 1, SrcBlend SRCALPHA, DestBlend INVSRCALPHA - rage ids 10 / 4 / 5)
         let blend = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::SrcAlpha, dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha, operation: wgpu::BlendOperation::Add };
@@ -299,7 +308,7 @@ pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, frame: Option<&Frame>) {
         let (Some(t), Some(&(_, bone, w, h))) = (t, f.bones.iter().find(|b| b.0 as usize == k)) else { continue };
         let tune = f.tune[k];
         let start = verts.len() as u32;
-        quads(f.world, rows(bone, w, h, tune[4], t.count), t, [tune[0], tune[1], tune[2], tune[3]], f.emissive, &mut verts);
+        quads(f.world, rows(bone, w, h, tune[4], t.count), bone.z_axis.truncate(), t, [tune[0], tune[1], tune[2], tune[3]], f.emissive, f.fill, &mut verts);
         draws.push((t.font, start, verts.len() as u32));
     }
     let depth = f32::from_bits(DEPTH.load(std::sync::atomic::Ordering::Relaxed));

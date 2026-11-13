@@ -13437,6 +13437,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         bones: &c.model.font_bones,
                         tune: self.game.gauge_texts(),
                         emissive: [dash[0] * head, dash[1] * head, dash[2] * head],
+                        fill: crate::fillmap::player_now(pose.pos.x, pose.pos.z),
                         speed: c.state.speed(),
                         odo,
                         trip_start: readouts::trip_start(c.uid),
