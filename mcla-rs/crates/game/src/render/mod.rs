@@ -4989,6 +4989,18 @@ pub fn create_rgba_as(device: &wgpu::Device, queue: &wgpu::Queue, w: u32, h: u32
     GpuTexture::new(texture, view, w, h)
 }
 
+/// Writes `rgba` over the whole of a texture made by `create_rgba_as` with the same size: afterwards it holds what
+/// `create_rgba_as` with these texels would (the same single level, written whole the same way).
+pub fn rewrite_rgba(queue: &wgpu::Queue, tex: &GpuTexture, rgba: &[u8]) {
+    let (w, h) = (tex.width, tex.height);
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo { texture: &tex.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+        rgba,
+        wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: Some(h) },
+        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+    );
+}
+
 /// Build GPU texture from a decoded RAGE texture. Uses BC formats directly when
 /// possible, otherwise software-decodes to RGBA8.
 pub fn upload(device: &wgpu::Device, queue: &wgpu::Queue, tex: &Texture, bc: bool) -> GpuTexture {

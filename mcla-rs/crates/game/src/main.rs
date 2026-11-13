@@ -9226,9 +9226,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let (c, cn) = gpu.texture_census();
             let mb = |b: u64| b as f64 / 1048576.0;
             log::info!(
-                "perf: {:.0} fps, {:.2} ms frame, {} draws; video memory: textures {:.0} MB ({}), car models {} ({:.0} MB buffers); texture cache {:.0} MB ({}): city / cars {:.0} MB ({:.0} unused), others {:.0} MB ({:.0} unused), outside {:.0} MB ({} plates made so far); sectors {} in memory ({} past the margin)",
+                "perf: {:.0} fps, {:.2} ms frame, {} draws; video memory: textures {:.0} MB ({}), car models {} ({:.0} MB buffers); texture cache {:.0} MB ({}): city / cars {:.0} MB ({:.0} unused), others {:.0} MB ({:.0} unused), outside {:.0} MB ({} plates made so far, {} new textures); sectors {} in memory ({} past the margin)",
                 self.fps, self.frame_ms, self.draws, tex_mb, tex_n, cars_n, cars_mb, mb(c[0]), cn, mb(c[1]), mb(c[2]), mb(c[3]), mb(c[4]), tex_mb - mb(c[0]),
-                vehicles::PLATES_MADE.load(std::sync::atomic::Ordering::Relaxed), world.stats_sectors.0, world.stats_sectors.1
+                vehicles::PLATES_MADE.load(std::sync::atomic::Ordering::Relaxed), vehicles::PLATES_NEW.load(std::sync::atomic::Ordering::Relaxed), world.stats_sectors.0, world.stats_sectors.1
             );
             // (test hook MCLA_ALLOC_REPORT=1: the device allocator's own numbers, where the backend gives them - DX12's
             // gpu-allocator: what its blocks hold and reserve, the textures' share and the allocations under 64 KB - GitHub #48)

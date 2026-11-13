@@ -1612,9 +1612,13 @@ pub struct Vehicles {
     trace_car: Option<(usize, u32)>,
     /// plate background and font (RGBA; shared, not copied for each plate), and the finished plates by text (the cars hold them: every traffic car
     /// has a plate of its own, a plate of a car that has gone goes with `Gpu::trim_textures`)
-    plate_art: Option<(Option<Arc<PlateBg>>, Arc<Vec<u8>>)>,
+    plate_art: Option<(Option<Arc<PlateBg>>, Arc<Vec<f32>>)>,
     /// (with each its texture: the bind group keeps the GPU's copy alive, this the count of `render::TEX_BYTES`; pruned each second)
-    plates: hashbrown::HashMap<String, (std::sync::Weak<wgpu::BindGroup>, Arc<GpuTexture>)>,
+    /// (a plate is in use while a car holds its bind group: the count past this map's own)
+    plates: hashbrown::HashMap<String, (Arc<wgpu::BindGroup>, Arc<GpuTexture>)>,
+    /// the textures and bind groups of plates whose cars have gone, written over for the next plates of their size
+    /// (D59: the same texels as a new texture, without making a texture and a bind group each time; at most `PLATE_POOL`)
+    plate_pool: Vec<(Arc<wgpu::BindGroup>, Arc<GpuTexture>)>,
     plate_serial: u32,
     /// the background of the player's plate (a name of `resources/license_plates/backgrounds`:
     /// the vehicle record's LicenseBG - `mc4`; none = the California plate), and those loaded
@@ -1776,6 +1780,10 @@ fn mesh_to_batch_xf(gpu: &mut Gpu, mesh: &mcla_formats::rage::geometry::Mesh, sn
 
 /// The licence plates made so far (the perf line).
 pub static PLATES_MADE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// of those, the plates that needed a new texture (the others wrote over a gone car's: `Vehicles::plate_pool`)
+pub static PLATES_NEW: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// the gone cars' plates kept for reuse (32 California plates of 512 x 256: 16 MB)
+const PLATE_POOL: usize = 32;
 
 /// The California plate background of the disc (`resources/license_plates/backgrounds`),
 /// uploaded once. The files hold a single texture object behind the root pointer.
@@ -2647,7 +2655,7 @@ impl Vehicles {
         }
         let step = std::mem::take(&mut self.model_idle_check);
         // (the plates of the cars gone since)
-        self.plates.retain(|_, b| b.0.strong_count() > 0);
+        self.trim_plates();
         if std::env::var("MCLA_MODELS_KEEP").is_ok() {
             return;
         }
@@ -4671,6 +4679,20 @@ if keep || c.state.pos.distance(center) < 450.0 {
         }
     }
 
+    /// The plates no car holds any more leave the map; up to `PLATE_POOL` of them are kept for reuse.
+    fn trim_plates(&mut self) {
+        let pool = &mut self.plate_pool;
+        self.plates.retain(|_, b| {
+            if Arc::strong_count(&b.0) > 1 {
+                return true;
+            }
+            if pool.len() < PLATE_POOL && !plate_pool_off() {
+                pool.push((b.0.clone(), b.1.clone()));
+            }
+            false
+        });
+    }
+
     /// Give every car that has none a plate: the Californian background of the disc with
     /// the text set in the game's plate font (`vehicle/shared_font/fnt_license_plate.dds`:
     /// 8 x 5 cells of 32 px, "0-9A-Z" then hand, plus, star, heart for "[\\]^").
@@ -4683,7 +4705,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
             let root = &world.assets.root;
             let font = std::fs::read(root.join("vehicle/shared_font/fnt_license_plate.dds")).ok().and_then(|d| mcla_formats::dds::parse_dds("fnt_license_plate", &d).ok()).filter(|t| t.width == 256 && t.height == 256).map(|t| t.to_rgba8());
             self.plate_art = Some(match font {
-                Some(f) => (load_plate_bg(root, "plate_ca_00").map(Arc::new), Arc::new(f)),
+                Some(f) => (load_plate_bg(root, "plate_ca_00").map(Arc::new), Arc::new(plate_font_alpha(&f))),
                 None => (None, Arc::new(Vec::new())),
             });
         }
@@ -4732,20 +4754,31 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 Some((n, a)) => (format!("{text}@{n}"), a),
                 None => (text.clone(), ca.clone()),
             };
-            let made = self.plates.get(&slot).and_then(|b| b.0.upgrade());
+            let made = self.plates.get(&slot).map(|b| b.0.clone());
             if made.is_none() {
-                self.plates.retain(|_, b| b.0.strong_count() > 0);
+                self.trim_plates();
                 let (w, h) = (bg.w, bg.h);
-                let px = compose_plate(&bg, &font, &text);
+                let px = compose_plate_a(&bg, &font, &text);
+                PLATES_MADE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                // (a gone car's plate of this size: its texture written over whole - the same texels, format and
+                // sampling as a new one. MCLA_PLATE_POOL_OFF=1: a new texture each time, as before)
+                let k = (!plate_pool_off()).then(|| self.plate_pool.iter().position(|(_, t)| (t.width, t.height) == (w as u32, h as u32))).flatten();
+                if let Some(k) = k {
+                    let (bind, tex) = self.plate_pool.swap_remove(k);
+                    crate::render::rewrite_rgba(&gpu.queue, &tex, &px);
+                    self.plates.insert(slot.clone(), (bind.clone(), tex));
+                    self.cars[i].plate = Some(bind);
+                    continue;
+                }
                 // (as stored, like the car's other maps: city.wgsl decodes the sample once and PS_Plate's ^1.6 gets the
                 // stored value back through car_raw. A gamma upload was decoded twice - the plate dark and saturated, its
                 // blue 4, 17, 192 where the original's is 56, 100, 250. MCLA_PLATE_GAMMA_OLD=1: as before)
                 let gamma = !car_tex_raw() || std::env::var("MCLA_PLATE_GAMMA_OLD").is_ok();
                 let tex = crate::render::create_rgba_as(&gpu.device, &gpu.queue, w as u32, h as u32, &px, "plate", gamma);
-                PLATES_MADE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                PLATES_NEW.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 // (its own bind group: the plate goes with the last car showing it, not at the cache's next trim)
                 let bind = gpu.texture_bind_group_own(&tex, &tex, crate::render::aniso::code("LicensePlate", [crate::render::aniso::ph::PLATE_BG; 4]));
-                self.plates.insert(slot.clone(), (Arc::downgrade(&bind), Arc::new(tex)));
+                self.plates.insert(slot.clone(), (bind.clone(), Arc::new(tex)));
                 self.cars[i].plate = Some(bind);
             } else {
                 self.cars[i].plate = made;
@@ -8562,9 +8595,28 @@ pub fn load_plate_bg(root: &std::path::Path, name: &str) -> Option<PlateBg> {
 /// lerp(background, tint, font alpha) where u, v are past the letters' corner. The program also multiplies by the
 /// font's colour, which is white in the whole atlas. A divisor of 0 (the Rockstar plates) puts every column past
 /// 6: no letters.
+fn plate_pool_off() -> bool {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *OFF.get_or_init(|| std::env::var_os("MCLA_PLATE_POOL_OFF").is_some())
+}
+
 pub fn compose_plate(bg: &PlateBg, font: &[u8], text: &str) -> Vec<u8> {
-    let mut px = bg.px.clone();
+    compose_plate_a(bg, &plate_font_alpha(font), text)
+}
+
+/// The plate font's alpha / 255 for each of its 256 x 256 texels, what `compose_plate_a` samples (empty when the
+/// font is not 256 x 256 RGBA: no letters). Made once with the plate art (85 us a plate before).
+pub fn plate_font_alpha(font: &[u8]) -> Vec<f32> {
     if font.len() < 256 * 256 * 4 {
+        return Vec::new();
+    }
+    (0..256 * 256).map(|i| font[i * 4 + 3] as f32 / 255.0).collect()
+}
+
+/// `compose_plate` with the font's alpha table (`plate_font_alpha`) given.
+pub fn compose_plate_a(bg: &PlateBg, fa: &[f32], text: &str) -> Vec<u8> {
+    let mut px = bg.px.clone();
+    if fa.len() < 256 * 256 {
         return px;
     }
     let mut cells = [63usize; 7];
@@ -8584,7 +8636,6 @@ pub fn compose_plate(bg: &PlateBg, font: &[u8], text: &str) -> Vec<u8> {
     // (the atlas sampled bilinearly, clamped at its edges. What depends on the column alone - the cell, the atlas
     // column, its weight - and on the row alone is worked out once, the texels' alpha / 255 read from a table: the
     // same operations in the same order as per pixel, so the same bytes - 1.4 ms a traffic car's plate before)
-    let fa: Vec<f32> = (0..256 * 256).map(|i| font[i * 4 + 3] as f32 / 255.0).collect();
     let idx = |c: f32| c.clamp(0.0, 255.0) as usize;
     // per column: the cell's row in the atlas, the two texel columns and the weight
     let cols: Vec<Option<(usize, usize, usize, f32)>> = (0..bg.w)
@@ -8631,11 +8682,25 @@ pub fn compose_plate(bg: &PlateBg, font: &[u8], text: &str) -> Vec<u8> {
             let o = (y * bg.w + x) * 4;
             for j in 0..3 {
                 let b = btab[px[o + j] as usize];
-                px[o + j] = ((b + a * (bg.tint[j] - b)) * 255.0).round().clamp(0.0, 255.0) as u8;
+                px[o + j] = round_u8((b + a * (bg.tint[j] - b)) * 255.0);
             }
         }
     }
     px
+}
+
+/// `v.round().clamp(0.0, 255.0) as u8` for every f32 (NaN 0), without the library's round (a call on the x86-64
+/// baseline: 0.3 ms of a plate's 0.5): the integer part by the conversion, the half by the exact remainder.
+#[inline]
+pub(crate) fn round_u8(v: f32) -> u8 {
+    if !(v > 0.0) {
+        return 0;
+    }
+    if v >= 255.0 {
+        return 255;
+    }
+    let t = v as u32;
+    (t + (v - t as f32 >= 0.5) as u32) as u8
 }
 
 #[cfg(test)]
@@ -8734,6 +8799,102 @@ mod plate_tests {
         assert_eq!(&sp[(16 * 64 + 4) * 4..(16 * 64 + 4) * 4 + 3], &[255, 255, 255]);
     }
 
+    /// `round_u8` is `round().clamp(0, 255) as u8` on every one of the 2^32 floats.
+    #[test]
+    fn round_u8_is_the_library_round_on_every_float() {
+        let bad: u64 = std::thread::scope(|sc| {
+            let hs: Vec<_> = (0..16u64)
+                .map(|k| {
+                    sc.spawn(move || {
+                        let mut bad = 0u64;
+                        for b in (k << 28)..((k + 1) << 28) {
+                            let v = f32::from_bits(b as u32);
+                            bad += (round_u8(v) != v.round().clamp(0.0, 255.0) as u8) as u64;
+                        }
+                        bad
+                    })
+                })
+                .collect();
+            hs.into_iter().map(|h| h.join().unwrap()).sum()
+        });
+        assert_eq!(bad, 0);
+    }
+
+    /// A plate written over a gone car's texture (`render::rewrite_rgba`) holds what a new texture of those texels does:
+    /// read back through textureLoad on the machine's GPU, every texel's value equal (sRGB and plain, odd sizes, plates of
+    /// 512 x 256, three rewrites in a row). Skipped when no adapter is found.
+    #[test]
+    fn rewritten_plate_is_a_new_plate() {
+        let mut r = 0x2545_F491u32;
+        let mut next = move || {
+            r ^= r << 13;
+            r ^= r >> 17;
+            r ^= r << 5;
+            r
+        };
+        let got = pollster::block_on(async {
+            let inst = wgpu::Instance::new(&wgpu::InstanceDescriptor { backends: wgpu::Backends::from_env().unwrap_or(wgpu::Backends::PRIMARY), ..Default::default() });
+            let ad = inst.request_adapter(&wgpu::RequestAdapterOptions::default()).await?;
+            let (dev, q) = ad.request_device(&wgpu::DeviceDescriptor::default(), None).await.ok()?;
+            let module = dev.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: None,
+                source: wgpu::ShaderSource::Wgsl(
+                    "@group(0) @binding(0) var t: texture_2d<f32>;
+                     @group(0) @binding(1) var<storage, read_write> o: array<vec4<f32>>;
+                     @compute @workgroup_size(8, 8) fn main(@builtin(global_invocation_id) g: vec3<u32>) {
+                         let d = textureDimensions(t);
+                         if (g.x >= d.x || g.y >= d.y) { return; }
+                         o[g.y * d.x + g.x] = textureLoad(t, vec2<i32>(g.xy), 0);
+                     }"
+                    .into(),
+                ),
+            });
+            let pipe = dev.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: None, layout: None, module: &module, entry_point: Some("main"), compilation_options: Default::default(), cache: None });
+            let read = |tex: &GpuTexture| -> Vec<u32> {
+                let n = (tex.width * tex.height) as u64 * 16;
+                let out = dev.create_buffer(&wgpu::BufferDescriptor { label: None, size: n, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
+                let back = dev.create_buffer(&wgpu::BufferDescriptor { label: None, size: n, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+                let bg = dev.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: None,
+                    layout: &pipe.get_bind_group_layout(0),
+                    entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&tex.view) }, wgpu::BindGroupEntry { binding: 1, resource: out.as_entire_binding() }],
+                });
+                let mut enc = dev.create_command_encoder(&Default::default());
+                {
+                    let mut p = enc.begin_compute_pass(&Default::default());
+                    p.set_pipeline(&pipe);
+                    p.set_bind_group(0, &bg, &[]);
+                    p.dispatch_workgroups(tex.width.div_ceil(8), tex.height.div_ceil(8), 1);
+                }
+                enc.copy_buffer_to_buffer(&out, 0, &back, 0, n);
+                q.submit([enc.finish()]);
+                back.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+                dev.poll(wgpu::Maintain::Wait);
+                let v = bytemuck::cast_slice::<u8, u32>(&back.slice(..).get_mapped_range()).to_vec();
+                v
+            };
+            let mut cases = 0;
+            for (w, h) in [(512u32, 256u32), (37, 19), (64, 32)] {
+                for gamma in [true, false] {
+                    let mut px = |_: ()| (0..w * h * 4).map(|_| (next() % 256) as u8).collect::<Vec<u8>>();
+                    let first = px(());
+                    let tex = crate::render::create_rgba_as(&dev, &q, w, h, &first, "plate", gamma);
+                    for _ in 0..3 {
+                        let new = px(());
+                        crate::render::rewrite_rgba(&q, &tex, &new);
+                        let fresh = crate::render::create_rgba_as(&dev, &q, w, h, &new, "plate", gamma);
+                        let (a, b) = (read(&tex), read(&fresh));
+                        assert!(a == b, "{w}x{h} gamma {gamma}: the rewritten plate differs");
+                        assert!(a != read(&crate::render::create_rgba_as(&dev, &q, w, h, &first, "plate", gamma)));
+                        cases += 1;
+                    }
+                }
+            }
+            Some(cases)
+        });
+        eprintln!("rewritten plates checked: {got:?}");
+    }
+
     /// Time of one plate on the disc's own art (plate_ca_00, fnt_license_plate); `MCLA_DATA_DIR` or extracted/cache.
     #[test]
     #[ignore = "timing; needs the extracted disc"]
@@ -8755,6 +8916,12 @@ mod plate_tests {
             sum += compose_plate(&b, &f, &format!("{}ABC{:03}", k % 8 + 1, k))[0] as u64;
         }
         eprintln!("compose_plate alone: {:.3} ms a plate ({sum})", t.elapsed().as_secs_f64() * 1e3 / 50.0);
+        // (the least of 400 plates: the machine's other work left out)
+        let fa = plate_font_alpha(&f);
+        let least = |g: &dyn Fn(usize) -> Vec<u8>| (0..400).map(|k| { let t = std::time::Instant::now(); let px = g(k); std::hint::black_box(px); t.elapsed().as_secs_f64() * 1e3 }).fold(f64::MAX, f64::min);
+        let a = least(&|k| compose_plate_a(&b, &fa, &format!("{}ABC{:03}", k % 8 + 1, k % 1000)));
+        let w = least(&|k| compose_plate(&b, &f, &format!("{}ABC{:03}", k % 8 + 1, k % 1000)));
+        eprintln!("least: compose_plate_a (the game's, the font's table kept) {a:.3} ms, compose_plate {w:.3} ms ({sum})");
     }
 
     /// The loop over the letters' box only gives the same pixels as the loop over the whole plate.
