@@ -173,6 +173,63 @@ pub fn init_cloud_speed(data_dir: &str) {
     let _ = CLOUD_SPEED.set(c.unwrap_or(CloudSpeed::SHIPPED));
 }
 
+/// The light manager's day clock F-64257 with its auto flag on and no warp: the hour every light reads (the hour getter
+/// F-22302 takes its slots) moves by an hour band's rate x the frame's step, fused, and wraps once at 24. The bands
+/// (image words): over 4.5 and under 19, 1/360 an hour per second below 7 and from 16, 1/120 from 7 to 16; else (the
+/// night) 1/180 - a day of 79.5 minutes. The sky's own hour (sky +828, `CloudSpeed::hour_rate`, 1/60) is another clock:
+/// read live in free roam (2026-11-13) it stood at 11.1 h while the lights' hour was 0.62 h, night on screen.
+pub fn day_clock_step(hour: f32, step: f32) -> f32 {
+    let rate = if hour > 4.5 && hour < 19.0 {
+        if hour < 7.0 || !(hour < 16.0) { f32::from_bits(0x3B36_0B61) } else { f32::from_bits(0x3C08_8889) }
+    } else {
+        f32::from_bits(0x3BB6_0B61)
+    };
+    let h = (rate as f64).mul_add(step as f64, hour as f64) as f32;
+    if h < 24.0 { h } else { h - 24.0 }
+}
+
+/// The same clock's warp (Graphics_WarpToTimeOfDay: the warp byte +14552, target +14556, rate +14548): the hour moves toward
+/// the target the short way round by the rate x the frame's unscaled step, fused; passing the target sets it and ends the warp;
+/// then the hour is wrapped into 0 .. 24 (F-43389, `hudmap::wrap`). Returns the hour and whether the warp is still on.
+pub fn day_clock_warp(hour: f32, target: f32, rate: f32, step: f32) -> (f32, bool) {
+    let below = hour < target;
+    let up = if below { target } else { target + 24.0 };
+    let down = if below { target - 24.0 } else { target };
+    let (h, on) = if up - hour < hour - down {
+        let h = (rate as f64).mul_add(step as f64, hour as f64) as f32;
+        if h < up { (h, true) } else { (up, false) }
+    } else {
+        let h = -((rate as f64).mul_add(step as f64, -(hour as f64)) as f32);
+        if h > down { (h, true) } else { (down, false) }
+    };
+    (crate::hudmap::wrap(h, 0.0, 24.0), on)
+}
+
+#[cfg(test)]
+mod day_clock_tests {
+    /// F-64257 run offline (tools/day_clock_reference.py): 2,000 hours and steps (the band edges and their neighbours, hours
+    /// from -1 to 25, steps 0 .. 30 s) through the auto clock and 2,000 warps (hour, target, rate, step): `day_clock_step` and
+    /// `day_clock_warp` equal it on all of them.
+    #[test]
+    fn the_day_clock_matches_the_original() {
+        let mut n = 0;
+        let mut warps = 0;
+        for line in include_str!("testdata/day_clock_ref.txt").lines() {
+            let w: Vec<u32> = line[2..].split_whitespace().filter(|x| *x != "->").map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let f = |i: usize| f32::from_bits(w[i]);
+            if line.starts_with('a') {
+                assert_eq!(super::day_clock_step(f(0), f(1)).to_bits(), w[2], "{line}");
+                n += 1;
+            } else {
+                let (h, on) = super::day_clock_warp(f(0), f(1), f(2), f(3));
+                assert_eq!((h.to_bits(), on as u32), (w[4], w[5]), "{line}");
+                warps += 1;
+            }
+        }
+        assert_eq!((n, warps), (2000, 2000));
+    }
+}
+
 pub fn cloud_speed() -> CloudSpeed {
     CLOUD_SPEED.get().copied().unwrap_or(CloudSpeed::SHIPPED)
 }

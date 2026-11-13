@@ -3212,8 +3212,8 @@ impl App {
         if self.input.down(KeyCode::BracketLeft) {
             self.time_of_day = (self.time_of_day - dt * 2.0 + 24.0) % 24.0;
         }
-        // the clock runs while driving: cloudspeed.xml's hours per second (1/60: one game hour per minute, a day in 24
-        // minutes; F-74970 at sky +828), unless a time was fixed on the command line
+        // the clock runs while driving: the light manager's day clock F-64257 (hour bands, a day in 79.5 minutes; the
+        // sky's own 1/60 clock at sky +828 is not the lights' hour), unless a time was fixed on the command line
         // (CarSelection holds the clock - Graphics_GetAndSetAutoUpdateTimeOfDay(0) at its start, (1) once ACCEPT's
         // black is up - and the parked cars, AmbientMgr_SetParkedCarsEnable 0 / 1)
         let car_selection = (1..=3).contains(&self.intro_stage) || self.game.starter_pick.is_some();
@@ -3223,8 +3223,7 @@ impl App {
         }
         self.vehicles.parked_held = car_selection;
         if self.opt.time.is_none() && matches!(self.game.mode, Mode::FreeRoam | Mode::Race) && !car_selection {
-            let dh = dt * sky::cloud_speed().hour_rate;
-            self.time_of_day = (self.time_of_day + dh) % 24.0;
+            self.time_of_day = sky::day_clock_step(self.time_of_day, dt);
         }
         self.weather_tick(dt);
         if std::mem::take(&mut self.cycle_weather) && self.sky_next.is_none() {
@@ -15236,12 +15235,10 @@ impl App {
         // (the warp, F-64257 with +14552 set: the hour moves the short way round at the rate (+14548, 100 h a
         // second) x the frame's unscaled seconds (G+88), stops on the target and the warp is over; then mod 24)
         if let Some(to) = self.intro_tod.filter(|_| self.game.movie.is_none() && self.cuts.idle()) {
-            let h = self.time_of_day;
-            let (up, down) = if h < to { (to, to - 24.0) } else { (to + 24.0, to) };
-            let step = 100.0 * dt;
-            let (next, done) = if up - h < h - down { ((h + step).min(up), h + step >= up) } else { ((h - step).max(down), h - step <= down) };
-            self.time_of_day = next.rem_euclid(24.0);
-            if done {
+            // (the day clock's warp, F-64257: rate 100 x the frame's unscaled step)
+            let (next, on) = sky::day_clock_warp(self.time_of_day, to, 100.0, dt);
+            self.time_of_day = next;
+            if !on {
                 log::info!("opening: the clock at {:.2} h", self.time_of_day);
                 self.intro_tod = None;
             }
