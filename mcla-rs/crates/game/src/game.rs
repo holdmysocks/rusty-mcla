@@ -2718,7 +2718,24 @@ impl Game {
             .filter(|n| self.career.ostats.contains_key(&format!("vkDT/{n}")) || self.career.ostats.contains_key(&format!("vWIN/{n}")))
             .filter_map(|n| (0..self.car_dirs.len()).find(|i| self.dir_name(*i).eq_ignore_ascii_case(n)))
             .collect();
-        if v.is_empty() { (0..self.car_dirs.len()).filter(|i| self.is_owned(*i)).collect() } else { v }
+        // (F-53171: only the cars with a `v` statistic; none - no rows)
+        v
+    }
+
+    /// The statistics id of race definition `i` - its place in the game's race table (the port's key of the `r` stats;
+    /// the original's is the race's +16, whether the two agree is open: docs/reference/ui/stats_rows.md 3.2).
+    fn race_stat_sub(&self, i: usize) -> String {
+        self.race_table.iter().position(|id| id.eq_ignore_ascii_case(&self.race_defs[i].id)).map(|k| k.to_string()).unwrap_or_default()
+    }
+
+    /// The races of kind `kind` the RACE STATS list shows (F-81001's RaceSubTypeStat): the arcade list's races that have any
+    /// `r` statistic.
+    fn stat_races(&self, kind: usize) -> Vec<(usize, String)> {
+        let codes = ["r:TI", "rBTT", "rCGL", "rMDG", "rWIN"];
+        self.arcade_races(kind).into_iter().filter(|(i, _)| {
+            let sub = self.race_stat_sub(*i);
+            codes.iter().any(|c| self.career.stat(c, &sub).is_some())
+        }).collect()
     }
 
     /// The wheel figures of car `i` (see `dims`): the player's, else the car's own.
@@ -6139,7 +6156,8 @@ impl Game {
                                 b'$' if lang != 0 => crate::career::money_text_in(v, lang),
                                 b'$' => money(v),
                                 b'%' => format!("{}%", v),
-                                b':' => stat_time(v),
+                                // (clamped to 0 or more, then F-26034's text: 00:00.00, the hours from one hour on)
+                                b':' => crate::flash_ui::race_time(v.max(0) as i32),
                                 b'h' => {
                                     let m = (f * 60.0) as i32;
                                     format!("{}:{:02}", m / 60, m % 60)
@@ -6165,18 +6183,28 @@ impl Game {
                     61 => {
                         title = s("Pause_Car_Stats", "VEHICLE STATS");
                         let owned: Vec<usize> = self.stat_vehicles();
+                        // (mcCarSpecificStatForm, F-35472: LT / RT - left / right here - to the next / previous vehicle,
+                        // wrapping, with UI_MENU_SELECT; with no vehicle UI_MENU_ERROR)
                         if !owned.is_empty() {
-                            // (LT / RT - left / right here - to the next vehicle)
                             let at = if left || right { (self.stat_idx[0] + if right { 1 } else { owned.len() - 1 }) % owned.len() } else { self.stat_idx[0].min(owned.len() - 1) };
                             sub_title = long_name(owned[at]);
                             self.stat_idx[0] = at;
                         }
+                        if left || right {
+                            self.opt_x.s23b.ui_obj = Some(if owned.is_empty() { "UI_MENU_ERROR" } else { "UI_MENU_SELECT" });
+                        }
                         // (the port keeps no figures by vehicle: those of an imported original save)
                         let car = owned.get(self.stat_idx[0]).map(|i| self.dir_name(*i).to_ascii_lowercase()).unwrap_or_default();
-                        let wins = self.career.stat("vWIN", &car).unwrap_or(0.0);
-                        let dist = self.career.stat("vkDT", &car).unwrap_or(0.0);
-                        items.push((s("stat_kWIN_0", "NUMBER OF WINS"), format!("{}", wins as i64), Go::Off));
-                        items.push((s("Stat_Distance_Travled", "DISTANCE TRAVELED"), format!("{:.1}MLS", dist), Go::Off));
+                        // (F-12132: a row for each `v` statistic the car has, in the set's order - vWIN before vkDT -, the
+                        // value F-25428's: %d of the wins, the distance in miles in English, else km x 1.609344)
+                        let lang = self.career.strings.lang;
+                        if let Some(w) = self.career.stat("vWIN", &car) {
+                            items.push((s("Stat_Num_Wins", "NUMBER OF WINS"), stat_int(w), Go::Off));
+                        }
+                        if let Some(d) = self.career.stat("vkDT", &car) {
+                            let f = (d as f32).max(0.0);
+                            items.push((s("Stat_Distance_Travled", "DISTANCE TRAVELED"), if lang != 0 { format!("{:.1}KM", f * f32::from_bits(0x3FCDFEFC)) } else { format!("{:.1}MLS", f) }, Go::Off));
+                        }
                     }
                     62 => {
                         title = s("Pause_Race_Stats", "RACE STATS");
@@ -6186,13 +6214,13 @@ impl Game {
                     }
                     63 => {
                         title = s("Pause_Race_Stats", "RACE STATS");
-                        for (k, (_, name)) in self.arcade_races(self.stat_idx[0]).iter().enumerate() {
+                        for (k, (_, name)) in self.stat_races(self.stat_idx[0]).iter().enumerate() {
                             items.push((name.clone(), String::new(), Go::Sub(64, 1, k)));
                         }
                     }
                     64 => {
                         title = s("Pause_Race_Stats", "RACE STATS");
-                        let list = self.arcade_races(self.stat_idx[0]);
+                        let list = self.stat_races(self.stat_idx[0]);
                         if !list.is_empty() {
                             // (mcRaceSpecificStatForm, F-75783: LT / RT step and stop at the ends -
                             // UI_MENU_SELECT on a step, UI_MENU_ERROR at an end; the car page wraps)
@@ -6208,11 +6236,15 @@ impl Game {
                         // place in the game's race table. (The port keeps no board of its own: the
                         // figures are an imported original save's.)
                         let sub = list.get(self.stat_idx[1].min(list.len().saturating_sub(1))).and_then(|(i, _)| self.race_table.iter().position(|id| id.eq_ignore_ascii_case(&self.race_defs[*i].id))).map(|k| k.to_string()).unwrap_or_else(|| "-".into());
-                        let ms = self.career.stat("r:TI", &sub).unwrap_or(0.0);
-                        items.push((s("stat_Race_Times", "RACE TIME"), stat_time(ms as i64), Go::Off));
-                        for (key, fb, code) in [("stat_Beat_TargetTime", "BEAT TARGET TIME", "rBTT"), ("stat_Complete_All", "COMPLETE ALL GOALS", "rCGL"), ("stat_Min_Damage", "MIN DAMAGE", "rMDG"), ("stat_Won_Race", "WON RACE", "rWIN")] {
-                            let done = self.career.stat(code, &sub).unwrap_or(0.0) != 0.0;
-                            items.push((s(key, fb), if done { s("stat_Complete", "COMPLETED") } else { s("Stat_Incomplete", "INCOMPLETE") }, Go::Off));
+                        // (F-83333: a row for each `r` statistic the race has, in the set's order r:TI, rBTT, rCGL, rMDG,
+                        // rWIN; the time F-26034's text, the others COMPLETE when their text is exactly "1")
+                        if let Some(ms) = self.career.stat("r:TI", &sub) {
+                            items.push((s("Stat_Race_Times", "RACE TIME"), crate::flash_ui::race_time((ms.max(0.0)) as i32), Go::Off));
+                        }
+                        for (key, fb, code) in [("Stat_Beat_TargetTime", "BEAT TARGET TIME", "rBTT"), ("Stat_Complete_All", "COMPLETE ALL GOALS", "rCGL"), ("Stat_Min_Damage", "MIN DAMAGE", "rMDG"), ("Stat_Won_Race", "WON RACE", "rWIN")] {
+                            if let Some(v) = self.career.stat(code, &sub) {
+                                items.push((s(key, fb), if stat_int(v) == "1" { s("Stat_Complete", "COMPLETED") } else { s("Stat_Incomplete", "INCOMPLETE") }, Go::Off));
+                            }
                         }
                     }
                     66 => {
@@ -12505,6 +12537,11 @@ pub struct HudInfo {
 
 /// A time of the statistics pages from its milliseconds: MM:SS.cc, cut not rounded
 /// (references `x05` 01:58.13 from 118131, `x08` 02:10.28 from 130287).
+/// F-25428's text of an integer statistic: `%d`, the invalid text for a negative.
+pub fn stat_int(v: f64) -> String {
+    if v < 0.0 { "+++++invalid+++++".to_string() } else { format!("{}", v as i64) }
+}
+
 pub fn stat_time(ms: i64) -> String {
     if ms <= 0 {
         return "--:--.--".to_string();
@@ -16777,6 +16814,13 @@ mod tests {
     /// when more than one is marked and the cursor's layer is one of them.
     /// Graphics_GetCopTimeString (F-95858): the light manager's hour as hour and minute (not 12-hour), AM below 12, then
     /// month, the day of the week and the year.
+    /// The statistics pages' value forms (F-25428): %d or the invalid text, the race time through F-26034 from 0.
+    #[test]
+    fn stat_values_as_the_original() {
+        assert_eq!([crate::game::stat_int(3.0), crate::game::stat_int(0.0), crate::game::stat_int(-1.0)], ["3", "0", "+++++invalid+++++"]);
+        assert_eq!([crate::flash_ui::race_time(0), crate::flash_ui::race_time(118_130), crate::flash_ui::race_time(3_723_450)], ["00:00.00", "01:58.13", "1:02:03.45"]);
+    }
+
     #[test]
     fn cop_time_string_as_the_original() {
         assert_eq!(crate::game::cop_time_string(18.09, 11, 4, 2026), "18:05PM   11-04-2026");
