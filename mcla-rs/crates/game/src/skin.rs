@@ -43,6 +43,8 @@ pub struct Part {
     pub alpha: bool,
     /// its shader's character material
     pub mat: CharMat,
+    /// its id: the GPU skinning keeps its vertices in its source arena under it (`SkinCs::src_of`)
+    pub uid: u64,
 }
 
 /// The character programs (characters/*.fxc, work/lighting-chars/dis/CHAR_RULE.md) as their pixel
@@ -462,7 +464,7 @@ impl SkinModel {
                     }
                     let alpha = c.shader_names.get(*si as usize).map_or(false, |n| n.to_ascii_lowercase().contains("alpha"));
                     let mat = mats.get(*si as usize).copied().unwrap_or_default();
-                    lods[l].push(Part { verts, indices: mesh.indices.clone(), tex: (*si as usize).min(binds.len() - 1), alpha, mat });
+                    lods[l].push(Part { verts, indices: mesh.indices.clone(), tex: (*si as usize).min(binds.len() - 1), alpha, mat, uid: next_part_uid() });
                 }
             }
         }
@@ -975,8 +977,25 @@ pub const COCKPIT_DEPTH_OFFSET: f32 = 0.275;
 /// This frame's skinned geometry of one kind of character.
 #[derive(Default)]
 pub struct SkinBuffer {
+    /// the vertices skinned on the CPU, in runs (`cpu_runs`: where each run sits in the vertex buffer)
     verts: Vec<Vertex>,
     indices: Vec<u32>,
+    /// D59: this buffer's parts are skinned on the GPU (`skin_cs.wgsl`, bit for bit the CPU's `skin_vertex` - test
+    /// `gpu_skin_matches_the_cpu`), recorded into the frame's command encoder by `encode` (the owner sets it: the
+    /// drivers, whose buffer no shadow pass reads before it is skinned). A part with face shapes or wind stays on the
+    /// CPU. MCLA_SKIN_CPU=1: all on the CPU, as before.
+    pub gpu_skin: bool,
+    /// this frame's vertex count (CPU runs and GPU jobs)
+    nverts: u32,
+    cpu_runs: Vec<(u32, u32, u32)>,
+    /// this frame's skinning matrices of the figures skinned on the GPU, and their jobs
+    gpu_mats: Vec<Mat4>,
+    gpu_jobs: Vec<GpuSkinJob>,
+    cs: Option<SkinCs>,
+    /// the device, for the GPU skinning's pipeline (known from the first upload)
+    device: Option<wgpu::Device>,
+    /// bumped whenever the vertex buffer is made again (the GPU skinning's bind group names it)
+    vb_gen: u64,
     draws: Vec<(Arc<wgpu::BindGroup>, u32, u32)>,
     vb: Option<wgpu::Buffer>,
     ib: Option<wgpu::Buffer>,
@@ -1048,6 +1067,10 @@ impl SkinBuffer {
     pub fn clear(&mut self) {
         self.verts.clear();
         self.indices.clear();
+        self.nverts = 0;
+        self.cpu_runs.clear();
+        self.gpu_mats.clear();
+        self.gpu_jobs.clear();
         self.draws.clear();
         self.lanes.clear();
         self.draw_fig.clear();
@@ -1128,46 +1151,42 @@ impl SkinBuffer {
             Some(a) => [a[0], a[1], a[2], 0],
             None => crate::fillmap::figure_now(root.w_axis.x, root.w_axis.z),
         };
+        let gpu_ok = self.gpu_skin && self.device.is_some() && !skin_on_cpu();
+        let mut mat_off = None;
         for (pi, part) in parts.iter().enumerate() {
-            let base = self.verts.len() as u32;
+            let base = self.nverts;
+            let n = part.verts.len() as u32;
             let shape = match (face, model.morph.as_ref()) {
                 (Some(f), Some(m)) if first == 0 => f.part(m, pi),
                 _ => None,
             };
-            for (vi, v) in part.verts.iter().enumerate() {
-                let bind = match shape {
-                    Some(d) => v.pos + Vec3::new(d[vi][0], d[vi][1], d[vi][2]),
-                    None => v.pos,
-                };
-                let mut pos = Vec3::ZERO;
-                let mut nrm = Vec3::ZERO;
-                let mut tan = Vec3::ZERO;
-                let t = Vec3::new(v.tan[0], v.tan[1], v.tan[2]);
-                for k in 0..4 {
-                    if v.w[k] > 0.0 {
-                        let m = &self.skin[v.b[k] as usize];
-                        pos += m.transform_point3(bind) * v.w[k];
-                        nrm += m.transform_vector3(v.nrm) * v.w[k];
-                        tan += m.transform_vector3(t) * v.w[k];
-                    }
+            let wind_here = if chars && part.mat.wind { wind } else { None };
+            let src_off = if gpu_ok && shape.is_none() && wind_here.is_none() && n > 0 {
+                let dev = self.device.as_ref().unwrap();
+                self.cs.get_or_insert_with(|| SkinCs::new(dev)).src_of(part)
+            } else {
+                None
+            };
+            if let Some(src_off) = src_off {
+                let mo = *mat_off.get_or_insert_with(|| {
+                    let at = self.gpu_mats.len() as u32;
+                    self.gpu_mats.extend_from_slice(&self.skin);
+                    at
+                });
+                let flags = chars as u32 | (part.alpha as u32) << 1;
+                self.gpu_jobs.push(GpuSkinJob { count: n, src_off, dst: base, mat_off: mo, flags, fill: u32::from_le_bytes(fill) });
+            } else {
+                let start = self.verts.len() as u32;
+                for (vi, v) in part.verts.iter().enumerate() {
+                    let bind = match shape {
+                        Some(d) => v.pos + Vec3::new(d[vi][0], d[vi][1], d[vi][2]),
+                        None => v.pos,
+                    };
+                    self.verts.push(skin_vertex(&self.skin, v, bind, chars, part.alpha, fill, wind_here));
                 }
-                if let (true, Some((eq, wp, at))) = (chars && part.mat.wind, wind) {
-                    let (p2, n2) = wind_bend(pos, nrm, v.col[0], eq, wp, at);
-                    pos = p2;
-                    nrm = n2;
-                }
-                if chars {
-                    // (the character programs: the skinned tangent - normalised after the world
-                    // matrix as VSSkinned does - octahedral in uv1.x / uv2.y, its sign as + 4 on
-                    // uv1.x (no sign: + 8), unpacked by city.wgsl `vs_body` into `fill`; the vertex
-                    // colour as stored)
-                    let o = oct(tan.normalize_or(Vec3::X));
-                    let sgn = if v.tan[3] < -0.5 { 4.0 } else if v.tan[3] < 0.5 { 8.0 } else { 0.0 };
-                    self.verts.push(Vertex { pos: pos.to_array(), normal: nrm.normalize_or(Vec3::Y).to_array(), uv0: v.uv, uv1: [o[0] + sgn, 77.0], color: v.col, color1: fill, uv2: [if part.alpha { 1.0 } else { 0.0 }, o[1]] });
-                    continue;
-                }
-                self.verts.push(Vertex { pos: pos.to_array(), normal: nrm.normalize_or(Vec3::Y).to_array(), uv0: v.uv, uv1: [0.0, 77.0], color: [255; 4], color1: fill, uv2: [if part.alpha { 1.0 } else { 0.0 }, 0.0] });
+                self.cpu_runs.push((base, start, n));
             }
+            self.nverts += n;
             let first = self.indices.len() as u32;
             self.indices.extend(part.indices.iter().map(|i| i + base));
             if chars && part.mat.fx != 0 {
@@ -1190,19 +1209,40 @@ impl SkinBuffer {
         self.world.get(bone).map(|m| m.w_axis.truncate())
     }
 
-    pub fn upload(&mut self, gpu: &Gpu) {
-        if self.verts.is_empty() {
+    /// Records this frame's GPU skinning (after `upload`) into the frame's encoder, ahead of the passes that draw it.
+    pub fn encode(&mut self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder) {
+        let (Some(cs), Some(vb)) = (self.cs.as_mut(), self.vb.as_ref()) else { return };
+        if self.gpu_jobs.is_empty() {
             return;
         }
-        if self.vb.is_none() || self.vb_cap < self.verts.len() {
-            self.vb_cap = (self.verts.len() * 3 / 2).max(16384);
-            self.vb = Some(gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("skin vb"), size: (self.vb_cap * std::mem::size_of::<Vertex>()) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }));
+        cs.encode(&gpu.device, enc, vb, self.vb_gen);
+    }
+
+    pub fn upload(&mut self, gpu: &Gpu) {
+        if self.device.is_none() {
+            self.device = Some(gpu.device.clone());
+        }
+        if self.nverts == 0 {
+            return;
+        }
+        let nv = self.nverts as usize;
+        if self.vb.is_none() || self.vb_cap < nv {
+            self.vb_cap = (nv * 3 / 2).max(16384);
+            self.vb_gen += 1;
+            // (STORAGE: the GPU jobs write it - skin_cs.wgsl)
+            self.vb = Some(gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("skin vb"), size: (self.vb_cap * std::mem::size_of::<Vertex>()) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE, mapped_at_creation: false }));
         }
         if self.ib.is_none() || self.ib_cap < self.indices.len() {
             self.ib_cap = (self.indices.len() * 3 / 2).max(65536);
             self.ib = Some(gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("skin ib"), size: (self.ib_cap * 4) as u64, usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }));
         }
-        gpu.queue.write_buffer(self.vb.as_ref().unwrap(), 0, bytemuck::cast_slice(&self.verts));
+        let vsz = std::mem::size_of::<Vertex>() as u64;
+        for &(dst, start, n) in &self.cpu_runs {
+            gpu.queue.write_buffer(self.vb.as_ref().unwrap(), dst as u64 * vsz, bytemuck::cast_slice(&self.verts[start as usize..(start + n) as usize]));
+        }
+        if !self.gpu_jobs.is_empty() {
+            self.cs.get_or_insert_with(|| SkinCs::new(&gpu.device)).write(gpu, &self.gpu_mats, &self.gpu_jobs);
+        }
         gpu.queue.write_buffer(self.ib.as_ref().unwrap(), 0, bytemuck::cast_slice(&self.indices));
         // (the lit figures' lanes: rows 0..11 of the object's first lamp table, the mark 2 in row 0
         // of the second - city.wgsl, the walkers at night; a traffic car's row 0 there is <= 1)
@@ -1378,6 +1418,216 @@ impl ShadowSkin {
 }
 
 /// Octahedral encoding of a unit vector (city.wgsl `oct_dec`).
+/// One skinned vertex as the figures' buffer holds it (the CPU path; `skin_cs.wgsl` does the same on the GPU).
+fn skin_vertex(skin: &[Mat4], v: &SkinVert, bind: Vec3, chars: bool, alpha: bool, fill: [u8; 4], wind: Option<([f32; 4], [f32; 2], Vec3)>) -> Vertex {
+    let mut pos = Vec3::ZERO;
+    let mut nrm = Vec3::ZERO;
+    let mut tan = Vec3::ZERO;
+    let t = Vec3::new(v.tan[0], v.tan[1], v.tan[2]);
+    for k in 0..4 {
+        if v.w[k] > 0.0 {
+            let m = &skin[v.b[k] as usize];
+            pos += m.transform_point3(bind) * v.w[k];
+            nrm += m.transform_vector3(v.nrm) * v.w[k];
+            tan += m.transform_vector3(t) * v.w[k];
+        }
+    }
+    if let Some((eq, wp, at)) = wind {
+        let (p2, n2) = wind_bend(pos, nrm, v.col[0], eq, wp, at);
+        pos = p2;
+        nrm = n2;
+    }
+    let a = if alpha { 1.0 } else { 0.0 };
+    if chars {
+        // (the character programs: the skinned tangent - normalised after the world
+        // matrix as VSSkinned does - octahedral in uv1.x / uv2.y, its sign as + 4 on
+        // uv1.x (no sign: + 8), unpacked by city.wgsl `vs_body` into `fill`; the vertex
+        // colour as stored)
+        let o = oct(tan.normalize_or(Vec3::X));
+        let sgn = if v.tan[3] < -0.5 { 4.0 } else if v.tan[3] < 0.5 { 8.0 } else { 0.0 };
+        return Vertex { pos: pos.to_array(), normal: nrm.normalize_or(Vec3::Y).to_array(), uv0: v.uv, uv1: [o[0] + sgn, 77.0], color: v.col, color1: fill, uv2: [a, o[1]] };
+    }
+    Vertex { pos: pos.to_array(), normal: nrm.normalize_or(Vec3::Y).to_array(), uv0: v.uv, uv1: [0.0, 77.0], color: [255; 4], color1: fill, uv2: [a, 0.0] }
+}
+
+
+/// MCLA_SKIN_CPU=1: every figure skinned on the CPU (D59's GPU skinning off)
+fn skin_on_cpu() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var_os("MCLA_SKIN_CPU").is_some())
+}
+
+/// A new part's id (the GPU skinning's source arena keeps each part's vertices under it).
+fn next_part_uid() -> u64 {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// One part skinned on the GPU: where its source sits in the arena, where its vertices go and its figure's matrices.
+struct GpuSkinJob {
+    count: u32,
+    src_off: u32,
+    dst: u32,
+    mat_off: u32,
+    flags: u32,
+    fill: u32,
+}
+
+/// `skin_cs.wgsl`'s pipeline and buffers: the parts' source vertices (an arena: each part written once, the first frame
+/// it is skinned), this frame's matrices, the job table and the dispatch's parameters. One dispatch a frame for all the
+/// parts, one bind group kept until a buffer is made again.
+struct SkinCs {
+    pipe: wgpu::ComputePipeline,
+    layout: wgpu::BindGroupLayout,
+    arena: Option<wgpu::Buffer>,
+    /// in vertices: the arena's room, what is handed out, what is already in the buffer
+    arena_cap: u64,
+    arena_len: u64,
+    committed: u64,
+    /// an arena made larger this frame: the old one and how many of its bytes `encode` copies over
+    grown_from: Option<(wgpu::Buffer, u64)>,
+    slots: std::collections::HashMap<u64, u32>,
+    pending: Vec<(u32, Vec<u32>)>,
+    mats: Option<wgpu::Buffer>,
+    jobs: Option<wgpu::Buffer>,
+    params: wgpu::Buffer,
+    total: u32,
+    /// bumped whenever the arena, the matrices' or the jobs' buffer is made again
+    gen: u64,
+    bg: Option<((u64, u64), wgpu::BindGroup)>,
+}
+
+/// a source vertex: 20 words
+const SRC_BYTES: u64 = 80;
+/// the arena's limit (80 MB); a part beyond it is skinned on the CPU
+const ARENA_MAX_VERTS: u64 = 1 << 20;
+
+impl SkinCs {
+    fn new(dev: &wgpu::Device) -> SkinCs {
+        let st = |b: u32, ro: bool| wgpu::BindGroupLayoutEntry {
+            binding: b,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: ro }, has_dynamic_offset: false, min_binding_size: None },
+            count: None,
+        };
+        let layout = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("skin cs"),
+            entries: &[
+                st(0, true),
+                st(1, true),
+                st(2, false),
+                st(3, true),
+                wgpu::BindGroupLayoutEntry { binding: 4, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: wgpu::BufferSize::new(16) }, count: None },
+            ],
+        });
+        let pl = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("skin cs"), bind_group_layouts: &[&layout], push_constant_ranges: &[] });
+        let module = dev.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("skin cs"), source: wgpu::ShaderSource::Wgsl(include_str!("render/skin_cs.wgsl").into()) });
+        let pipe = dev.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("skin cs"), layout: Some(&pl), module: &module, entry_point: Some("main"), compilation_options: Default::default(), cache: crate::render::pcache::get() });
+        let params = dev.create_buffer(&wgpu::BufferDescriptor { label: Some("skin params"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        SkinCs { pipe, layout, arena: None, arena_cap: 0, arena_len: 0, committed: 0, grown_from: None, slots: Default::default(), pending: Vec::new(), mats: None, jobs: None, params, total: 0, gen: 0, bg: None }
+    }
+
+    /// Where the part's source vertices sit in the arena (handed out and queued for writing the first time); None when the
+    /// arena is full.
+    fn src_of(&mut self, part: &Part) -> Option<u32> {
+        if let Some(o) = self.slots.get(&part.uid) {
+            return Some(*o);
+        }
+        let n = part.verts.len() as u64;
+        if self.arena_len + n > ARENA_MAX_VERTS {
+            return None;
+        }
+        let o = self.arena_len as u32;
+        self.arena_len += n;
+        let mut w = Vec::with_capacity(part.verts.len() * 20);
+        for v in &part.verts {
+            gpu_src_words(v, &mut w);
+        }
+        self.pending.push((o, w));
+        self.slots.insert(part.uid, o);
+        Some(o)
+    }
+
+    fn write(&mut self, gpu: &Gpu, mats: &[Mat4], jobs: &[GpuSkinJob]) {
+        let dev = &gpu.device;
+        if self.arena_cap < self.arena_len {
+            let cap = (self.arena_len * 2).max(1 << 16).min(ARENA_MAX_VERTS);
+            let new = dev.create_buffer(&wgpu::BufferDescriptor { label: Some("skin sources"), size: cap * SRC_BYTES, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
+            // (what earlier frames wrote is copied over in `encode`; this frame's new parts lie past it)
+            if let Some(old) = self.arena.replace(new) {
+                if self.committed > 0 {
+                    self.grown_from = Some((old, self.committed * SRC_BYTES));
+                }
+            }
+            self.arena_cap = cap;
+            self.gen += 1;
+        }
+        let arena = self.arena.as_ref().unwrap();
+        for (o, w) in self.pending.drain(..) {
+            gpu.queue.write_buffer(arena, o as u64 * SRC_BYTES, bytemuck::cast_slice(&w));
+        }
+        self.committed = self.arena_len;
+        let msize = (mats.len() * 64) as u64;
+        if self.mats.as_ref().map_or(true, |b| b.size() < msize) {
+            self.mats = Some(dev.create_buffer(&wgpu::BufferDescriptor { label: Some("skin matrices"), size: (msize * 2).max(64 * 1024), usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }));
+            self.gen += 1;
+        }
+        let jsize = jobs.len() as u64 * 32;
+        if self.jobs.as_ref().map_or(true, |b| b.size() < jsize) {
+            self.jobs = Some(dev.create_buffer(&wgpu::BufferDescriptor { label: Some("skin jobs"), size: (jsize * 2).max(4096), usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }));
+            self.gen += 1;
+        }
+        gpu.queue.write_buffer(self.mats.as_ref().unwrap(), 0, bytemuck::cast_slice(mats));
+        let mut rec = Vec::with_capacity(jobs.len() * 8);
+        let mut vstart = 0u32;
+        for j in jobs {
+            rec.extend_from_slice(&[vstart, j.count, j.src_off, j.dst, j.mat_off, j.flags, j.fill, 0]);
+            vstart += j.count;
+        }
+        gpu.queue.write_buffer(self.jobs.as_ref().unwrap(), 0, bytemuck::cast_slice(&rec));
+        self.total = vstart;
+        gpu.queue.write_buffer(&self.params, 0, bytemuck::cast_slice(&[vstart, jobs.len() as u32, 0u32, 0u32]));
+    }
+
+    fn encode(&mut self, dev: &wgpu::Device, enc: &mut wgpu::CommandEncoder, vb: &wgpu::Buffer, vb_gen: u64) {
+        let (Some(arena), Some(mats), Some(jobs)) = (self.arena.as_ref(), self.mats.as_ref(), self.jobs.as_ref()) else { return };
+        if self.total == 0 {
+            return;
+        }
+        if let Some((old, bytes)) = self.grown_from.take() {
+            enc.copy_buffer_to_buffer(&old, 0, arena, 0, bytes);
+        }
+        let key = (self.gen, vb_gen);
+        if self.bg.as_ref().map_or(true, |(k, _)| *k != key) {
+            let bg = dev.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("skin cs"),
+                layout: &self.layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: arena.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: mats.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 2, resource: vb.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 3, resource: jobs.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 4, resource: self.params.as_entire_binding() },
+                ],
+            });
+            self.bg = Some((key, bg));
+        }
+        let mut cp = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("skin cs"), timestamp_writes: None });
+        cp.set_pipeline(&self.pipe);
+        cp.set_bind_group(0, &self.bg.as_ref().unwrap().1, &[]);
+        cp.dispatch_workgroups(self.total.div_ceil(64), 1, 1);
+    }
+}
+
+/// A vertex as `skin_cs.wgsl` reads it: 20 words (pos + colour, nrm + bones 0 / 1, tangent, weights, uv + bones 2 / 3 + 0).
+fn gpu_src_words(v: &SkinVert, out: &mut Vec<u32>) {
+    let f = |x: f32| x.to_bits();
+    out.extend_from_slice(&[f(v.pos.x), f(v.pos.y), f(v.pos.z), u32::from_le_bytes(v.col)]);
+    out.extend_from_slice(&[f(v.nrm.x), f(v.nrm.y), f(v.nrm.z), v.b[0] as u32 | (v.b[1] as u32) << 16]);
+    out.extend_from_slice(&[f(v.tan[0]), f(v.tan[1]), f(v.tan[2]), f(v.tan[3])]);
+    out.extend_from_slice(&[f(v.w[0]), f(v.w[1]), f(v.w[2]), f(v.w[3])]);
+    out.extend_from_slice(&[f(v.uv[0]), f(v.uv[1]), v.b[2] as u32 | (v.b[3] as u32) << 16, 0]);
+}
 fn oct(v: Vec3) -> [f32; 2] {
     let n = v / (v.x.abs() + v.y.abs() + v.z.abs());
     if n.z >= 0.0 {
@@ -1399,6 +1649,107 @@ mod tests {
     /// Then 1,000 each of the DOFs' Blend (F-97455, F-53163, F-50451, the track sample as the case's input), 400 each of
     /// the take-overs (F-45588, F-77946 with the rotation angle F-88592, F-75044) and 200 each of Scale, Mirror, Reset,
     /// Set and Swap. Every flag byte and value word must be equal bit for bit.
+    /// `skin_cs.wgsl` on this machine's GPU against `skin_vertex`, word for word (both layouts; random bones placed up to
+    /// 3 km out, weights, normals and tangents, zero vectors, negative zeros): prints the words that differ per field.
+    #[test]
+    fn gpu_skin_matches_the_cpu() {
+        use wgpu::util::DeviceExt;
+        let mut r = 0x9e37_79b9u32;
+        let mut f = move || {
+            r ^= r << 13;
+            r ^= r >> 17;
+            r ^= r << 5;
+            (r as f32 / u32::MAX as f32) * 2.0 - 1.0
+        };
+        let skin: Vec<Mat4> = (0..92).map(|_| Mat4::from_cols(glam::Vec4::new(f(), f(), f(), 0.0), glam::Vec4::new(f(), f(), f(), 0.0), glam::Vec4::new(f(), f(), f(), 0.0), glam::Vec4::new(f() * 3000.0, f() * 50.0, f() * 3000.0, 1.0))).collect();
+        let n = 200_000usize;
+        let verts: Vec<SkinVert> = (0..n)
+            .map(|i| {
+                let mut w = [f().abs(), f().abs(), f(), f()];
+                if i % 7 == 0 {
+                    w = [1.0, 0.0, 0.0, 0.0];
+                }
+                let tz = if i % 11 == 0 { -0.0 } else { f() };
+                SkinVert { pos: Vec3::new(f(), f() * 2.0, f()), nrm: if i % 13 == 0 { Vec3::ZERO } else { Vec3::new(f(), f(), f()) }, uv: [f(), f()], w, b: std::array::from_fn(|k| ((i * 7 + k * 13) % 92) as u16), tan: [if i % 17 == 0 { 0.0 } else { f() }, f(), tz, [1.0, -1.0, 0.0][i % 3]], col: [i as u8, (i >> 8) as u8, 7, 200] }
+            })
+            .collect();
+        let fill = [10u8, 20, 30, 0];
+        let mut want: Vec<u32> = Vec::new();
+        for (chars, alpha) in [(true, false), (false, true)] {
+            for v in &verts {
+                want.extend_from_slice(bytemuck::cast_slice(&[skin_vertex(&skin, v, v.pos, chars, alpha, fill, None)]));
+            }
+        }
+        let mut words = Vec::new();
+        for v in &verts {
+            gpu_src_words(v, &mut words);
+        }
+        let got = pollster::block_on(async {
+            // (WGPU_BACKEND=dx12 / vulkan picks the backend; DX12 with the game's compiler, DXC)
+            let inst = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+                backends: wgpu::Backends::from_env().unwrap_or(wgpu::Backends::PRIMARY),
+                backend_options: wgpu::BackendOptions { dx12: wgpu::Dx12BackendOptions { shader_compiler: wgpu::Dx12Compiler::StaticDxc }, ..Default::default() },
+                ..Default::default()
+            });
+            let ad = inst.request_adapter(&wgpu::RequestAdapterOptions::default()).await?;
+            eprintln!("adapter: {:?}", ad.get_info());
+            let (dev, q) = ad.request_device(&wgpu::DeviceDescriptor::default(), None).await.ok()?;
+            let module = dev.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(include_str!("render/skin_cs.wgsl").into()) });
+            let pipe = dev.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: None, layout: None, module: &module, entry_point: Some("main"), compilation_options: Default::default(), cache: None });
+            let srcb = dev.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&words), usage: wgpu::BufferUsages::STORAGE });
+            let matb = dev.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&skin), usage: wgpu::BufferUsages::STORAGE });
+            let size = (want.len() * 4) as u64;
+            let dstb = dev.create_buffer(&wgpu::BufferDescriptor { label: None, size, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
+            let rd = dev.create_buffer(&wgpu::BufferDescriptor { label: None, size, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+            let mut enc = dev.create_command_encoder(&Default::default());
+            let fw = u32::from_le_bytes(fill);
+            let jobs: [u32; 16] = [0, n as u32, 0, 0, 0, 1, fw, 0, n as u32, n as u32, 0, n as u32, 0, 2, fw, 0];
+            let jb = dev.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&jobs), usage: wgpu::BufferUsages::STORAGE });
+            let pb = dev.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&[2 * n as u32, 2, 0, 0]), usage: wgpu::BufferUsages::UNIFORM });
+            let bg = dev.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &pipe.get_bind_group_layout(0),
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: srcb.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: matb.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 2, resource: dstb.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 3, resource: jb.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 4, resource: pb.as_entire_binding() },
+                ],
+            });
+            {
+                let mut cp = enc.begin_compute_pass(&Default::default());
+                cp.set_pipeline(&pipe);
+                cp.set_bind_group(0, &bg, &[]);
+                cp.dispatch_workgroups((2 * n as u32).div_ceil(64), 1, 1);
+            }
+            enc.copy_buffer_to_buffer(&dstb, 0, &rd, 0, size);
+            q.submit([enc.finish()]);
+            let sl = rd.slice(..);
+            sl.map_async(wgpu::MapMode::Read, |_| {});
+            dev.poll(wgpu::Maintain::Wait);
+            let v = bytemuck::cast_slice::<u8, u32>(&sl.get_mapped_range()).to_vec();
+            Some(v)
+        });
+        let Some(got) = got else {
+            eprintln!("no GPU adapter: skipped");
+            return;
+        };
+        let names = ["pos.x", "pos.y", "pos.z", "nrm.x", "nrm.y", "nrm.z", "uv0.x", "uv0.y", "uv1.x", "uv1.y", "color", "color1", "uv2.x", "uv2.y"];
+        let mut bad = [0usize; 14];
+        let mut ulp = [0i64; 14];
+        for (k, (a, b)) in want.iter().zip(&got).enumerate() {
+            if a != b {
+                bad[k % 14] += 1;
+                ulp[k % 14] = ulp[k % 14].max((*a as i32 as i64 - *b as i32 as i64).abs());
+            }
+        }
+        for k in 0..14 {
+            eprintln!("{:6}: {} of {} words differ, worst {} ulp", names[k], bad[k], 2 * n, ulp[k]);
+        }
+        assert_eq!(bad, [0; 14]);
+    }
+
     #[test]
     fn frame_blend_matches_the_original() {
         let h = |t: &str| u32::from_str_radix(&t.replace('_', ""), 16).unwrap();

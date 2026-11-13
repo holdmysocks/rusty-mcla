@@ -13090,6 +13090,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.drivers.draw_log = Some(Vec::new());
             }
             self.drivers.prepare(&mut gpu, &seats, self.cam.pos, &frustum, dt);
+            // (the drivers' GPU skinning - D59: in the frame's encoder, which goes ahead of every pass that draws them)
+            self.drivers.encode_skin(&gpu, &mut enc);
             drop(seats);
             // (what each car driver's gatherer wrote into its car's steering part, F-28290: for the part's next step)
             for c in self.vehicles.cars.iter_mut() {

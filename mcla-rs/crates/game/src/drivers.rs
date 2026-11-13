@@ -2269,6 +2269,8 @@ impl Drivers {
     /// Pose and skin the drivers of the cars near the camera.
     pub fn prepare(&mut self, gpu: &mut Gpu, seats: &[Seat], cam: Vec3, frustum: &Frustum, dt: f32) {
         self.buf.clear();
+        // (D59: the drivers are skinned on the GPU - skin.rs `SkinBuffer::gpu_skin`; `encode_skin` records it)
+        self.buf.gpu_skin = true;
         self.time += dt;
         self.frame += 1;
         // (the hooks' update, F-31704: every driver in a vehicle, drawn or not; a car gone takes its hook with it)
@@ -2581,6 +2583,11 @@ impl Drivers {
     pub fn set_light(&mut self, l: Option<crate::skin::CharLight>) {
         self.buf.char_light = l;
         self.buf.light_at_root = true;
+    }
+
+    /// This frame's GPU skinning of the drivers, into the frame's encoder before the passes that draw them.
+    pub fn encode_skin(&mut self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder) {
+        self.buf.encode(gpu, enc);
     }
 
     pub fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, gpu: &'a Gpu, draws: &mut usize) {
