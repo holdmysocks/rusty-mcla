@@ -217,6 +217,23 @@ pub fn turn(about_x: bool, a: f32) -> glam::Mat4 {
 mod tests {
     use super::*;
 
+    /// F-52244 run offline on the original's code (tools/steer_rescale_reference.py, 2,000 cases with 0, -0, inf and NaN
+    /// among them): the scale +1136 and the pair +1160 / +1164 after equal `rescale`'s bit for bit.
+    #[test]
+    fn rescale_matches_the_original() {
+        let mut n = 0;
+        for line in include_str!("testdata/steer_rescale_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<f32> = i.split(' ').map(|t| f32::from_bits(u32::from_str_radix(t, 16).unwrap())).collect();
+            let e: Vec<u32> = o.split(' ').map(|t| u32::from_str_radix(t, 16).unwrap()).collect();
+            let mut p = SteerParts { scale: w[0], mid: w[1], out: w[2], ..SteerParts::default() };
+            p.rescale(w[3]);
+            assert_eq!([p.scale.to_bits(), p.mid.to_bits(), p.out.to_bits()].as_slice(), e.as_slice(), "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 2000);
+    }
+
     #[test]
     fn steer_parts_match_the_original() {
         // (tools/steer_parts_reference.py: F-69494 with F-54584 run offline on sequences of frames; each line D's fields

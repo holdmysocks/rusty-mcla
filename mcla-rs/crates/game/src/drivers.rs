@@ -1968,17 +1968,39 @@ fn car_key(name: &str) -> String {
     n.get(..cut).unwrap_or("").to_string()
 }
 
-/// A driver pack's dictionary (F-99427): the holder's name table (+780, count +1548) against its clips (+8 + 4i), the keys
-/// lower-cased (the lookup is case-blind), the first of equal keys kept.
+/// A driver pack's dictionary (F-99427): the holder's name table (+780, count +1548) against its clips (+8 + 4i), as
+/// `pack_keys` reads it. (The table holds 192 entries; every pack on the disc has +1548 = +776 <= 192, no empty name and
+/// no missing clip: test `every_pack_holder_is_plain`.)
 fn holder_keys(rd: &Rd) -> Vec<(String, usize)> {
-    let n = (rd.u32(1548) as usize).min(rd.u32(776) as usize).min(192);
+    let n = (rd.u32(1548) as i32).clamp(0, 192) as usize;
+    let ents: Vec<(u16, Option<String>, Option<usize>)> = (0..n)
+        .map(|i| {
+            let e = rd.ptr(780 + 4 * i);
+            let len = e.map_or(0, |e| rd.u16(e + 4));
+            (len, e.and_then(|e| rd.ptr(e)).map(|s| rd.cstr(s)), rd.ptr(8 + 4 * i))
+        })
+        .collect();
+    pack_keys(&ents)
+}
+
+/// F-99427's walk over the name entries (length +4, string +0) in order: an entry of length 0 is compared as "", one with
+/// no string is skipped, the compare (F-40755) folds A-Z only (the keys lower-cased; the callers lower-case the name they
+/// look up); the first equal entry answers with its clip, so one without a clip hides the later equal ones.
+fn pack_keys(ents: &[(u16, Option<String>, Option<usize>)]) -> Vec<(String, usize)> {
+    let mut seen: Vec<String> = Vec::new();
     let mut out: Vec<(String, usize)> = Vec::new();
-    for i in 0..n {
-        let k = rd.ptr(780 + 4 * i).and_then(|a| rd.ptr(a)).map(|s| rd.cstr(s)).unwrap_or_default().to_ascii_lowercase();
-        if let Some(o) = rd.ptr(8 + 4 * i) {
-            if !out.iter().any(|x| x.0 == k) {
-                out.push((k, o));
-            }
+    for (len, name, clip) in ents {
+        let k = match (len, name) {
+            (0, _) => String::new(),
+            (_, Some(n)) => n.to_ascii_lowercase(),
+            (_, None) => continue,
+        };
+        if seen.contains(&k) {
+            continue;
+        }
+        seen.push(k.clone());
+        if let Some(o) = clip {
+            out.push((k, *o));
         }
     }
     out
@@ -1998,7 +2020,13 @@ impl Drivers {
     pub fn freeze_far(&mut self, seats: &mut [Seat], f: impl Fn(&Seat) -> FreezeIn) {
         let mut next = HashMap::new();
         for s in seats.iter_mut() {
-            let (on, _) = freeze_step(self.frozen.get(&s.uid).copied().unwrap_or(false), &f(s));
+            let (on, reset) = freeze_step(self.frozen.get(&s.uid).copied().unwrap_or(false), &f(s));
+            if reset {
+                // (the reset F-55405 itself: one context step, F-71604, with every input 0, gesture 20 and dt 0x3D08AB7D)
+                if let Some(a) = self.cars.get_mut(&s.uid) {
+                    dm::context_step(&mut a.ctx, &dm::CtxIn { gesture: 20, ..Default::default() }, &dm::Tune::original(), f32::from_bits(0x3D08_AB7D));
+                }
+            }
             if on {
                 s.steer = 0.0;
                 s.speed = 0.0;
@@ -2810,6 +2838,70 @@ mod original_tests {
                 assert_eq!(ka.len(), if pl { 182 } else { 38 });
             }
         }
+    }
+
+    /// F-99427 with its compare F-40755 run offline on 400 made-up holders (tools/pack_lookup_reference.py: up to 12 entries
+    /// with case variants, the A-Z boundaries, duplicates, length-0 entries, entries without a string or a clip; 8 names looked
+    /// up each): the clip the original answers equals `pack_keys`' (0 = none) on all 3,200.
+    #[test]
+    fn the_pack_lookup_matches_the_original() {
+        let mut n = 0;
+        for line in include_str!("testdata/pack_lookup_ref.txt").lines() {
+            let (a, ans) = line.split_once(" -> ").unwrap();
+            let (es, qs) = a.split_once(" | ").unwrap();
+            let ents: Vec<(u16, Option<String>, Option<usize>)> = es
+                .split(' ')
+                .filter(|e| !e.is_empty())
+                .map(|e| {
+                    let f: Vec<&str> = e.split(':').collect();
+                    let c = usize::from_str_radix(f[2], 16).unwrap();
+                    (f[0].parse().unwrap(), (f[1] != "-").then(|| f[1].to_string()), (c != 0).then_some(c))
+                })
+                .collect();
+            let keys = pack_keys(&ents);
+            for (q, want) in qs.split(' ').zip(ans.split(' ')) {
+                let q = if q == "\"\"" { "" } else { q }.to_ascii_lowercase();
+                let got = keys.iter().find(|k| k.0 == q).map_or(0, |k| k.1);
+                assert_eq!(got, usize::from_str_radix(want, 16).unwrap(), "{q}: {line}");
+                n += 1;
+            }
+        }
+        assert_eq!(n, 3200);
+    }
+
+    /// Every driver pack on the disc (280) has +1548 = +776 <= 192, an entry and a clip for every name and no name of length 0,
+    /// so `holder_keys` reads them as F-99427 does without the original's edge cases.
+    #[test]
+    fn every_pack_holder_is_plain() {
+        fn packs(d: &Path, v: &mut Vec<PathBuf>) {
+            for e in std::fs::read_dir(d).into_iter().flatten().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    packs(&p, v);
+                } else if p.extension().map_or(false, |x| x == "r2") {
+                    v.push(p);
+                }
+            }
+        }
+        let mut v = Vec::new();
+        packs(Path::new("D:/MCLA/extracted/cache/resources/animation"), &mut v);
+        if v.is_empty() {
+            eprintln!("no disc data, skipped");
+            return;
+        }
+        let mut read = 0;
+        for p in &v {
+            let Ok(res) = load_resource_file(p) else { continue };
+            let rd = Rd::new(&res);
+            let n = rd.u32(1548);
+            assert!(n <= 192 && rd.u32(776) == n, "{}", p.display());
+            for i in 0..n as usize {
+                let e = rd.ptr(780 + 4 * i).unwrap_or_else(|| panic!("{} entry {i}", p.display()));
+                assert!(rd.u16(e + 4) != 0 && rd.ptr(e).is_some() && rd.ptr(8 + 4 * i).is_some(), "{} entry {i}", p.display());
+            }
+            read += 1;
+        }
+        assert_eq!(read, 280);
     }
 
     /// SetCharName's (F-22036) renames and its "_f" test, on the names the scripts give (the hookmen's sets).

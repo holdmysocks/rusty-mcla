@@ -90,6 +90,22 @@ pub fn steer_target(stick: f32, sens: f32, t: &InputTune) -> f32 {
     (size * sign).clamp(-1.0, 1.0)
 }
 
+/// F-56064 right after `steer_target`'s clamp: the clamped target T is stored at input +84; when SteerDamageBias > 0, SteerDamageSpeedThreshold
+/// > 1 and the damage share (input +92) is not 0, the damaged car's pull is added with one fused step and T is clamped again:
+/// T = clamp(fma((1 - clamp(+224 / threshold, 0, 1)) * share, bias, T), -1, 1), each clamp by the code's fsel pair.
+pub fn steer_pull(target: f32, share: f32, speed224: f32, t: &InputTune) -> f32 {
+    let sel = |c: f32, a: f32, b: f32| if c >= 0.0 { a } else { b };
+    if !(t.steer_damage_bias > 0.0 && t.steer_damage_speed_threshold > 1.0 && share != 0.0) {
+        return target;
+    }
+    let q = speed224 / t.steer_damage_speed_threshold;
+    let lo = sel(q, q, 0.0);
+    let c = sel(lo - 1.0, 1.0, lo);
+    let f = fma((1.0 - c) * share, t.steer_damage_bias, target);
+    let f = sel(f - -1.0, f, -1.0);
+    sel(f - 1.0, 1.0, f)
+}
+
 /// What 0x822A1520 reads besides the held value and the target.
 pub struct SteerIn {
     /// chassis +224: the car's speed as vehAero last wrote it

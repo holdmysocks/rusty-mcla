@@ -1,0 +1,400 @@
+13:aZb:100 22:drv_pan_sweep_overlay:101 29:a{b:102 | x a{b a{b aZb drv_gest_disapnt drv_pan_sweep_overlay aZb drv_wi -> 0 102 102 100 0 101 100 0
+13:a{b:100 16:DRV_IDLE_LOW:101 13:DRV_PAN_SWEEP_OVERLAY:102 19:-:0 13:a{b:104 3:DRV_IDLE_LOW:105 14:drv_win_02:106 5:a@b:107 20:DRV_IDLE_LOW:0 4:drv_gest_disapnt:109 | a{b DRV_IDLE_LOW DRV_IDLE_LOW x a{b drv_win drv_wi drv_win_02 -> 100 101 101 0 100 0 0 106
+20:drv_pan_sweep_overlay:100 22:a{b:0 2:DRV_PAN_SWEEP_OVERLAY:102 27:drv_idle_low:103 3:drv_wi:104 25:aZb:105 5:x:106 27:x:107 29:x:108 0:DRV_IDLE_LOW:109 12:DRV_PAN_SWEEP_OVERLAY:10a | "" drv_pan_sweep_overlay drv_wi X x x x azb -> 109 100 104 106 106 106 106 105
+26:a{b:100 7:drv_wi:101 0:drv_win_02:102 13:a@b:103 0::104 30:a`b:105 15:x:106 10:DRV_PAN_SWEEP_OVERLAY:107 12:x:108 24:-:109 8:aZb:10a 1:drv_wi:10b | "" x a{b a{b drv_pan_sweep_overlay a`b A[B a`b -> 102 106 100 100 107 105 0 105
+ | DRV_IDLE_LOW drv_wi drv_win x DRV_PAN_SWEEP_OVERLAY drv_wi drv_idle_low x -> 0 0 0 0 0 0 0 0
+4:drv_gest_disapnt:100 | DRV_PAN_SWEEP_OVERLAY DRV_IDLE_LOW Drv_Idle_Low drv_win drv_win a{b DRV_IDLE_LOW drv_wi -> 0 0 0 0 0 0 0 0
+19:drv_win:100 7:drv_idle_low:101 26:drv_win_02:0 11:drv_win_02:103 0::104 17:drv_win:105 3:drv_gest_disapnt:106 10:X:107 17:drv_win_02:108 25:A[B:109 3:azb:10a | drv_win_02 DRV_PAN_SWEEP_OVERLAY Drv_Idle_Low a{b a@b a`b drv_gest_disapnt DRV_PAN_SWEEP_OVERLAY -> 0 0 101 0 0 0 106 0
+17:DRV_PAN_SWEEP_OVERLAY:0 7:-:101 25:drv_win_02:0 6:aZb:103 0:azb:104 11:azb:0 28:a@b:106 26:drv_win:107 14:drv_win_02:108 12:Drv_Idle_Low:109 24:DRV_PAN_SWEEP_OVERLAY:10a | DRV_PAN_SWEEP_OVERLAY DRV_IDLE_LOW A[B a{b azb drv_idle_low "" aZb -> 0 109 0 0 103 109 104 103
+28:-:100 8:a`b:101 4:DRV_IDLE_LOW:102 | drv_idle_low x a@b "" "" a`b DRV_IDLE_LOW drv_win -> 102 0 0 0 0 101 102 0
+26:drv_win_02:100 30:X:101 20:DRV_PAN_SWEEP_OVERLAY:102 9:a@b:103 9:drv_wi:104 27:-:105 | drv_pan_sweep_overlay drv_pan_sweep_overlay drv_wi drv_win_02 a@b a@b drv_wi aZb -> 102 102 104 100 103 103 104 0
+5:a`b:100 0::101 19:a`b:102 26:x:103 13:drv_wi:104 22:drv_win_02:105 20:-:106 | a{b drv_wi a@b azb drv_pan_sweep_overlay aZb "" Drv_Idle_Low -> 0 104 0 0 0 0 101 0
+30:drv_pan_sweep_overlay:100 19:drv_wi:101 28:A[B:102 27:drv_wi:103 | x a`b a`b drv_pan_sweep_overlay aZb Drv_Idle_Low drv_pan_sweep_overlay drv_wi -> 0 0 0 100 0 0 100 101
+4:a{b:100 2:aZb:101 | drv_win_02 DRV_PAN_SWEEP_OVERLAY drv_idle_low aZb azb a@b a{b a{b -> 0 0 0 101 101 0 100 100
+10:DRV_IDLE_LOW:100 26:a`b:101 14:DRV_IDLE_LOW:0 2:A[B:103 24:a@b:0 12:drv_pan_sweep_overlay:105 12:drv_idle_low:0 0::107 26:drv_win_02:108 26:drv_gest_disapnt:109 3:DRV_PAN_SWEEP_OVERLAY:10a 5:aZb:10b | drv_win_02 drv_idle_low aZb drv_win_02 x Drv_Idle_Low drv_win a@b -> 108 100 10b 108 0 100 0 0
+ | Drv_Idle_Low DRV_PAN_SWEEP_OVERLAY drv_gest_disapnt DRV_PAN_SWEEP_OVERLAY drv_win_02 a@b Drv_Idle_Low drv_wi -> 0 0 0 0 0 0 0 0
+5:-:100 1:a{b:101 23:drv_wi:0 | a`b drv_idle_low "" drv_pan_sweep_overlay X DRV_IDLE_LOW X DRV_IDLE_LOW -> 0 0 0 0 0 0 0 0
+21:X:100 | "" azb drv_win drv_pan_sweep_overlay X a@b DRV_IDLE_LOW drv_wi -> 0 0 0 0 100 0 0 0
+24:drv_win:100 15:drv_pan_sweep_overlay:101 | drv_wi drv_gest_disapnt drv_idle_low aZb azb drv_wi a@b azb -> 0 0 0 0 0 0 0 0
+21:drv_win_02:100 30:a{b:101 15:x:102 0::103 1:x:104 19:drv_win_02:105 9:X:106 12:a@b:107 5:drv_win:0 | drv_wi drv_pan_sweep_overlay drv_win_02 DRV_IDLE_LOW A[B a@b drv_win_02 a{b -> 0 0 100 0 0 107 100 101
+4:drv_idle_low:100 24:a`b:101 22:drv_win_02:102 6:DRV_PAN_SWEEP_OVERLAY:103 0::104 24:a{b:105 18:drv_win_02:106 6:X:107 18:drv_win:108 5:aZb:109 0::10a 14:-:10b | a{b aZb a@b a`b x drv_win_02 DRV_PAN_SWEEP_OVERLAY azb -> 105 109 0 101 107 102 103 109
+23:DRV_PAN_SWEEP_OVERLAY:100 0:drv_pan_sweep_overlay:101 12:DRV_PAN_SWEEP_OVERLAY:0 23:x:103 24:aZb:104 0::105 24:drv_pan_sweep_overlay:106 | DRV_PAN_SWEEP_OVERLAY aZb x drv_win x DRV_IDLE_LOW drv_gest_disapnt DRV_PAN_SWEEP_OVERLAY -> 100 104 103 0 103 0 0 100
+23:x:100 27:X:101 0::102 12:A[B:103 24:drv_pan_sweep_overlay:104 19:DRV_PAN_SWEEP_OVERLAY:105 29:drv_win:106 | a`b X "" drv_pan_sweep_overlay DRV_IDLE_LOW drv_win_02 DRV_PAN_SWEEP_OVERLAY X -> 0 100 102 104 0 0 104 100
+19:drv_wi:100 25:aZb:101 2:DRV_IDLE_LOW:102 8:DRV_PAN_SWEEP_OVERLAY:103 26:X:104 25:a{b:105 12:aZb:106 5:drv_gest_disapnt:107 0::108 24:X:109 25:DRV_PAN_SWEEP_OVERLAY:10a 0::10b | Drv_Idle_Low A[B aZb azb drv_win_02 drv_gest_disapnt azb a{b -> 102 0 101 101 0 107 101 105
+1:aZb:100 11:x:0 30:DRV_PAN_SWEEP_OVERLAY:102 20:-:103 15:drv_win_02:104 0:a@b:105 3:drv_win:106 18:Drv_Idle_Low:107 10:DRV_IDLE_LOW:108 3:A[B:109 | drv_wi drv_win drv_gest_disapnt aZb drv_win X drv_win X -> 0 106 0 100 106 0 106 0
+16:DRV_PAN_SWEEP_OVERLAY:100 11:drv_gest_disapnt:101 11:drv_win_02:102 19:drv_wi:103 19:a`b:104 26:DRV_PAN_SWEEP_OVERLAY:105 0:drv_pan_sweep_overlay:106 | drv_gest_disapnt drv_idle_low drv_pan_sweep_overlay drv_pan_sweep_overlay DRV_IDLE_LOW DRV_PAN_SWEEP_OVERLAY drv_pan_sweep_overlay drv_wi -> 101 0 100 100 0 100 100 103
+23:drv_pan_sweep_overlay:100 10:drv_gest_disapnt:0 6:drv_wi:102 24:drv_pan_sweep_overlay:103 19:drv_win_02:104 22:drv_gest_disapnt:105 18:a@b:0 29:aZb:107 29:a`b:108 | drv_gest_disapnt a@b x drv_pan_sweep_overlay drv_pan_sweep_overlay X A[B "" -> 0 0 0 100 100 0 0 0
+12:drv_win_02:100 22:-:101 0::102 10:x:103 | aZb x drv_win_02 x "" a@b DRV_IDLE_LOW a{b -> 0 103 100 103 102 0 0 0
+3:x:100 12:drv_pan_sweep_overlay:101 20:drv_pan_sweep_overlay:102 30:drv_gest_disapnt:103 27:a@b:104 | A[B drv_win drv_gest_disapnt drv_pan_sweep_overlay DRV_PAN_SWEEP_OVERLAY drv_pan_sweep_overlay a`b a`b -> 0 0 103 101 101 101 0 0
+12:drv_wi:100 | a`b drv_pan_sweep_overlay drv_gest_disapnt X DRV_IDLE_LOW a@b drv_wi X -> 0 0 0 0 0 0 100 0
+11:drv_win:100 1:a{b:101 11:X:102 5:a{b:103 2:a`b:104 17:drv_win_02:105 | DRV_IDLE_LOW drv_pan_sweep_overlay "" a{b a@b "" a`b a{b -> 0 0 0 101 0 0 104 101
+8:DRV_IDLE_LOW:100 0::101 0::102 17:drv_idle_low:103 14:Drv_Idle_Low:104 14:drv_win_02:105 25:Drv_Idle_Low:106 20:drv_wi:0 9:x:108 | a@b drv_win drv_win_02 drv_win x DRV_IDLE_LOW a@b azb -> 0 0 105 0 108 100 0 0
+25:-:100 3:-:101 24:DRV_PAN_SWEEP_OVERLAY:102 11:a{b:103 | "" drv_wi drv_pan_sweep_overlay X a{b x "" a{b -> 0 0 102 0 103 0 0 103
+9:drv_win:100 4:DRV_IDLE_LOW:101 28:drv_gest_disapnt:102 2:DRV_PAN_SWEEP_OVERLAY:103 1:A[B:104 | DRV_PAN_SWEEP_OVERLAY drv_gest_disapnt a{b A[B A[B DRV_IDLE_LOW X drv_gest_disapnt -> 103 102 0 104 104 101 0 102
+29:drv_idle_low:100 11:a{b:101 21:A[B:102 22:a@b:0 22:a{b:104 5:Drv_Idle_Low:105 12:DRV_IDLE_LOW:0 28:X:107 27:drv_gest_disapnt:108 | A[B DRV_PAN_SWEEP_OVERLAY a@b drv_win a@b azb Drv_Idle_Low X -> 102 0 0 0 0 0 100 107
+2:drv_wi:0 | aZb drv_gest_disapnt X a@b drv_win_02 Drv_Idle_Low Drv_Idle_Low X -> 0 0 0 0 0 0 0 0
+0::100 21:drv_win:101 | drv_wi "" DRV_IDLE_LOW a{b drv_win drv_wi x DRV_PAN_SWEEP_OVERLAY -> 0 100 0 0 101 0 0 0
+9:DRV_PAN_SWEEP_OVERLAY:100 7:A[B:101 16:A[B:0 0:A[B:103 30:azb:104 | X A[B a`b a{b DRV_PAN_SWEEP_OVERLAY drv_gest_disapnt a@b x -> 0 101 0 0 100 0 0 0
+22:a`b:0 28:azb:101 28:drv_win_02:102 17:-:103 8:A[B:104 17:aZb:105 | Drv_Idle_Low DRV_IDLE_LOW drv_gest_disapnt drv_win_02 A[B a`b A[B drv_pan_sweep_overlay -> 0 0 0 102 104 0 104 0
+24:DRV_PAN_SWEEP_OVERLAY:100 7:azb:101 10:Drv_Idle_Low:102 | drv_win a`b Drv_Idle_Low azb drv_gest_disapnt "" A[B drv_idle_low -> 0 0 102 101 0 0 0 102
+0::100 21:aZb:101 28:DRV_IDLE_LOW:102 1:DRV_IDLE_LOW:103 3:drv_win_02:104 19:drv_win:105 | "" X DRV_IDLE_LOW azb aZb drv_pan_sweep_overlay drv_win_02 X -> 100 0 102 101 101 0 104 0
+0:Drv_Idle_Low:100 14:x:101 30:a{b:102 0:a`b:103 19:-:104 | a`b a`b x A[B A[B aZb Drv_Idle_Low drv_wi -> 0 0 101 0 0 0 0 0
+20:aZb:100 12:drv_pan_sweep_overlay:101 19:A[B:102 28:drv_gest_disapnt:103 30:x:104 20:-:105 28:drv_win_02:106 20:drv_pan_sweep_overlay:107 5:DRV_PAN_SWEEP_OVERLAY:108 5:-:0 29:DRV_PAN_SWEEP_OVERLAY:10a | A[B a@b x drv_pan_sweep_overlay A[B aZb X DRV_PAN_SWEEP_OVERLAY -> 102 0 104 101 102 100 104 101
+10:a{b:100 0::101 16:a{b:102 18:X:103 12:Drv_Idle_Low:104 18:azb:105 3:drv_wi:106 1:azb:107 24:drv_win_02:108 | x a{b azb aZb drv_wi drv_idle_low X drv_wi -> 103 100 105 105 106 104 103 106
+16:drv_win_02:100 13:-:101 15:aZb:102 0::103 30:drv_win:104 0:a{b:105 7:drv_win_02:106 | DRV_IDLE_LOW a{b drv_win x drv_gest_disapnt DRV_IDLE_LOW a{b drv_wi -> 0 0 104 0 0 0 0 0
+2:DRV_IDLE_LOW:100 0:-:0 2:-:102 29:Drv_Idle_Low:103 29:X:104 13:A[B:105 15:A[B:106 | X X Drv_Idle_Low DRV_PAN_SWEEP_OVERLAY azb Drv_Idle_Low a`b Drv_Idle_Low -> 104 104 100 0 0 100 0 100
+19:drv_pan_sweep_overlay:100 6:DRV_IDLE_LOW:101 16:a{b:102 30:aZb:103 0:-:104 18:a`b:105 0::106 21:Drv_Idle_Low:107 22:X:108 | a`b a`b a{b "" a@b drv_win_02 a@b aZb -> 105 105 102 104 0 0 0 103
+5:a@b:100 | a@b a@b aZb azb aZb a`b azb A[B -> 100 100 0 0 0 0 0 0
+7:drv_idle_low:100 15:DRV_IDLE_LOW:101 14:DRV_PAN_SWEEP_OVERLAY:102 21:aZb:0 24:aZb:104 1:Drv_Idle_Low:105 23:DRV_PAN_SWEEP_OVERLAY:106 13:drv_win_02:107 10:A[B:108 22:DRV_PAN_SWEEP_OVERLAY:109 | drv_wi a{b DRV_PAN_SWEEP_OVERLAY Drv_Idle_Low drv_idle_low Drv_Idle_Low DRV_IDLE_LOW drv_idle_low -> 0 0 102 100 100 100 100 100
+5:azb:100 | drv_wi aZb DRV_PAN_SWEEP_OVERLAY Drv_Idle_Low a`b drv_wi X DRV_IDLE_LOW -> 0 100 0 0 0 0 0 0
+27:a@b:100 17:DRV_PAN_SWEEP_OVERLAY:0 1:drv_win:102 0:Drv_Idle_Low:0 7:DRV_PAN_SWEEP_OVERLAY:104 5:azb:105 | Drv_Idle_Low DRV_IDLE_LOW azb drv_pan_sweep_overlay drv_win a@b x X -> 0 0 105 0 102 100 0 0
+11:drv_gest_disapnt:100 | a@b DRV_PAN_SWEEP_OVERLAY aZb drv_win drv_pan_sweep_overlay drv_gest_disapnt a@b DRV_PAN_SWEEP_OVERLAY -> 0 0 0 0 0 100 0 0
+12:DRV_IDLE_LOW:100 | drv_pan_sweep_overlay drv_win_02 DRV_IDLE_LOW x drv_wi DRV_IDLE_LOW A[B drv_pan_sweep_overlay -> 0 0 100 0 0 100 0 0
+28:aZb:100 19:drv_gest_disapnt:101 14:aZb:102 0:drv_gest_disapnt:103 0::0 18:a@b:105 23:DRV_PAN_SWEEP_OVERLAY:106 4:a@b:107 8:x:108 0::109 | drv_gest_disapnt drv_gest_disapnt "" drv_win_02 DRV_IDLE_LOW x drv_gest_disapnt drv_win_02 -> 101 101 103 0 0 108 101 0
+8:a@b:0 | Drv_Idle_Low x DRV_PAN_SWEEP_OVERLAY a`b x "" Drv_Idle_Low drv_win_02 -> 0 0 0 0 0 0 0 0
+27:drv_gest_disapnt:0 24:drv_win_02:101 20:drv_pan_sweep_overlay:102 21:drv_win_02:0 2:DRV_PAN_SWEEP_OVERLAY:104 6:x:105 | DRV_PAN_SWEEP_OVERLAY drv_idle_low drv_pan_sweep_overlay drv_win "" x A[B a`b -> 102 0 102 0 0 105 0 0
+26:aZb:0 9:A[B:101 25:-:0 16:aZb:103 0:a{b:104 11:-:105 4:a`b:106 9:Drv_Idle_Low:0 | DRV_PAN_SWEEP_OVERLAY DRV_PAN_SWEEP_OVERLAY a{b a{b drv_gest_disapnt x A[B aZb -> 0 0 0 0 0 0 101 0
+28:DRV_IDLE_LOW:100 19:azb:101 19:drv_pan_sweep_overlay:102 0::103 22:drv_wi:0 | a`b drv_gest_disapnt drv_wi drv_pan_sweep_overlay azb azb a@b drv_gest_disapnt -> 0 0 0 102 101 101 0 0
+10:drv_win:0 | a{b drv_win "" drv_win drv_pan_sweep_overlay Drv_Idle_Low drv_gest_disapnt drv_gest_disapnt -> 0 0 0 0 0 0 0 0
+20:Drv_Idle_Low:100 6:aZb:0 8:A[B:0 20:aZb:0 23:a{b:104 11:drv_win_02:105 0:drv_idle_low:106 2:drv_pan_sweep_overlay:107 30:azb:108 22:drv_pan_sweep_overlay:109 | drv_gest_disapnt drv_pan_sweep_overlay Drv_Idle_Low aZb DRV_IDLE_LOW Drv_Idle_Low a`b drv_pan_sweep_overlay -> 0 107 100 0 100 100 0 107
+ | aZb drv_wi Drv_Idle_Low aZb X azb A[B A[B -> 0 0 0 0 0 0 0 0
+ | Drv_Idle_Low drv_gest_disapnt Drv_Idle_Low "" "" Drv_Idle_Low a@b drv_gest_disapnt -> 0 0 0 0 0 0 0 0
+22:a{b:0 13:a`b:101 5:DRV_PAN_SWEEP_OVERLAY:102 27:drv_win_02:103 24:x:104 14:drv_gest_disapnt:105 | "" drv_win "" drv_wi drv_win drv_wi DRV_PAN_SWEEP_OVERLAY drv_wi -> 0 0 0 0 0 0 102 0
+22:drv_idle_low:100 1:drv_pan_sweep_overlay:101 25:a`b:102 | drv_gest_disapnt DRV_IDLE_LOW DRV_IDLE_LOW a{b DRV_IDLE_LOW a@b a{b a`b -> 0 100 100 0 100 0 0 102
+27:drv_gest_disapnt:100 8:x:101 24:Drv_Idle_Low:102 29:drv_idle_low:103 29:X:0 26:X:105 10:aZb:106 21:DRV_PAN_SWEEP_OVERLAY:107 5:drv_pan_sweep_overlay:108 15:drv_wi:109 1:drv_idle_low:10a 4:a`b:10b | a`b X a`b Drv_Idle_Low DRV_PAN_SWEEP_OVERLAY drv_win drv_wi Drv_Idle_Low -> 10b 101 10b 102 107 0 109 102
+7:-:100 6:-:0 24:a{b:102 25:drv_idle_low:103 25:aZb:0 30:azb:0 21:-:106 | drv_wi DRV_PAN_SWEEP_OVERLAY a{b aZb a`b drv_win_02 drv_win a`b -> 0 0 102 0 0 0 0 0
+11:drv_wi:0 9:drv_wi:101 14:drv_idle_low:102 24:a@b:103 4:drv_win_02:104 14:-:105 | X DRV_IDLE_LOW X DRV_PAN_SWEEP_OVERLAY drv_wi a@b drv_wi drv_pan_sweep_overlay -> 0 102 0 0 0 103 0 0
+4:A[B:0 12:a`b:101 0::102 15:a@b:103 0::104 | a`b x drv_gest_disapnt Drv_Idle_Low DRV_PAN_SWEEP_OVERLAY A[B A[B a{b -> 101 0 0 0 0 0 0 0
+0:azb:100 0:A[B:101 27:azb:0 18:DRV_PAN_SWEEP_OVERLAY:0 19:drv_wi:104 20:aZb:105 25:drv_pan_sweep_overlay:106 1:a`b:107 6:a@b:0 15:a`b:109 25:x:10a | DRV_PAN_SWEEP_OVERLAY drv_wi aZb aZb A[B a`b a`b drv_wi -> 0 104 0 0 0 107 107 104
+14:x:100 26:x:101 0::102 18:DRV_IDLE_LOW:103 27:drv_pan_sweep_overlay:104 4:drv_gest_disapnt:105 15:a{b:106 2:aZb:107 6:drv_win:108 22:a`b:0 5:drv_gest_disapnt:10a | drv_pan_sweep_overlay DRV_PAN_SWEEP_OVERLAY X A[B drv_win drv_win drv_pan_sweep_overlay Drv_Idle_Low -> 104 104 100 0 108 108 104 103
+8:DRV_IDLE_LOW:100 20:a`b:101 13:drv_idle_low:102 0:DRV_IDLE_LOW:103 24:DRV_PAN_SWEEP_OVERLAY:104 13:azb:105 1:-:106 7:aZb:107 | drv_gest_disapnt DRV_PAN_SWEEP_OVERLAY a`b DRV_IDLE_LOW drv_wi A[B DRV_PAN_SWEEP_OVERLAY drv_win_02 -> 0 104 101 100 0 0 104 0
+30:drv_gest_disapnt:100 4:DRV_IDLE_LOW:0 24:X:102 15:aZb:103 30:DRV_PAN_SWEEP_OVERLAY:104 24:drv_gest_disapnt:105 | drv_idle_low drv_pan_sweep_overlay drv_wi drv_gest_disapnt drv_pan_sweep_overlay drv_wi DRV_IDLE_LOW drv_gest_disapnt -> 0 104 0 100 104 0 0 100
+12:drv_win:100 30:DRV_PAN_SWEEP_OVERLAY:101 21:drv_pan_sweep_overlay:102 15:a{b:103 19:aZb:104 1:DRV_PAN_SWEEP_OVERLAY:0 0:a`b:106 18:a@b:107 6:drv_win:0 13:drv_win_02:109 27:drv_wi:10a | a@b A[B drv_win drv_wi DRV_IDLE_LOW "" Drv_Idle_Low a`b -> 107 0 100 10a 0 106 0 0
+ | DRV_IDLE_LOW a@b x "" a`b a@b A[B aZb -> 0 0 0 0 0 0 0 0
+22:aZb:100 30:-:101 18:Drv_Idle_Low:0 21:DRV_PAN_SWEEP_OVERLAY:103 19:aZb:0 | X drv_win_02 a{b a@b drv_pan_sweep_overlay DRV_PAN_SWEEP_OVERLAY Drv_Idle_Low a@b -> 0 0 0 0 103 103 0 0
+26:a`b:100 27:drv_win_02:0 19:a`b:102 30:Drv_Idle_Low:103 30:-:104 15:drv_win_02:105 | Drv_Idle_Low DRV_PAN_SWEEP_OVERLAY a`b drv_win_02 X a`b a`b drv_win_02 -> 103 0 100 0 0 100 100 0
+16:drv_idle_low:0 21:a`b:101 20:-:102 1:a@b:103 1:X:104 2:aZb:0 4:x:106 | "" a{b A[B a`b X a`b X drv_pan_sweep_overlay -> 0 0 0 101 104 101 104 0
+22:drv_gest_disapnt:100 0:drv_pan_sweep_overlay:101 15:azb:102 | a{b aZb a`b x A[B Drv_Idle_Low drv_idle_low drv_gest_disapnt -> 0 102 0 0 0 0 0 100
+ | a`b drv_gest_disapnt Drv_Idle_Low x drv_wi drv_wi aZb DRV_IDLE_LOW -> 0 0 0 0 0 0 0 0
+29:x:100 9:a`b:101 20:X:102 27:drv_pan_sweep_overlay:0 17:x:104 26:a{b:105 | a`b drv_gest_disapnt aZb x "" X X x -> 101 0 0 100 0 100 100 100
+11:DRV_IDLE_LOW:100 18:A[B:101 21:drv_idle_low:102 24:drv_win:103 1:aZb:104 10:drv_pan_sweep_overlay:105 | aZb drv_idle_low a@b drv_idle_low "" a{b drv_idle_low Drv_Idle_Low -> 104 100 0 100 0 0 100 100
+18:-:100 24:drv_idle_low:101 8:-:102 19:DRV_IDLE_LOW:103 2:drv_win:0 26:x:0 19:drv_win:106 8:drv_wi:107 25:a`b:108 4:a@b:109 | x DRV_IDLE_LOW drv_win DRV_IDLE_LOW drv_win a`b drv_win drv_wi -> 0 101 0 101 0 108 0 107
+12:drv_win:100 4:-:101 17:a@b:102 28:aZb:0 | A[B drv_gest_disapnt A[B aZb a@b drv_win drv_win_02 DRV_IDLE_LOW -> 0 0 0 0 102 100 0 0
+3:azb:100 | azb drv_wi x azb azb drv_pan_sweep_overlay azb x -> 100 0 0 100 100 0 100 0
+15:A[B:100 19:-:101 0::102 19:X:0 24:drv_win_02:104 14:DRV_IDLE_LOW:105 22:X:106 | A[B x DRV_PAN_SWEEP_OVERLAY DRV_IDLE_LOW drv_win_02 X DRV_IDLE_LOW aZb -> 100 0 0 105 104 0 105 0
+7:drv_win:100 24:drv_pan_sweep_overlay:101 20:drv_gest_disapnt:102 3:X:103 | A[B drv_pan_sweep_overlay DRV_IDLE_LOW A[B drv_wi X a{b drv_idle_low -> 0 101 0 0 0 103 0 0
+4:drv_win:100 29:azb:101 | Drv_Idle_Low drv_gest_disapnt drv_win DRV_PAN_SWEEP_OVERLAY aZb DRV_PAN_SWEEP_OVERLAY drv_win drv_win -> 0 0 100 0 101 0 100 100
+0::100 19:drv_win_02:0 17:drv_win:0 20:drv_pan_sweep_overlay:103 4:Drv_Idle_Low:104 10:drv_wi:0 13:drv_gest_disapnt:106 10:A[B:107 12:DRV_PAN_SWEEP_OVERLAY:108 | DRV_IDLE_LOW drv_win_02 DRV_IDLE_LOW a{b Drv_Idle_Low drv_pan_sweep_overlay drv_pan_sweep_overlay drv_wi -> 104 0 104 0 104 103 103 0
+1:drv_gest_disapnt:100 | "" drv_gest_disapnt a`b drv_wi "" drv_pan_sweep_overlay A[B drv_win_02 -> 0 100 0 0 0 0 0 0
+27:DRV_IDLE_LOW:0 29:a{b:101 27:DRV_IDLE_LOW:102 | aZb Drv_Idle_Low azb DRV_PAN_SWEEP_OVERLAY aZb a{b drv_idle_low DRV_IDLE_LOW -> 0 0 0 0 0 101 0 0
+13:x:100 2:x:101 | drv_pan_sweep_overlay "" drv_pan_sweep_overlay A[B a@b drv_win_02 a{b aZb -> 0 0 0 0 0 0 0 0
+ | A[B a`b drv_win_02 azb aZb aZb drv_idle_low a{b -> 0 0 0 0 0 0 0 0
+27:drv_pan_sweep_overlay:100 27:azb:101 4:azb:0 25:drv_win:103 3:a{b:104 17:drv_pan_sweep_overlay:105 | drv_pan_sweep_overlay drv_win_02 a`b drv_wi DRV_PAN_SWEEP_OVERLAY drv_pan_sweep_overlay Drv_Idle_Low a@b -> 100 0 0 0 100 100 0 0
+ | drv_idle_low drv_pan_sweep_overlay DRV_IDLE_LOW drv_pan_sweep_overlay drv_win_02 drv_idle_low aZb a`b -> 0 0 0 0 0 0 0 0
+15:DRV_IDLE_LOW:100 16:drv_gest_disapnt:101 14:drv_wi:0 4:drv_pan_sweep_overlay:103 14:x:104 18:drv_pan_sweep_overlay:105 25:azb:106 3:Drv_Idle_Low:107 | drv_win_02 "" aZb x drv_win_02 azb DRV_PAN_SWEEP_OVERLAY x -> 0 0 106 104 0 106 103 104
+20:A[B:100 10:X:101 27:Drv_Idle_Low:0 21:Drv_Idle_Low:103 24:DRV_IDLE_LOW:0 25:drv_idle_low:0 | "" aZb A[B "" X DRV_PAN_SWEEP_OVERLAY DRV_PAN_SWEEP_OVERLAY drv_gest_disapnt -> 0 0 100 0 101 0 0 0
+0::100 12:x:101 25:X:102 23:X:0 25:drv_win:0 5:a{b:105 4:Drv_Idle_Low:106 6:drv_gest_disapnt:107 | a{b DRV_IDLE_LOW DRV_PAN_SWEEP_OVERLAY DRV_PAN_SWEEP_OVERLAY a{b Drv_Idle_Low drv_gest_disapnt A[B -> 105 106 0 0 105 106 107 0
+21:drv_gest_disapnt:100 6:drv_wi:101 16:Drv_Idle_Low:102 0:drv_wi:103 0::104 26:drv_win:105 14:A[B:106 28:a@b:107 15:DRV_PAN_SWEEP_OVERLAY:108 30:-:109 23:drv_win:0 | drv_gest_disapnt azb aZb Drv_Idle_Low a{b x A[B X -> 100 0 0 102 0 0 106 0
+24:drv_idle_low:100 27:DRV_IDLE_LOW:101 29:a{b:102 20:DRV_PAN_SWEEP_OVERLAY:103 0::104 29:drv_gest_disapnt:105 | drv_pan_sweep_overlay a{b A[B drv_pan_sweep_overlay drv_gest_disapnt azb a`b drv_gest_disapnt -> 103 102 0 103 105 0 0 105
+13:drv_pan_sweep_overlay:100 11:azb:101 | a{b drv_wi X drv_wi DRV_PAN_SWEEP_OVERLAY drv_pan_sweep_overlay aZb azb -> 0 0 0 0 100 100 101 101
+29:X:0 4:-:101 14:DRV_IDLE_LOW:102 23:drv_idle_low:103 23:DRV_PAN_SWEEP_OVERLAY:104 25:drv_win:105 | drv_gest_disapnt DRV_IDLE_LOW azb "" X DRV_PAN_SWEEP_OVERLAY "" drv_idle_low -> 0 102 0 0 0 104 0 102
+0::100 | "" "" azb a@b X DRV_IDLE_LOW A[B a`b -> 100 100 0 0 0 0 0 0
+14:drv_idle_low:100 19:drv_wi:101 | X X aZb a`b drv_idle_low Drv_Idle_Low Drv_Idle_Low drv_wi -> 0 0 0 0 100 100 100 101
+27:-:100 3:DRV_PAN_SWEEP_OVERLAY:101 23:a@b:102 8:Drv_Idle_Low:0 14:a@b:104 18:drv_gest_disapnt:105 27:X:106 | DRV_PAN_SWEEP_OVERLAY Drv_Idle_Low DRV_PAN_SWEEP_OVERLAY x drv_gest_disapnt a{b "" a@b -> 101 0 101 106 105 0 0 102
+13:-:100 29:drv_idle_low:101 20:drv_win_02:102 25:-:103 25:drv_wi:104 14:drv_gest_disapnt:105 26:a`b:106 | A[B Drv_Idle_Low drv_gest_disapnt X X aZb drv_wi X -> 0 101 105 0 0 0 104 0
+30:drv_pan_sweep_overlay:100 26:a@b:0 4:drv_wi:102 0:a`b:103 21:a`b:0 10:azb:105 9:drv_wi:0 19:a@b:107 0::108 20:A[B:0 | a@b azb azb a@b a@b X X A[B -> 0 105 105 0 0 0 0 0
+14:drv_wi:100 16:azb:101 16:a`b:102 10:DRV_IDLE_LOW:103 17:drv_gest_disapnt:0 13:drv_win_02:105 26:drv_wi:106 | azb aZb a`b azb X DRV_PAN_SWEEP_OVERLAY azb azb -> 101 101 102 101 0 0 101 101
+5:azb:100 12:aZb:101 20:drv_pan_sweep_overlay:102 21:aZb:103 0:A[B:104 30:a@b:105 30:a@b:0 15:drv_win:0 6:drv_gest_disapnt:0 17:DRV_IDLE_LOW:109 1:drv_win:10a | drv_win DRV_IDLE_LOW A[B drv_wi a@b a`b drv_gest_disapnt drv_idle_low -> 0 109 0 0 105 0 0 109
+28:drv_gest_disapnt:100 14:a@b:101 11:drv_win:102 24:drv_pan_sweep_overlay:103 13:DRV_PAN_SWEEP_OVERLAY:104 20:azb:105 0::106 | drv_win_02 drv_win azb drv_wi drv_wi drv_win a{b drv_win -> 0 102 105 0 0 102 0 102
+7:drv_pan_sweep_overlay:100 28:x:101 29:DRV_IDLE_LOW:102 3:A[B:103 24:drv_idle_low:104 14:drv_gest_disapnt:105 | Drv_Idle_Low drv_gest_disapnt drv_win drv_pan_sweep_overlay "" DRV_PAN_SWEEP_OVERLAY DRV_PAN_SWEEP_OVERLAY A[B -> 102 105 0 100 0 100 100 103
+30:X:100 | a@b Drv_Idle_Low aZb "" drv_pan_sweep_overlay a`b drv_win DRV_PAN_SWEEP_OVERLAY -> 0 0 0 0 0 0 0 0
+30:x:100 28:DRV_IDLE_LOW:101 | X A[B drv_win_02 x aZb a`b X drv_idle_low -> 100 0 0 100 0 0 100 101
+16:drv_gest_disapnt:100 25:-:101 0::102 | a`b a@b A[B a`b drv_win drv_pan_sweep_overlay drv_idle_low aZb -> 0 0 0 0 0 0 0 0
+16:drv_win:0 24:Drv_Idle_Low:101 4:drv_win:102 24:A[B:103 29:X:104 27:A[B:105 9:drv_idle_low:106 15:drv_win:0 | A[B X drv_pan_sweep_overlay drv_idle_low drv_win aZb a`b DRV_IDLE_LOW -> 103 104 0 101 0 0 0 101
+ | aZb drv_idle_low drv_win_02 "" drv_pan_sweep_overlay A[B drv_gest_disapnt "" -> 0 0 0 0 0 0 0 0
+24:aZb:100 14:drv_wi:101 28:A[B:102 6:a@b:103 0:a{b:104 22:-:105 23:aZb:106 14:drv_idle_low:107 9:drv_pan_sweep_overlay:108 4:x:109 | X x a@b Drv_Idle_Low drv_wi DRV_PAN_SWEEP_OVERLAY drv_pan_sweep_overlay drv_pan_sweep_overlay -> 109 109 103 107 101 108 108 108
+0::100 | X "" "" drv_wi aZb drv_pan_sweep_overlay drv_pan_sweep_overlay aZb -> 0 100 100 0 0 0 0 0
+17:X:100 8:A[B:101 8:drv_gest_disapnt:102 5:drv_pan_sweep_overlay:103 0:drv_gest_disapnt:0 9:Drv_Idle_Low:105 | X Drv_Idle_Low Drv_Idle_Low a@b aZb aZb x a@b -> 100 105 105 0 0 0 100 0
+18:X:0 8:azb:101 27:a{b:102 21:A[B:103 18:a{b:104 | DRV_PAN_SWEEP_OVERLAY aZb drv_wi DRV_IDLE_LOW DRV_PAN_SWEEP_OVERLAY X A[B a{b -> 0 101 0 0 0 0 103 102
+7:drv_win:100 0::101 7:drv_win_02:102 5:X:103 20:drv_idle_low:104 18:A[B:105 | X X x drv_idle_low Drv_Idle_Low drv_idle_low drv_gest_disapnt drv_idle_low -> 103 103 103 104 104 104 0 104
+3:azb:0 | A[B A[B X drv_win Drv_Idle_Low drv_pan_sweep_overlay drv_gest_disapnt DRV_PAN_SWEEP_OVERLAY -> 0 0 0 0 0 0 0 0
+11:x:100 19:drv_pan_sweep_overlay:101 7:drv_win_02:102 13:DRV_PAN_SWEEP_OVERLAY:103 26:azb:0 12:x:105 6:aZb:106 0::107 0:X:108 19:-:109 24:azb:10a 13:drv_win_02:10b | drv_win X a@b a{b DRV_PAN_SWEEP_OVERLAY "" x drv_pan_sweep_overlay -> 0 100 0 0 101 107 100 101
+21:drv_idle_low:100 29:DRV_IDLE_LOW:101 19:-:102 11:DRV_PAN_SWEEP_OVERLAY:0 12:drv_gest_disapnt:104 12:a{b:0 12:drv_pan_sweep_overlay:106 2:drv_pan_sweep_overlay:107 30:drv_idle_low:108 | drv_gest_disapnt drv_idle_low "" Drv_Idle_Low drv_idle_low a{b x drv_pan_sweep_overlay -> 104 100 0 100 100 0 0 0
+12:x:100 20:a`b:101 12:aZb:102 3:a@b:103 20:drv_pan_sweep_overlay:104 12:a`b:105 16:drv_idle_low:106 2:a`b:107 8:A[B:108 0:drv_wi:109 | aZb drv_idle_low x a@b azb drv_pan_sweep_overlay a@b a@b -> 102 106 100 103 102 104 103 103
+11:X:100 8:a@b:101 10:drv_win:102 | a`b drv_wi drv_win_02 a{b DRV_IDLE_LOW a`b drv_win DRV_PAN_SWEEP_OVERLAY -> 0 0 0 0 0 0 102 0
+11:drv_pan_sweep_overlay:100 15:-:101 9:a{b:102 | drv_gest_disapnt drv_win drv_wi X azb x Drv_Idle_Low drv_gest_disapnt -> 0 0 0 0 0 0 0 0
+16:aZb:100 9:aZb:101 23:drv_win:0 29:X:0 22:drv_pan_sweep_overlay:104 28:DRV_IDLE_LOW:105 | aZb x x DRV_PAN_SWEEP_OVERLAY drv_idle_low X DRV_PAN_SWEEP_OVERLAY x -> 100 0 0 104 105 0 104 0
+20:a`b:100 19:x:101 | drv_idle_low drv_wi drv_idle_low "" a`b a{b drv_gest_disapnt Drv_Idle_Low -> 0 0 0 0 100 0 0 0
+ | DRV_IDLE_LOW drv_win a@b A[B A[B a@b drv_gest_disapnt drv_idle_low -> 0 0 0 0 0 0 0 0
+0:drv_pan_sweep_overlay:100 8:drv_win_02:101 5:DRV_IDLE_LOW:0 15:-:103 | "" a`b DRV_IDLE_LOW drv_idle_low azb drv_win drv_win_02 drv_win_02 -> 100 0 0 0 0 0 101 101
+28:a@b:100 28:drv_win:101 27:DRV_PAN_SWEEP_OVERLAY:102 15:DRV_PAN_SWEEP_OVERLAY:103 26:drv_wi:104 8:drv_pan_sweep_overlay:0 7:Drv_Idle_Low:106 5:aZb:0 29:DRV_IDLE_LOW:108 30:aZb:0 15:Drv_Idle_Low:10a | drv_pan_sweep_overlay azb Drv_Idle_Low drv_wi a{b DRV_IDLE_LOW a{b DRV_PAN_SWEEP_OVERLAY -> 102 0 106 104 0 106 0 102
+8:DRV_IDLE_LOW:100 25:a{b:101 10:x:102 30:drv_win_02:103 15:drv_win:104 0::105 2:drv_win:106 0::107 6:X:108 28:drv_pan_sweep_overlay:109 18:X:10a 30:drv_win_02:10b | Drv_Idle_Low drv_win_02 X DRV_IDLE_LOW a{b a{b a{b drv_win -> 100 103 102 100 101 101 101 104
+14:drv_win:100 26:X:101 1:-:102 19:-:103 6:Drv_Idle_Low:0 25:drv_idle_low:105 | drv_idle_low a{b aZb X azb aZb DRV_IDLE_LOW a@b -> 0 0 0 101 0 0 0 0
+25:X:100 19:DRV_IDLE_LOW:101 18:drv_win_02:0 30:drv_wi:103 1:Drv_Idle_Low:104 14:-:0 | x drv_pan_sweep_overlay X aZb drv_win_02 azb drv_pan_sweep_overlay drv_win -> 100 0 100 0 0 0 0 0
+4:drv_win_02:100 23:x:0 | "" aZb drv_pan_sweep_overlay drv_wi drv_win_02 drv_idle_low azb a`b -> 0 0 0 0 100 0 0 0
+26:drv_idle_low:100 23:Drv_Idle_Low:101 2:DRV_IDLE_LOW:0 8:azb:103 | DRV_IDLE_LOW X aZb X azb DRV_PAN_SWEEP_OVERLAY drv_pan_sweep_overlay a{b -> 100 0 103 0 103 0 0 0
+27:a{b:100 6:drv_win:101 27:Drv_Idle_Low:102 15:Drv_Idle_Low:103 28:drv_win_02:104 2:Drv_Idle_Low:105 0:drv_gest_disapnt:106 0::107 | Drv_Idle_Low drv_win azb Drv_Idle_Low aZb a@b a{b Drv_Idle_Low -> 102 101 0 102 0 0 100 102
+25:DRV_PAN_SWEEP_OVERLAY:100 23:drv_idle_low:101 14:drv_gest_disapnt:0 3:DRV_IDLE_LOW:103 4:a`b:104 | aZb DRV_IDLE_LOW a@b "" a@b x drv_pan_sweep_overlay drv_win_02 -> 0 101 0 0 0 0 100 0
+6:a@b:100 | drv_win_02 aZb drv_pan_sweep_overlay X drv_pan_sweep_overlay drv_win_02 "" Drv_Idle_Low -> 0 0 0 0 0 0 0 0
+0::100 25:X:0 | azb X drv_pan_sweep_overlay Drv_Idle_Low drv_pan_sweep_overlay X aZb a@b -> 0 0 0 0 0 0 0 0
+14:a@b:100 14:Drv_Idle_Low:0 17:-:102 2:drv_win_02:103 4:aZb:104 21:Drv_Idle_Low:105 0:A[B:106 0:A[B:107 12:a@b:108 10:drv_idle_low:109 | Drv_Idle_Low drv_pan_sweep_overlay A[B aZb a{b a@b a`b "" -> 0 0 0 104 0 100 0 106
+2:drv_win:100 0::0 21:drv_gest_disapnt:102 17:a`b:0 5:azb:104 28:DRV_IDLE_LOW:105 15:drv_idle_low:106 26:a`b:107 | drv_win DRV_PAN_SWEEP_OVERLAY drv_win drv_idle_low a`b drv_win a@b drv_idle_low -> 100 0 100 105 0 100 0 105
+7:-:100 0::101 11:Drv_Idle_Low:102 3:x:103 30:drv_idle_low:104 | X drv_win_02 drv_idle_low "" a{b aZb a{b drv_pan_sweep_overlay -> 103 0 102 101 0 0 0 0
+19:-:100 10:DRV_IDLE_LOW:101 5:drv_win_02:102 30:drv_win:103 27:drv_idle_low:104 14:a{b:105 26:drv_wi:106 15:drv_wi:107 5:azb:108 15:drv_idle_low:0 24:a`b:10a 10:drv_win_02:10b | drv_idle_low a{b a{b drv_win_02 drv_pan_sweep_overlay drv_gest_disapnt drv_wi drv_idle_low -> 101 105 105 102 0 0 106 101
+13:azb:100 21:aZb:101 | drv_pan_sweep_overlay Drv_Idle_Low a{b A[B "" azb a{b X -> 0 0 0 0 0 100 0 0
+3:-:0 | azb a@b aZb azb drv_pan_sweep_overlay A[B drv_win_02 DRV_PAN_SWEEP_OVERLAY -> 0 0 0 0 0 0 0 0
+28:drv_gest_disapnt:0 7:drv_win_02:101 23:x:102 16:drv_win:103 2:a{b:104 20:DRV_IDLE_LOW:105 20:drv_win:106 | azb drv_gest_disapnt drv_win a`b X DRV_PAN_SWEEP_OVERLAY DRV_PAN_SWEEP_OVERLAY a`b -> 0 0 103 0 102 0 0 0
+24:drv_gest_disapnt:100 7:x:101 8:drv_gest_disapnt:102 0::103 | DRV_IDLE_LOW x a`b azb drv_gest_disapnt x drv_gest_disapnt x -> 0 101 0 0 100 101 100 101
+17:-:100 24:DRV_IDLE_LOW:101 1:DRV_PAN_SWEEP_OVERLAY:102 28:A[B:103 2:A[B:104 19:drv_win:105 6:DRV_PAN_SWEEP_OVERLAY:106 10:A[B:107 0:DRV_IDLE_LOW:108 24:A[B:109 13:Drv_Idle_Low:10a 14:a`b:10b | drv_win A[B azb a`b "" "" X aZb -> 105 103 0 10b 108 108 0 0
+2:drv_wi:100 0:a{b:0 17:drv_pan_sweep_overlay:102 20:a@b:0 17:drv_idle_low:104 28:drv_gest_disapnt:0 16:-:106 10:drv_gest_disapnt:0 10:aZb:0 4:a@b:109 12:aZb:10a | Drv_Idle_Low "" Drv_Idle_Low Drv_Idle_Low drv_gest_disapnt drv_gest_disapnt a@b drv_pan_sweep_overlay -> 104 0 104 104 0 0 0 102
+11:DRV_PAN_SWEEP_OVERLAY:0 15:a@b:101 22:drv_wi:102 12:drv_pan_sweep_overlay:103 21:drv_gest_disapnt:104 20:drv_win:105 18:DRV_IDLE_LOW:106 | a@b drv_win_02 DRV_IDLE_LOW a{b drv_wi DRV_PAN_SWEEP_OVERLAY a@b X -> 101 0 106 0 102 0 101 0
+15:drv_pan_sweep_overlay:100 29:DRV_PAN_SWEEP_OVERLAY:101 9:drv_pan_sweep_overlay:102 | drv_gest_disapnt azb drv_pan_sweep_overlay "" drv_pan_sweep_overlay a{b drv_gest_disapnt drv_idle_low -> 0 0 100 0 100 0 0 0
+1:A[B:100 30:a`b:101 1:DRV_IDLE_LOW:102 21:drv_win:103 | drv_gest_disapnt drv_idle_low drv_idle_low A[B DRV_PAN_SWEEP_OVERLAY x "" a{b -> 0 102 102 100 0 0 0 0
+ | azb a`b X aZb drv_idle_low aZb DRV_PAN_SWEEP_OVERLAY DRV_PAN_SWEEP_OVERLAY -> 0 0 0 0 0 0 0 0
+16:drv_pan_sweep_overlay:100 3:DRV_IDLE_LOW:101 9:drv_wi:0 10:a{b:103 1:drv_idle_low:104 15:drv_wi:105 26:aZb:106 29:a@b:107 | drv_pan_sweep_overlay drv_gest_disapnt DRV_IDLE_LOW azb DRV_IDLE_LOW drv_idle_low A[B drv_win -> 100 0 101 106 101 101 0 0
+0::100 | x drv_pan_sweep_overlay drv_idle_low DRV_PAN_SWEEP_OVERLAY "" azb A[B azb -> 0 0 0 0 100 0 0 0
+19:-:100 18:a@b:101 28:drv_gest_disapnt:0 | A[B drv_gest_disapnt drv_win "" drv_wi a{b aZb X -> 0 0 0 0 0 0 0 0
+18:-:100 0:aZb:101 5:drv_pan_sweep_overlay:102 12:azb:103 1:a@b:104 14:a@b:105 0::106 7:drv_pan_sweep_overlay:107 0::0 13:DRV_PAN_SWEEP_OVERLAY:109 11:a`b:10a 30:drv_win:10b | azb x azb azb "" drv_win drv_idle_low A[B -> 103 0 103 103 101 10b 0 0
+21:X:100 6:x:0 28:DRV_IDLE_LOW:102 7:drv_pan_sweep_overlay:103 3:drv_pan_sweep_overlay:104 17:drv_win:105 8:DRV_PAN_SWEEP_OVERLAY:106 26:DRV_IDLE_LOW:107 17:Drv_Idle_Low:108 | X drv_win drv_win DRV_IDLE_LOW drv_gest_disapnt X Drv_Idle_Low a{b -> 100 105 105 102 0 100 102 0
+7:-:100 30:drv_gest_disapnt:101 29:x:102 12:drv_win:0 1:drv_gest_disapnt:104 | a`b drv_wi drv_win_02 X x x x aZb -> 0 0 0 102 102 102 102 0
+17:DRV_IDLE_LOW:0 21:a@b:101 0::102 12:X:103 26:azb:104 0::105 0:drv_win:106 15:drv_pan_sweep_overlay:107 23:-:108 3:A[B:109 3:X:10a | DRV_IDLE_LOW drv_pan_sweep_overlay drv_pan_sweep_overlay drv_gest_disapnt Drv_Idle_Low A[B a`b DRV_IDLE_LOW -> 0 107 107 0 0 109 0 0
+21:drv_pan_sweep_overlay:0 26:A[B:101 17:drv_pan_sweep_overlay:102 0:drv_win:103 16:Drv_Idle_Low:104 14:-:105 3:X:106 | A[B a{b drv_win azb drv_win drv_win_02 x drv_win -> 101 0 0 0 0 0 106 0
+ | X "" A[B a@b aZb "" "" drv_idle_low -> 0 0 0 0 0 0 0 0
+16:x:100 | azb drv_wi drv_win_02 a`b drv_win_02 drv_wi X A[B -> 0 0 0 0 0 0 100 0
+16:aZb:100 20:aZb:101 0:a`b:102 24:a`b:103 16:drv_pan_sweep_overlay:104 17:drv_pan_sweep_overlay:105 22:drv_win_02:106 12:drv_wi:107 | A[B drv_pan_sweep_overlay drv_win_02 drv_wi a{b aZb x drv_win -> 0 104 106 107 0 100 0 0
+25:DRV_PAN_SWEEP_OVERLAY:100 22:a{b:101 23:drv_wi:0 14:drv_gest_disapnt:103 8:drv_win:104 12:Drv_Idle_Low:105 25:azb:106 | a{b drv_wi Drv_Idle_Low x drv_gest_disapnt a{b azb x -> 101 0 105 0 103 101 106 0
+28:x:100 13:x:101 20:drv_pan_sweep_overlay:102 7:a{b:103 27:drv_idle_low:104 17:drv_wi:0 29:DRV_PAN_SWEEP_OVERLAY:0 13:Drv_Idle_Low:107 5:drv_wi:0 30:azb:0 | drv_win_02 azb drv_wi drv_idle_low drv_pan_sweep_overlay DRV_IDLE_LOW DRV_PAN_SWEEP_OVERLAY a{b -> 0 0 0 104 102 104 102 103
+9:-:100 | a{b A[B drv_win drv_pan_sweep_overlay DRV_IDLE_LOW drv_idle_low Drv_Idle_Low drv_idle_low -> 0 0 0 0 0 0 0 0
+ | A[B a@b drv_win drv_win_02 Drv_Idle_Low drv_idle_low A[B A[B -> 0 0 0 0 0 0 0 0
+20:a@b:100 23:a`b:101 3:a@b:102 26:a{b:103 28:drv_gest_disapnt:104 18:-:105 27:drv_gest_disapnt:106 28:drv_gest_disapnt:107 29:a@b:108 12:DRV_PAN_SWEEP_OVERLAY:109 | aZb a{b drv_gest_disapnt drv_gest_disapnt drv_gest_disapnt DRV_IDLE_LOW drv_pan_sweep_overlay drv_gest_disapnt -> 0 103 104 104 104 0 109 104
+18:a`b:100 13:DRV_IDLE_LOW:101 3:DRV_IDLE_LOW:0 21:a@b:103 7:a{b:0 4:drv_pan_sweep_overlay:105 4:drv_wi:106 2:drv_idle_low:107 0::108 | a@b aZb drv_gest_disapnt "" a@b DRV_PAN_SWEEP_OVERLAY Drv_Idle_Low DRV_PAN_SWEEP_OVERLAY -> 103 0 0 108 103 105 101 105
+ | x a@b x A[B "" drv_win_02 drv_pan_sweep_overlay drv_wi -> 0 0 0 0 0 0 0 0
+15:aZb:100 19:drv_gest_disapnt:101 13:a{b:102 13:azb:103 24:x:104 0:azb:105 27:drv_idle_low:106 30:drv_win_02:107 22:X:108 21:drv_gest_disapnt:0 12:a`b:10a | drv_win_02 azb X DRV_IDLE_LOW a`b DRV_IDLE_LOW X a{b -> 107 100 104 106 10a 106 104 102
+0::0 4:drv_pan_sweep_overlay:101 27:drv_pan_sweep_overlay:102 14:drv_gest_disapnt:103 3:DRV_IDLE_LOW:104 11:-:105 | drv_idle_low DRV_IDLE_LOW X "" drv_pan_sweep_overlay drv_gest_disapnt drv_pan_sweep_overlay x -> 104 104 0 0 101 103 101 0
+23:drv_win_02:100 5:drv_win:101 30:drv_pan_sweep_overlay:102 28:a{b:103 0:a`b:104 28:-:105 3:aZb:0 6:drv_idle_low:107 8:x:108 | drv_win DRV_IDLE_LOW drv_win_02 aZb A[B drv_win_02 drv_win a{b -> 101 107 100 0 0 100 101 103
+19:DRV_IDLE_LOW:100 27:aZb:101 26:drv_win:102 18:DRV_PAN_SWEEP_OVERLAY:103 13:DRV_PAN_SWEEP_OVERLAY:104 16:azb:105 3:DRV_PAN_SWEEP_OVERLAY:0 15:x:107 5:A[B:0 2:drv_pan_sweep_overlay:109 | aZb A[B a@b drv_idle_low A[B "" drv_idle_low drv_win -> 101 0 0 100 0 0 100 102
+22:a@b:100 5:drv_win_02:101 3:aZb:102 4:a`b:103 22:A[B:104 28:drv_win:105 25:x:0 27:A[B:107 16:DRV_IDLE_LOW:0 | a`b a`b drv_win_02 drv_pan_sweep_overlay a@b X "" DRV_PAN_SWEEP_OVERLAY -> 103 103 101 0 100 0 0 0
+19:X:100 16:drv_pan_sweep_overlay:101 16:drv_win:0 4:DRV_IDLE_LOW:103 15:X:104 29:X:105 16:drv_win:106 16:X:0 12:a@b:108 21:drv_win_02:109 24:A[B:10a 14:-:10b | azb "" azb a@b X drv_win Drv_Idle_Low "" -> 0 0 0 108 100 0 103 0
+28:DRV_IDLE_LOW:100 3:X:101 0:aZb:102 11:DRV_IDLE_LOW:103 25:A[B:0 13:a`b:105 27:Drv_Idle_Low:106 23:aZb:107 | x X DRV_PAN_SWEEP_OVERLAY a{b DRV_IDLE_LOW DRV_PAN_SWEEP_OVERLAY drv_wi DRV_IDLE_LOW -> 101 101 0 0 100 0 0 100
+2:DRV_PAN_SWEEP_OVERLAY:100 30:azb:0 4:x:102 1:x:0 13:a{b:104 29:drv_win_02:105 1:Drv_Idle_Low:106 12:a`b:107 16:a`b:0 9:Drv_Idle_Low:109 | A[B drv_win_02 a{b drv_win aZb Drv_Idle_Low x DRV_PAN_SWEEP_OVERLAY -> 0 105 104 0 0 106 102 100
+12:a{b:100 21:drv_wi:101 27:x:102 | azb a{b a@b drv_idle_low X a{b a`b drv_gest_disapnt -> 0 100 0 0 102 100 0 0
+3:x:0 6:aZb:0 29:azb:102 0:drv_win_02:103 9:a{b:104 5:a@b:105 5:drv_win_02:106 | drv_wi drv_idle_low a{b azb Drv_Idle_Low drv_pan_sweep_overlay drv_pan_sweep_overlay azb -> 0 0 104 0 0 0 0 0
+28:drv_pan_sweep_overlay:100 29:A[B:0 10:drv_idle_low:0 13:DRV_IDLE_LOW:103 4:Drv_Idle_Low:104 14:drv_pan_sweep_overlay:0 10:aZb:106 | a@b drv_idle_low aZb drv_wi A[B Drv_Idle_Low DRV_PAN_SWEEP_OVERLAY drv_pan_sweep_overlay -> 0 0 106 0 0 0 100 100
+0::100 29:drv_pan_sweep_overlay:101 0::102 14:DRV_PAN_SWEEP_OVERLAY:103 2:DRV_PAN_SWEEP_OVERLAY:104 7:drv_idle_low:105 5:drv_win:106 13:drv_idle_low:107 19:a`b:108 27:a@b:109 | DRV_IDLE_LOW drv_wi x DRV_PAN_SWEEP_OVERLAY A[B a`b a@b drv_pan_sweep_overlay -> 105 0 0 101 0 108 109 101
+27:x:100 5:drv_wi:101 12:azb:102 4:DRV_PAN_SWEEP_OVERLAY:103 0::104 15:azb:0 24:drv_gest_disapnt:106 | Drv_Idle_Low drv_gest_disapnt x drv_pan_sweep_overlay drv_wi drv_wi azb drv_gest_disapnt -> 0 106 100 103 101 101 102 106
+15:-:100 26:a{b:101 13:Drv_Idle_Low:102 26:X:103 30:drv_pan_sweep_overlay:104 27:A[B:105 22:drv_wi:106 10:a@b:107 28:Drv_Idle_Low:108 29:-:109 | X A[B drv_win_02 drv_pan_sweep_overlay Drv_Idle_Low A[B DRV_IDLE_LOW drv_idle_low -> 103 105 0 104 102 105 102 102
+4:a`b:100 1:drv_pan_sweep_overlay:101 28:drv_gest_disapnt:102 5:drv_wi:103 24:drv_win_02:104 24:drv_win_02:105 0::106 18:Drv_Idle_Low:107 23:a`b:108 30:drv_win_02:109 | drv_win_02 a`b a`b a`b drv_win_02 a`b drv_win_02 drv_idle_low -> 104 100 100 100 104 100 104 107
+28:A[B:100 14:a{b:101 23:DRV_IDLE_LOW:102 13:DRV_PAN_SWEEP_OVERLAY:103 7:X:104 0::105 6:Drv_Idle_Low:106 11:DRV_PAN_SWEEP_OVERLAY:107 0:azb:108 17:drv_gest_disapnt:109 3:A[B:10a | DRV_PAN_SWEEP_OVERLAY DRV_IDLE_LOW azb x DRV_IDLE_LOW DRV_PAN_SWEEP_OVERLAY aZb X -> 103 102 0 104 102 103 0 104
+25:aZb:100 0::101 12:a@b:102 4:a`b:103 21:drv_win_02:104 10:a@b:105 28:drv_wi:106 28:drv_pan_sweep_overlay:107 16:-:108 19:drv_wi:109 5:Drv_Idle_Low:10a | DRV_PAN_SWEEP_OVERLAY drv_win_02 x "" drv_pan_sweep_overlay a`b DRV_PAN_SWEEP_OVERLAY Drv_Idle_Low -> 107 104 0 101 107 103 107 10a
+12:a{b:100 29:A[B:101 13:Drv_Idle_Low:102 15:x:103 1:x:104 26:drv_pan_sweep_overlay:105 6:A[B:106 27:drv_gest_disapnt:107 | DRV_IDLE_LOW Drv_Idle_Low A[B a{b x Drv_Idle_Low DRV_IDLE_LOW a@b -> 102 102 101 100 103 102 102 0
+25:a{b:100 29:drv_idle_low:101 12:DRV_IDLE_LOW:102 7:drv_wi:103 25:drv_idle_low:104 | a@b x aZb a`b drv_idle_low drv_win_02 drv_wi drv_idle_low -> 0 0 0 0 101 0 103 101
+ | drv_win A[B a{b x a`b drv_pan_sweep_overlay drv_gest_disapnt drv_win_02 -> 0 0 0 0 0 0 0 0
+21:drv_wi:100 0::0 22:drv_win_02:102 18:drv_pan_sweep_overlay:103 11:x:104 25:drv_idle_low:105 27:A[B:106 22:A[B:0 22:drv_win:108 7:drv_wi:109 9:drv_win:10a | drv_gest_disapnt a@b a@b drv_idle_low drv_gest_disapnt a{b DRV_IDLE_LOW drv_gest_disapnt -> 0 0 0 105 0 0 105 0
+21:drv_win_02:0 15:DRV_IDLE_LOW:101 11:X:0 26:aZb:103 3:x:104 18:drv_win_02:0 30:X:0 7:drv_wi:107 14:drv_pan_sweep_overlay:108 7:-:109 12:DRV_PAN_SWEEP_OVERLAY:10a 14:aZb:10b | a{b drv_win_02 DRV_PAN_SWEEP_OVERLAY DRV_IDLE_LOW drv_wi drv_pan_sweep_overlay x drv_win -> 0 0 108 101 107 108 0 0
+3:drv_pan_sweep_overlay:100 6:drv_idle_low:0 30:x:102 | a@b a@b "" drv_idle_low x a`b a@b Drv_Idle_Low -> 0 0 0 0 102 0 0 0
+13:a@b:100 13:a@b:101 10:drv_gest_disapnt:102 27:azb:103 19:A[B:104 6:aZb:0 4:drv_idle_low:106 0:x:107 2:drv_idle_low:108 24:a`b:109 22:a@b:0 | drv_idle_low drv_gest_disapnt drv_idle_low a`b drv_win x drv_idle_low drv_idle_low -> 106 102 106 109 0 0 106 106
+30:a{b:0 9:drv_gest_disapnt:0 26:drv_wi:102 11:drv_wi:103 3:aZb:104 25:drv_gest_disapnt:105 18:drv_gest_disapnt:106 6:DRV_PAN_SWEEP_OVERLAY:107 21:azb:108 29:DRV_IDLE_LOW:109 0:drv_idle_low:10a 0:drv_wi:10b | drv_wi drv_idle_low a{b DRV_IDLE_LOW DRV_IDLE_LOW DRV_PAN_SWEEP_OVERLAY DRV_PAN_SWEEP_OVERLAY a@b -> 102 109 0 109 109 107 107 0
+13:X:100 11:a{b:101 19:drv_gest_disapnt:102 21:-:103 3:a`b:104 6:drv_win:105 26:DRV_IDLE_LOW:106 | Drv_Idle_Low drv_pan_sweep_overlay drv_pan_sweep_overlay X drv_idle_low drv_wi drv_win a`b -> 106 0 0 100 106 0 105 104
+17:A[B:100 6:x:101 13:drv_pan_sweep_overlay:0 21:azb:103 5:a{b:104 7:DRV_IDLE_LOW:105 20:a`b:106 | A[B A[B azb DRV_IDLE_LOW azb drv_win drv_wi DRV_IDLE_LOW -> 100 100 103 105 103 0 0 105
+10:DRV_PAN_SWEEP_OVERLAY:0 3:azb:101 18:azb:102 9:drv_idle_low:0 2:drv_win:104 29:drv_gest_disapnt:105 5:a`b:106 18:drv_wi:107 23:Drv_Idle_Low:108 18:A[B:109 29:drv_win:10a 5:azb:10b | azb a`b a@b x azb "" azb drv_gest_disapnt -> 101 106 0 0 101 0 101 105
+12:-:100 14:a`b:0 | a{b a`b aZb drv_win_02 a`b drv_idle_low DRV_PAN_SWEEP_OVERLAY drv_idle_low -> 0 0 0 0 0 0 0 0
+20:a{b:100 11:Drv_Idle_Low:101 4:x:102 12:A[B:103 1:a@b:0 19:aZb:105 17:x:106 16:DRV_PAN_SWEEP_OVERLAY:0 13:x:108 | aZb drv_win_02 x A[B X a{b X aZb -> 105 0 102 103 102 100 102 105
+ | DRV_IDLE_LOW drv_pan_sweep_overlay drv_win a@b X x A[B DRV_PAN_SWEEP_OVERLAY -> 0 0 0 0 0 0 0 0
+4:-:100 5:drv_idle_low:101 11:DRV_IDLE_LOW:102 | drv_idle_low drv_gest_disapnt drv_wi DRV_IDLE_LOW drv_wi x X a`b -> 101 0 0 101 0 0 0 0
+11:a@b:100 16:aZb:101 29:Drv_Idle_Low:102 7:azb:103 11:-:104 18:DRV_PAN_SWEEP_OVERLAY:105 1:drv_gest_disapnt:106 3:a@b:107 7:aZb:108 0:-:0 29:drv_win:10a 15:a@b:10b | azb a@b a@b a`b aZb x Drv_Idle_Low a@b -> 101 100 100 0 101 0 102 100
+21:drv_idle_low:100 0::101 20:Drv_Idle_Low:102 | drv_idle_low "" "" Drv_Idle_Low drv_win_02 drv_idle_low Drv_Idle_Low drv_idle_low -> 100 101 101 100 0 100 100 100
+25:x:100 | drv_idle_low a{b drv_win X x DRV_IDLE_LOW x "" -> 0 0 0 100 100 0 100 0
+2:DRV_PAN_SWEEP_OVERLAY:100 5:drv_wi:101 1:-:102 11:azb:103 4:aZb:104 23:drv_win_02:0 5:a{b:106 24:DRV_PAN_SWEEP_OVERLAY:107 20:drv_win:108 | DRV_PAN_SWEEP_OVERLAY drv_pan_sweep_overlay A[B a{b azb DRV_PAN_SWEEP_OVERLAY drv_wi Drv_Idle_Low -> 100 100 0 106 103 100 101 0
+20:a{b:100 24:-:0 6:DRV_PAN_SWEEP_OVERLAY:0 23:A[B:103 13:drv_win_02:104 15:a{b:105 0::106 14:drv_win:107 8:x:108 2:drv_gest_disapnt:109 | "" "" Drv_Idle_Low A[B A[B drv_pan_sweep_overlay drv_win drv_gest_disapnt -> 106 106 0 103 103 0 107 109
+1:X:100 12:drv_pan_sweep_overlay:101 | a@b X drv_idle_low DRV_IDLE_LOW a{b Drv_Idle_Low drv_win_02 x -> 0 100 0 0 0 0 0 100
+30:aZb:100 11:-:101 12:drv_wi:102 11:drv_idle_low:103 4:drv_win_02:104 4:DRV_PAN_SWEEP_OVERLAY:105 29:A[B:106 3:drv_idle_low:107 | X aZb A[B drv_wi DRV_PAN_SWEEP_OVERLAY drv_pan_sweep_overlay drv_idle_low Drv_Idle_Low -> 0 100 106 102 105 105 103 103
+0::100 22:x:0 9:Drv_Idle_Low:102 26:drv_win:103 29:drv_gest_disapnt:104 12:drv_pan_sweep_overlay:105 0::0 25:drv_win:107 9:a{b:108 | DRV_IDLE_LOW aZb drv_win_02 x a{b drv_pan_sweep_overlay drv_pan_sweep_overlay a@b -> 102 0 0 0 108 105 105 0
+10:drv_wi:100 25:DRV_PAN_SWEEP_OVERLAY:101 13:drv_wi:102 12:drv_win:103 7:a`b:104 4:drv_wi:105 8:-:106 15:DRV_PAN_SWEEP_OVERLAY:107 11:a@b:108 0::109 5:drv_win_02:0 2:drv_idle_low:10b | drv_win_02 "" azb x "" a@b azb a@b -> 0 109 0 0 109 108 0 108
+6:DRV_IDLE_LOW:100 | DRV_PAN_SWEEP_OVERLAY A[B "" drv_pan_sweep_overlay DRV_IDLE_LOW x Drv_Idle_Low drv_wi -> 0 0 0 0 100 0 100 0
+24:-:0 16:x:101 14:a`b:102 3:DRV_PAN_SWEEP_OVERLAY:103 14:A[B:104 | drv_gest_disapnt a`b DRV_PAN_SWEEP_OVERLAY A[B a`b A[B drv_pan_sweep_overlay a{b -> 0 102 103 104 102 104 103 0
+30:aZb:100 27:A[B:101 0::0 0:-:103 1:drv_win:0 13:a@b:105 0::106 | "" drv_idle_low A[B a@b drv_win_02 A[B drv_pan_sweep_overlay drv_idle_low -> 0 0 101 105 0 101 0 0
+ | drv_wi DRV_PAN_SWEEP_OVERLAY a{b a`b Drv_Idle_Low A[B A[B a@b -> 0 0 0 0 0 0 0 0
+12:a@b:100 22:drv_pan_sweep_overlay:101 9:aZb:102 0:drv_idle_low:103 9:-:104 | drv_win_02 drv_gest_disapnt a@b A[B "" "" drv_gest_disapnt a@b -> 0 0 100 0 103 103 0 100
+0::100 0:drv_pan_sweep_overlay:101 5:DRV_PAN_SWEEP_OVERLAY:102 21:a`b:103 21:a{b:104 0:x:105 11:-:106 20:drv_pan_sweep_overlay:107 24:-:108 4:drv_idle_low:109 30:drv_gest_disapnt:10a | drv_idle_low a`b x a{b drv_idle_low drv_win Drv_Idle_Low drv_win_02 -> 109 103 0 104 109 0 109 0
+7:X:100 0::101 19:-:102 20:drv_win:103 0::0 3:drv_pan_sweep_overlay:0 10:A[B:106 | A[B "" a{b x a@b Drv_Idle_Low drv_gest_disapnt drv_win -> 106 101 0 100 0 0 0 103
+4:drv_win:100 8:a@b:101 29:a@b:102 22:a`b:0 | drv_pan_sweep_overlay A[B a@b x drv_win_02 a{b a{b drv_gest_disapnt -> 0 0 101 0 0 0 0 0
+ | drv_pan_sweep_overlay drv_win drv_win aZb drv_win_02 drv_pan_sweep_overlay drv_idle_low drv_idle_low -> 0 0 0 0 0 0 0 0
+ | Drv_Idle_Low A[B drv_gest_disapnt drv_gest_disapnt DRV_IDLE_LOW drv_wi a`b A[B -> 0 0 0 0 0 0 0 0
+ | Drv_Idle_Low DRV_IDLE_LOW drv_gest_disapnt X drv_win_02 drv_win drv_win_02 A[B -> 0 0 0 0 0 0 0 0
+8:drv_wi:100 12:drv_wi:0 4:-:102 17:X:103 13:drv_wi:104 22:drv_idle_low:105 24:a`b:106 0::0 1:DRV_PAN_SWEEP_OVERLAY:0 15:a{b:0 0:drv_gest_disapnt:10a 28:x:10b | X drv_win_02 Drv_Idle_Low DRV_PAN_SWEEP_OVERLAY drv_gest_disapnt a{b aZb x -> 103 0 105 0 0 0 0 103
+6:x:100 4:azb:101 27:drv_idle_low:102 5:-:103 0:DRV_PAN_SWEEP_OVERLAY:104 3:a@b:105 10:x:106 15:azb:107 22:drv_idle_low:108 | drv_gest_disapnt drv_gest_disapnt drv_idle_low azb a{b drv_idle_low drv_win DRV_PAN_SWEEP_OVERLAY -> 0 0 102 101 0 102 0 0
+0:X:100 23:aZb:101 16:a@b:102 18:aZb:103 | A[B drv_win a`b aZb x Drv_Idle_Low A[B x -> 0 0 0 101 0 0 0 0
+ | a`b a{b A[B a{b drv_wi a{b drv_gest_disapnt drv_idle_low -> 0 0 0 0 0 0 0 0
+6:drv_win:100 | x x DRV_PAN_SWEEP_OVERLAY drv_idle_low aZb x X drv_win_02 -> 0 0 0 0 0 0 0 0
+0::100 6:A[B:101 18:aZb:102 4:Drv_Idle_Low:103 7:Drv_Idle_Low:104 1:DRV_PAN_SWEEP_OVERLAY:105 24:A[B:106 6:A[B:107 3:a`b:108 12:A[B:109 15:drv_idle_low:10a | drv_idle_low aZb a{b x drv_idle_low a@b drv_win azb -> 103 102 0 0 103 0 0 102
+15:drv_idle_low:100 11:DRV_IDLE_LOW:101 7:aZb:102 25:-:103 9:A[B:104 10:a@b:105 | drv_idle_low drv_gest_disapnt x A[B Drv_Idle_Low DRV_IDLE_LOW a@b a@b -> 100 0 0 104 100 100 105 105
+30:Drv_Idle_Low:100 1:a@b:101 17:drv_idle_low:0 5:DRV_PAN_SWEEP_OVERLAY:103 13:aZb:104 0:drv_win:105 18:drv_win_02:106 0:azb:107 | a{b DRV_PAN_SWEEP_OVERLAY x drv_gest_disapnt A[B a{b Drv_Idle_Low azb -> 0 103 0 0 0 0 100 104
+15:drv_pan_sweep_overlay:100 10:drv_idle_low:0 | a{b a`b drv_idle_low drv_gest_disapnt drv_win drv_idle_low drv_win aZb -> 0 0 0 0 0 0 0 0
+22:a{b:100 9:drv_gest_disapnt:101 16:drv_win:102 4:drv_win_02:103 15:drv_idle_low:104 0::105 | drv_pan_sweep_overlay azb drv_gest_disapnt drv_win_02 "" a`b DRV_IDLE_LOW "" -> 0 0 101 103 105 0 104 105
+20:x:100 21:drv_pan_sweep_overlay:0 18:a{b:102 | X azb drv_win drv_idle_low azb a@b a{b Drv_Idle_Low -> 100 0 0 0 0 0 102 0
+9:drv_win:0 20:drv_wi:101 27:a@b:102 24:drv_idle_low:0 13:drv_idle_low:104 14:drv_pan_sweep_overlay:105 13:DRV_IDLE_LOW:106 29:-:0 0::0 1:a`b:109 1:Drv_Idle_Low:0 26:DRV_IDLE_LOW:10b | a@b a@b Drv_Idle_Low drv_pan_sweep_overlay DRV_PAN_SWEEP_OVERLAY drv_pan_sweep_overlay drv_win DRV_IDLE_LOW -> 102 102 0 105 105 105 0 0
+24:a`b:100 2:a@b:101 8:drv_win:102 11:a@b:103 11:drv_win:104 17:drv_gest_disapnt:105 5:a{b:106 22:x:107 30:a`b:0 18:X:0 | X drv_idle_low X a`b a@b drv_win drv_win x -> 107 0 107 100 101 102 102 107
+15:X:100 | drv_win A[B X aZb drv_win_02 drv_win_02 X aZb -> 0 0 100 0 0 0 100 0
+0::0 9:drv_win:101 | drv_gest_disapnt drv_win_02 DRV_IDLE_LOW drv_wi Drv_Idle_Low "" A[B a`b -> 0 0 0 0 0 0 0 0
+0::100 11:drv_gest_disapnt:101 16:a`b:102 18:azb:103 0:DRV_PAN_SWEEP_OVERLAY:104 26:DRV_PAN_SWEEP_OVERLAY:105 15:-:106 25:drv_wi:0 24:a`b:108 | drv_idle_low DRV_PAN_SWEEP_OVERLAY DRV_PAN_SWEEP_OVERLAY drv_win a`b drv_win "" x -> 0 105 105 0 102 0 100 0
+20:azb:100 0::0 20:a{b:102 13:drv_wi:103 24:DRV_IDLE_LOW:104 3:drv_win_02:105 | azb Drv_Idle_Low drv_win_02 X azb azb drv_win_02 drv_win_02 -> 100 104 105 0 100 100 105 105
+ | drv_win_02 a{b x DRV_PAN_SWEEP_OVERLAY x x a`b "" -> 0 0 0 0 0 0 0 0
+4:drv_gest_disapnt:100 14:-:101 7:X:102 4:X:103 18:drv_win:0 9:X:105 11:drv_wi:106 | X drv_gest_disapnt a{b drv_win_02 drv_wi drv_win X drv_wi -> 102 100 0 0 106 0 102 106
+ | azb X a@b a{b drv_pan_sweep_overlay drv_pan_sweep_overlay x drv_pan_sweep_overlay -> 0 0 0 0 0 0 0 0
+ | x drv_pan_sweep_overlay Drv_Idle_Low a@b drv_pan_sweep_overlay aZb drv_gest_disapnt azb -> 0 0 0 0 0 0 0 0
+30:DRV_PAN_SWEEP_OVERLAY:100 11:drv_win:101 29:x:0 2:a`b:0 10:drv_pan_sweep_overlay:104 22:a@b:105 0:Drv_Idle_Low:106 17:DRV_PAN_SWEEP_OVERLAY:0 0::108 1:drv_pan_sweep_overlay:109 2:A[B:10a 0:a`b:10b | drv_pan_sweep_overlay a@b drv_win_02 Drv_Idle_Low a{b a{b drv_pan_sweep_overlay DRV_PAN_SWEEP_OVERLAY -> 100 105 0 0 0 0 100 100
+29:x:100 26:Drv_Idle_Low:0 29:a`b:102 10:drv_win_02:103 4:-:104 27:X:105 2:A[B:106 2:drv_idle_low:107 23:-:108 21:DRV_PAN_SWEEP_OVERLAY:109 0:drv_win:10a | azb a@b aZb drv_idle_low X "" "" X -> 0 0 0 0 100 10a 10a 100
+21:drv_wi:100 27:a{b:101 19:drv_win_02:102 13:DRV_PAN_SWEEP_OVERLAY:103 14:x:104 2:A[B:105 10:X:106 8:x:107 0::108 1:drv_pan_sweep_overlay:109 | azb drv_pan_sweep_overlay drv_pan_sweep_overlay a`b a{b A[B aZb drv_win -> 0 103 103 0 101 105 0 0
+1:a@b:100 15:-:0 25:a{b:102 0::103 17:drv_pan_sweep_overlay:104 11:Drv_Idle_Low:105 24:a@b:106 28:DRV_PAN_SWEEP_OVERLAY:0 23:Drv_Idle_Low:0 2:DRV_PAN_SWEEP_OVERLAY:109 0:X:10a 7:A[B:10b | a@b DRV_PAN_SWEEP_OVERLAY a@b drv_pan_sweep_overlay X aZb azb Drv_Idle_Low -> 100 104 100 104 0 0 0 105
+3:A[B:100 17:drv_pan_sweep_overlay:101 21:drv_win_02:102 4:-:103 29:X:0 | X DRV_IDLE_LOW drv_win aZb drv_win_02 drv_pan_sweep_overlay "" drv_win -> 0 0 0 0 102 101 0 0
+0::100 14:drv_win:101 29:a`b:102 0:drv_wi:103 | "" a@b DRV_PAN_SWEEP_OVERLAY A[B X A[B a{b x -> 100 0 0 0 0 0 0 0
+8:DRV_PAN_SWEEP_OVERLAY:100 10:drv_gest_disapnt:101 18:a`b:102 11:A[B:103 5:drv_wi:104 25:Drv_Idle_Low:105 6:drv_idle_low:106 30:DRV_PAN_SWEEP_OVERLAY:107 17:Drv_Idle_Low:108 10:drv_idle_low:109 | A[B drv_gest_disapnt aZb drv_win_02 a`b DRV_PAN_SWEEP_OVERLAY x drv_gest_disapnt -> 103 101 0 0 102 100 0 101
+1:X:100 25:DRV_PAN_SWEEP_OVERLAY:101 16:drv_idle_low:102 1:Drv_Idle_Low:103 6:x:104 0::105 | drv_win x drv_wi a@b x drv_idle_low drv_win_02 drv_pan_sweep_overlay -> 0 100 0 0 100 102 0 101
+4:azb:0 13:a{b:101 4:a`b:102 4:a@b:103 | DRV_IDLE_LOW Drv_Idle_Low drv_wi drv_win_02 drv_win_02 azb a`b a@b -> 0 0 0 0 0 0 102 103
+25:DRV_IDLE_LOW:100 3:Drv_Idle_Low:101 19:drv_win_02:102 8:DRV_PAN_SWEEP_OVERLAY:103 26:aZb:104 0::105 9:a`b:106 13:DRV_PAN_SWEEP_OVERLAY:107 6:aZb:108 4:DRV_IDLE_LOW:0 14:DRV_PAN_SWEEP_OVERLAY:10a | drv_win_02 drv_gest_disapnt Drv_Idle_Low aZb a`b drv_win_02 drv_idle_low DRV_PAN_SWEEP_OVERLAY -> 102 0 100 104 106 102 100 103
+22:drv_win:0 28:azb:101 20:DRV_IDLE_LOW:102 16:drv_gest_disapnt:103 22:x:0 20:Drv_Idle_Low:105 10:azb:106 12:drv_idle_low:107 7:X:108 8:azb:0 | drv_gest_disapnt A[B drv_idle_low drv_win Drv_Idle_Low drv_win drv_idle_low aZb -> 103 0 102 0 102 0 102 101
+7:drv_win:100 19:x:101 28:Drv_Idle_Low:102 25:azb:103 28:drv_gest_disapnt:104 0::105 7:X:106 8:X:107 10:azb:0 | drv_gest_disapnt x drv_pan_sweep_overlay azb azb Drv_Idle_Low Drv_Idle_Low Drv_Idle_Low -> 104 101 0 103 103 102 102 102
+5:Drv_Idle_Low:100 0:drv_gest_disapnt:101 27:drv_gest_disapnt:0 0:A[B:0 29:drv_win_02:104 24:DRV_IDLE_LOW:105 2:a`b:106 3:X:0 21:A[B:0 4:drv_win:109 23:drv_wi:10a | drv_win_02 A[B DRV_IDLE_LOW DRV_IDLE_LOW "" DRV_IDLE_LOW a{b drv_gest_disapnt -> 104 0 100 100 101 100 0 0
+24:DRV_IDLE_LOW:100 | a`b DRV_IDLE_LOW Drv_Idle_Low drv_gest_disapnt aZb drv_idle_low a`b DRV_PAN_SWEEP_OVERLAY -> 0 100 100 0 0 100 0 0
+0::0 30:azb:101 13:DRV_IDLE_LOW:0 20:a@b:103 0:A[B:104 | a@b drv_gest_disapnt Drv_Idle_Low drv_gest_disapnt drv_pan_sweep_overlay a@b a{b drv_idle_low -> 103 0 0 0 0 103 0 0
+2:X:100 21:Drv_Idle_Low:101 27:DRV_PAN_SWEEP_OVERLAY:102 11:DRV_PAN_SWEEP_OVERLAY:103 5:x:104 10:X:105 22:drv_wi:106 1:A[B:107 18:aZb:108 16:DRV_PAN_SWEEP_OVERLAY:109 | drv_pan_sweep_overlay X X drv_pan_sweep_overlay DRV_IDLE_LOW X Drv_Idle_Low drv_gest_disapnt -> 102 100 100 102 101 100 101 0
+6:DRV_IDLE_LOW:100 27:drv_gest_disapnt:101 27:a`b:102 18:drv_pan_sweep_overlay:103 29:azb:0 25:DRV_PAN_SWEEP_OVERLAY:105 | X X x a@b a`b x DRV_PAN_SWEEP_OVERLAY a{b -> 0 0 0 0 102 0 103 0
+21:drv_gest_disapnt:0 18:drv_wi:101 29:drv_idle_low:102 | DRV_IDLE_LOW a{b drv_gest_disapnt drv_wi drv_gest_disapnt X azb a`b -> 102 0 0 101 0 0 0 0
+19:DRV_IDLE_LOW:100 0::101 | drv_win a{b Drv_Idle_Low DRV_IDLE_LOW drv_win drv_wi azb a@b -> 0 0 100 100 0 0 0 0
+27:drv_gest_disapnt:100 1:a{b:101 3:drv_gest_disapnt:102 29:a{b:103 11:a@b:104 29:azb:105 28:a`b:106 7:aZb:107 20:-:108 | a@b a{b drv_gest_disapnt drv_idle_low azb aZb A[B drv_pan_sweep_overlay -> 104 101 100 0 105 105 0 0
+8:Drv_Idle_Low:100 2:drv_gest_disapnt:101 | Drv_Idle_Low x A[B azb drv_pan_sweep_overlay drv_pan_sweep_overlay A[B a{b -> 100 0 0 0 0 0 0 0
+5:drv_idle_low:0 20:x:101 9:drv_gest_disapnt:102 6:drv_idle_low:103 22:aZb:0 15:drv_gest_disapnt:105 18:DRV_PAN_SWEEP_OVERLAY:106 18:Drv_Idle_Low:107 | aZb Drv_Idle_Low aZb drv_pan_sweep_overlay aZb Drv_Idle_Low x A[B -> 0 0 0 106 0 0 101 0
+21:Drv_Idle_Low:0 5:DRV_IDLE_LOW:101 11:Drv_Idle_Low:0 25:a@b:103 3:aZb:104 | drv_win_02 DRV_IDLE_LOW drv_win_02 azb azb drv_gest_disapnt drv_win_02 azb -> 0 0 0 104 104 0 0 104
+ | A[B x azb X drv_win_02 DRV_PAN_SWEEP_OVERLAY X X -> 0 0 0 0 0 0 0 0
+16:aZb:100 30:aZb:101 30:drv_gest_disapnt:102 30:aZb:103 25:drv_win_02:104 0:x:105 12:drv_pan_sweep_overlay:106 0:drv_pan_sweep_overlay:107 9:drv_pan_sweep_overlay:108 0:drv_win:109 12:drv_wi:10a 15:a{b:10b | drv_pan_sweep_overlay a{b drv_win_02 drv_gest_disapnt drv_wi "" "" aZb -> 106 10b 104 102 10a 105 105 100
+11:x:100 | drv_wi drv_gest_disapnt a@b DRV_PAN_SWEEP_OVERLAY a{b drv_pan_sweep_overlay azb DRV_PAN_SWEEP_OVERLAY -> 0 0 0 0 0 0 0 0
+11:drv_win:100 0::0 18:a{b:102 9:azb:103 | DRV_IDLE_LOW DRV_PAN_SWEEP_OVERLAY X "" drv_win drv_wi "" X -> 0 0 0 0 100 0 0 0
+14:-:100 20:X:0 | A[B "" DRV_IDLE_LOW azb azb azb drv_wi a`b -> 0 0 0 0 0 0 0 0
+18:a@b:100 21:a@b:101 4:a`b:102 1:aZb:103 0:drv_gest_disapnt:104 2:drv_pan_sweep_overlay:105 0::106 15:aZb:107 16:-:0 0:Drv_Idle_Low:109 2:drv_win:10a | DRV_IDLE_LOW drv_idle_low drv_idle_low Drv_Idle_Low drv_win_02 a@b a@b a`b -> 0 0 0 0 0 100 100 102
+0:drv_pan_sweep_overlay:100 19:drv_win_02:0 16:azb:0 14:aZb:103 5:a{b:0 | drv_gest_disapnt Drv_Idle_Low A[B "" drv_win_02 drv_idle_low aZb drv_pan_sweep_overlay -> 0 0 0 100 0 0 0 0
+2:a{b:0 24:a`b:101 20:drv_win:102 14:drv_pan_sweep_overlay:0 6:drv_gest_disapnt:0 29:azb:0 22:a{b:106 27:drv_win:0 30:a@b:0 0:drv_win_02:109 9:drv_win:10a 29:a`b:10b | a@b Drv_Idle_Low DRV_IDLE_LOW drv_win Drv_Idle_Low a{b a`b drv_win_02 -> 0 0 0 102 0 0 101 0
+13:a{b:100 13:A[B:101 16:A[B:102 4:drv_gest_disapnt:103 8:X:104 14:a{b:105 30:DRV_IDLE_LOW:106 27:A[B:107 6:drv_win_02:108 15:drv_pan_sweep_overlay:0 7:DRV_PAN_SWEEP_OVERLAY:0 18:x:10b | drv_win X drv_gest_disapnt x a@b x A[B x -> 0 104 103 104 0 104 101 104
+18:a`b:100 3:drv_gest_disapnt:0 7:x:102 8:drv_gest_disapnt:103 | drv_idle_low x drv_gest_disapnt drv_wi drv_gest_disapnt drv_gest_disapnt DRV_IDLE_LOW x -> 0 102 0 0 0 0 0 102
+6:drv_gest_disapnt:100 6:Drv_Idle_Low:101 30:a@b:102 9:DRV_PAN_SWEEP_OVERLAY:103 3:drv_pan_sweep_overlay:104 4:drv_win_02:105 18:drv_win:106 30:drv_pan_sweep_overlay:107 8:DRV_PAN_SWEEP_OVERLAY:108 19:-:109 | drv_pan_sweep_overlay drv_win_02 drv_gest_disapnt drv_win azb Drv_Idle_Low a@b X -> 103 105 100 106 0 101 102 0
+13:aZb:100 3:drv_idle_low:101 3:drv_win_02:102 0::103 26:DRV_PAN_SWEEP_OVERLAY:104 0::105 23:drv_win_02:106 0:drv_idle_low:0 11:a{b:0 | a`b drv_idle_low a@b aZb DRV_PAN_SWEEP_OVERLAY drv_pan_sweep_overlay a{b DRV_PAN_SWEEP_OVERLAY -> 0 101 0 100 104 104 0 104
+21:DRV_IDLE_LOW:100 22:a`b:101 1:a`b:102 1:aZb:103 5:DRV_PAN_SWEEP_OVERLAY:104 29:a{b:105 25:drv_pan_sweep_overlay:106 0::107 0:DRV_PAN_SWEEP_OVERLAY:108 23:-:109 19:drv_idle_low:10a 2:drv_gest_disapnt:10b | "" drv_gest_disapnt aZb drv_idle_low DRV_PAN_SWEEP_OVERLAY Drv_Idle_Low Drv_Idle_Low drv_gest_disapnt -> 107 10b 103 100 104 100 100 10b
+10:-:0 | drv_pan_sweep_overlay aZb aZb drv_wi drv_win_02 Drv_Idle_Low x aZb -> 0 0 0 0 0 0 0 0
+4:DRV_IDLE_LOW:100 30:aZb:101 | drv_win drv_pan_sweep_overlay "" DRV_IDLE_LOW azb a`b a`b azb -> 0 0 0 100 101 0 0 101
+3:drv_idle_low:0 22:x:101 8:azb:102 22:drv_pan_sweep_overlay:103 11:a`b:0 15:Drv_Idle_Low:105 | a`b a`b drv_pan_sweep_overlay drv_gest_disapnt drv_idle_low X drv_idle_low a`b -> 0 0 103 0 0 101 0 0
+0::100 26:a`b:101 22:drv_wi:0 11:a{b:0 | a{b azb a{b x drv_idle_low a`b drv_win A[B -> 0 0 0 0 0 101 0 0
+4:x:100 23:aZb:101 15:DRV_IDLE_LOW:102 19:A[B:0 9:drv_pan_sweep_overlay:104 7:drv_win:105 0::106 | A[B A[B x Drv_Idle_Low aZb X DRV_IDLE_LOW drv_win_02 -> 0 0 100 102 101 100 102 0
+30:Drv_Idle_Low:100 | x aZb a@b x Drv_Idle_Low drv_gest_disapnt drv_idle_low A[B -> 0 0 0 0 100 0 100 0
+12:DRV_IDLE_LOW:100 14:X:101 19:a{b:102 | drv_wi x drv_pan_sweep_overlay azb A[B drv_pan_sweep_overlay drv_idle_low azb -> 0 101 0 0 0 0 100 0
+ | a`b x drv_idle_low aZb DRV_PAN_SWEEP_OVERLAY a{b DRV_PAN_SWEEP_OVERLAY x -> 0 0 0 0 0 0 0 0
+21:A[B:100 6:a{b:0 11:a@b:102 0::103 6:DRV_IDLE_LOW:104 | Drv_Idle_Low Drv_Idle_Low drv_pan_sweep_overlay drv_idle_low "" a`b x "" -> 104 104 0 104 103 0 0 103
+9:drv_idle_low:100 3:DRV_IDLE_LOW:101 4:Drv_Idle_Low:102 14:x:103 | drv_idle_low X drv_pan_sweep_overlay A[B drv_idle_low DRV_IDLE_LOW drv_gest_disapnt x -> 100 103 0 0 100 100 0 103
+11:DRV_IDLE_LOW:0 23:a`b:0 7:Drv_Idle_Low:0 18:A[B:103 10:DRV_IDLE_LOW:0 20:DRV_IDLE_LOW:105 6:a`b:106 12:drv_wi:107 6:drv_win_02:108 5:drv_win:109 11:azb:10a 19:drv_idle_low:10b | DRV_IDLE_LOW A[B azb x DRV_IDLE_LOW azb a`b DRV_IDLE_LOW -> 0 103 10a 0 0 10a 0 0
+25:a`b:100 29:Drv_Idle_Low:101 4:x:102 19:X:103 11:drv_gest_disapnt:104 | drv_wi DRV_IDLE_LOW drv_gest_disapnt Drv_Idle_Low X azb a@b a@b -> 0 101 104 101 102 0 0 0
+9:a{b:100 5:A[B:101 2:Drv_Idle_Low:102 2:drv_pan_sweep_overlay:0 19:aZb:104 21:drv_win_02:0 14:drv_pan_sweep_overlay:106 11:X:107 27:drv_pan_sweep_overlay:108 4:X:109 6:drv_idle_low:10a | Drv_Idle_Low a{b drv_gest_disapnt DRV_IDLE_LOW drv_pan_sweep_overlay aZb drv_pan_sweep_overlay drv_win_02 -> 102 100 0 102 0 104 0 0
+28:a@b:100 | a{b drv_pan_sweep_overlay drv_wi x a@b "" DRV_PAN_SWEEP_OVERLAY drv_win_02 -> 0 0 0 0 100 0 0 0
+26:DRV_PAN_SWEEP_OVERLAY:100 28:a`b:101 21:drv_idle_low:102 29:drv_pan_sweep_overlay:0 30:Drv_Idle_Low:0 8:azb:0 2:drv_pan_sweep_overlay:106 0::107 9:a@b:108 22:DRV_IDLE_LOW:0 10:X:10a | X Drv_Idle_Low azb Drv_Idle_Low a@b drv_wi azb azb -> 10a 102 0 102 108 0 0 0
+4:a`b:100 27:azb:101 | drv_gest_disapnt drv_win_02 a{b azb a`b drv_gest_disapnt DRV_PAN_SWEEP_OVERLAY a@b -> 0 0 0 101 100 0 0 0
+20:drv_gest_disapnt:100 27:DRV_IDLE_LOW:101 | "" a{b DRV_IDLE_LOW a@b DRV_IDLE_LOW "" azb a`b -> 0 0 101 0 101 0 0 0
+1:aZb:100 11:drv_gest_disapnt:101 17:Drv_Idle_Low:102 30:A[B:0 6:drv_pan_sweep_overlay:104 0:DRV_PAN_SWEEP_OVERLAY:0 30:azb:106 22:X:107 15:A[B:108 17:drv_win_02:109 | DRV_IDLE_LOW DRV_PAN_SWEEP_OVERLAY x drv_win_02 drv_pan_sweep_overlay DRV_PAN_SWEEP_OVERLAY aZb drv_win_02 -> 102 104 107 109 104 104 100 109
+10:A[B:100 4:a{b:101 7:drv_idle_low:102 1:DRV_IDLE_LOW:103 30:a@b:104 0::105 | DRV_IDLE_LOW drv_gest_disapnt "" a`b x x DRV_IDLE_LOW a{b -> 102 0 105 0 0 0 102 101
+20:drv_idle_low:100 21:X:101 0::102 15:DRV_PAN_SWEEP_OVERLAY:103 23:DRV_PAN_SWEEP_OVERLAY:104 30:a`b:105 9:a{b:106 0:drv_idle_low:0 21:A[B:0 30:X:0 7:drv_idle_low:10a 13:X:10b | a@b drv_idle_low drv_win_02 A[B Drv_Idle_Low DRV_PAN_SWEEP_OVERLAY A[B drv_gest_disapnt -> 0 100 0 0 100 103 0 0
+0::100 0::0 3:a@b:102 27:drv_pan_sweep_overlay:103 | drv_idle_low a`b a{b "" aZb Drv_Idle_Low azb x -> 0 0 0 100 0 0 0 0
+14:A[B:100 14:DRV_IDLE_LOW:0 11:DRV_PAN_SWEEP_OVERLAY:0 9:-:103 0:DRV_IDLE_LOW:104 7:drv_idle_low:105 23:drv_gest_disapnt:106 0:azb:107 9:drv_idle_low:108 | DRV_IDLE_LOW drv_gest_disapnt a`b drv_pan_sweep_overlay drv_win a{b DRV_PAN_SWEEP_OVERLAY X -> 0 106 0 0 0 0 0 0
+20:drv_idle_low:0 23:X:101 6:-:102 17:a@b:103 19:DRV_PAN_SWEEP_OVERLAY:104 4:azb:105 27:-:106 15:drv_gest_disapnt:107 | drv_win_02 "" DRV_PAN_SWEEP_OVERLAY drv_gest_disapnt drv_win_02 aZb a@b drv_win_02 -> 0 0 104 107 0 105 103 0
+19:a`b:100 14:DRV_PAN_SWEEP_OVERLAY:101 | drv_win_02 drv_idle_low drv_win drv_win drv_gest_disapnt Drv_Idle_Low DRV_PAN_SWEEP_OVERLAY DRV_IDLE_LOW -> 0 0 0 0 0 0 101 0
+15:-:100 11:Drv_Idle_Low:101 14:drv_gest_disapnt:102 13:drv_wi:103 | drv_win_02 Drv_Idle_Low drv_gest_disapnt drv_win x aZb aZb a{b -> 0 101 102 0 0 0 0 0
+ | drv_idle_low drv_gest_disapnt DRV_PAN_SWEEP_OVERLAY a{b A[B A[B a@b a`b -> 0 0 0 0 0 0 0 0
+ | a@b aZb drv_pan_sweep_overlay a{b A[B drv_gest_disapnt drv_win_02 "" -> 0 0 0 0 0 0 0 0
+20:a{b:100 6:aZb:101 18:x:102 14:A[B:103 6:A[B:104 28:drv_win:105 10:DRV_PAN_SWEEP_OVERLAY:106 | aZb x A[B azb a@b aZb X drv_idle_low -> 101 102 103 101 0 101 102 0
+20:azb:100 6:DRV_IDLE_LOW:0 22:drv_gest_disapnt:102 23:drv_wi:103 25:drv_pan_sweep_overlay:0 8:a`b:0 | azb azb a`b a{b A[B drv_pan_sweep_overlay a`b drv_pan_sweep_overlay -> 100 100 0 0 0 0 0 0
+15:DRV_IDLE_LOW:100 30:DRV_PAN_SWEEP_OVERLAY:101 28:a@b:102 12:drv_pan_sweep_overlay:103 16:drv_gest_disapnt:104 12:DRV_PAN_SWEEP_OVERLAY:105 6:Drv_Idle_Low:106 | drv_wi A[B Drv_Idle_Low drv_win_02 X X aZb X -> 0 0 100 0 0 0 0 0
+19:a`b:100 14:a{b:101 20:X:102 8:drv_win_02:103 29:x:104 3:a`b:0 | a@b drv_wi drv_win azb A[B a{b drv_wi DRV_PAN_SWEEP_OVERLAY -> 0 0 0 0 0 101 0 0
+28:drv_gest_disapnt:100 3:drv_win:0 30:A[B:102 7:Drv_Idle_Low:103 8:drv_pan_sweep_overlay:0 15:drv_pan_sweep_overlay:105 29:aZb:106 19:drv_win:0 21:azb:108 30:drv_win:0 | drv_pan_sweep_overlay drv_win_02 DRV_PAN_SWEEP_OVERLAY drv_win aZb Drv_Idle_Low drv_gest_disapnt drv_pan_sweep_overlay -> 0 0 0 0 106 103 100 0
+7:a{b:100 21:DRV_IDLE_LOW:101 18:a{b:102 7:a@b:103 15:drv_idle_low:104 15:Drv_Idle_Low:105 2:-:0 21:DRV_IDLE_LOW:0 | drv_pan_sweep_overlay drv_pan_sweep_overlay drv_idle_low DRV_IDLE_LOW x DRV_IDLE_LOW drv_gest_disapnt azb -> 0 0 101 101 0 101 0 0
+ | DRV_IDLE_LOW a{b DRV_IDLE_LOW X a`b drv_gest_disapnt azb a`b -> 0 0 0 0 0 0 0 0
+16:x:100 0::101 9:DRV_PAN_SWEEP_OVERLAY:102 25:drv_pan_sweep_overlay:103 19:X:104 | a`b a`b a{b X drv_win_02 aZb drv_win DRV_PAN_SWEEP_OVERLAY -> 0 0 0 100 0 0 0 102
+20:drv_gest_disapnt:0 12:drv_win_02:101 1:a{b:102 25:a@b:103 24:DRV_PAN_SWEEP_OVERLAY:0 12:drv_idle_low:105 4:drv_win_02:0 27:drv_win:107 24:x:0 0::109 | drv_win drv_win_02 x drv_win_02 drv_win_02 azb drv_win_02 x -> 107 101 0 101 101 0 101 0
+28:DRV_IDLE_LOW:100 | aZb a@b drv_idle_low DRV_IDLE_LOW a`b drv_idle_low a`b DRV_PAN_SWEEP_OVERLAY -> 0 0 100 100 0 100 0 0
+5:azb:100 0:azb:0 26:DRV_IDLE_LOW:0 15:X:0 0::104 | a{b a`b drv_win azb drv_win_02 x DRV_PAN_SWEEP_OVERLAY Drv_Idle_Low -> 0 0 0 100 0 0 0 0
+4:drv_win_02:100 18:DRV_PAN_SWEEP_OVERLAY:101 8:drv_pan_sweep_overlay:102 10:drv_win:103 0::104 23:a`b:105 24:A[B:106 0::0 | A[B A[B DRV_PAN_SWEEP_OVERLAY a{b a`b drv_pan_sweep_overlay azb drv_win -> 106 106 101 0 105 101 0 103
+24:a{b:100 26:drv_pan_sweep_overlay:101 5:drv_win_02:102 21:X:103 27:drv_win_02:104 0:X:105 5:drv_pan_sweep_overlay:106 | drv_gest_disapnt aZb a@b drv_win_02 Drv_Idle_Low "" drv_win_02 a@b -> 0 0 0 102 0 105 102 0
+10:drv_idle_low:100 24:x:101 21:a{b:102 14:X:103 0::0 24:DRV_IDLE_LOW:105 18:a@b:106 8:drv_win:107 | drv_wi "" drv_win_02 drv_gest_disapnt DRV_IDLE_LOW a`b DRV_IDLE_LOW x -> 0 0 0 0 100 0 100 101
+13:A[B:100 11:drv_wi:0 11:DRV_IDLE_LOW:0 16:a@b:103 14:a`b:104 | "" a{b a{b aZb drv_idle_low a`b drv_win x -> 0 0 0 0 0 104 0 0
+3:aZb:100 16:x:101 18:x:0 29:-:103 23:a{b:104 | aZb x a`b aZb x DRV_PAN_SWEEP_OVERLAY x a{b -> 100 101 0 100 101 0 101 104
+11:drv_idle_low:100 9:a@b:101 27:x:102 | drv_gest_disapnt a{b drv_idle_low aZb drv_pan_sweep_overlay X aZb Drv_Idle_Low -> 0 0 100 0 0 102 0 100
+28:drv_pan_sweep_overlay:100 26:drv_win_02:101 29:DRV_IDLE_LOW:0 18:-:103 0::104 8:-:0 27:x:0 25:a`b:107 | azb "" aZb A[B drv_pan_sweep_overlay drv_wi drv_pan_sweep_overlay x -> 0 104 0 0 100 0 100 0
+21:-:100 23:a`b:101 12:a{b:102 13:drv_win:103 17:DRV_PAN_SWEEP_OVERLAY:104 0:aZb:105 21:DRV_PAN_SWEEP_OVERLAY:106 14:azb:107 24:drv_win:108 27:X:0 18:azb:10a | a`b drv_win_02 aZb X drv_win a{b DRV_PAN_SWEEP_OVERLAY drv_gest_disapnt -> 101 0 107 0 103 102 104 0
+6:drv_win_02:100 30:drv_pan_sweep_overlay:101 0::0 4:a@b:103 | drv_idle_low Drv_Idle_Low azb a`b drv_idle_low drv_gest_disapnt a{b x -> 0 0 0 0 0 0 0 0
+0:drv_win:100 12:DRV_IDLE_LOW:101 9:a`b:102 0::103 7:drv_wi:104 23:drv_pan_sweep_overlay:105 26:drv_gest_disapnt:106 0::107 13:DRV_IDLE_LOW:108 0::109 25:-:10a | drv_wi Drv_Idle_Low drv_pan_sweep_overlay azb drv_pan_sweep_overlay X A[B drv_wi -> 104 101 105 0 105 0 0 104
+2:drv_pan_sweep_overlay:100 5:DRV_PAN_SWEEP_OVERLAY:101 23:a`b:102 11:a{b:103 30:drv_win_02:0 28:aZb:105 10:drv_win:106 | A[B drv_idle_low "" DRV_PAN_SWEEP_OVERLAY drv_idle_low a{b aZb Drv_Idle_Low -> 0 0 0 100 0 103 105 0
+3:a`b:100 5:azb:101 18:drv_win:102 25:a{b:103 8:azb:104 26:a{b:105 13:drv_idle_low:106 29:drv_idle_low:107 20:drv_gest_disapnt:108 | drv_win drv_idle_low DRV_IDLE_LOW drv_wi drv_gest_disapnt drv_gest_disapnt drv_gest_disapnt drv_idle_low -> 102 106 106 0 108 108 108 106
+18:DRV_PAN_SWEEP_OVERLAY:100 4:x:0 12:drv_wi:0 28:a{b:103 24:azb:104 16:drv_idle_low:0 13:azb:106 | drv_wi drv_win azb azb "" drv_idle_low "" drv_wi -> 0 0 104 104 0 0 0 0
+ | x DRV_PAN_SWEEP_OVERLAY drv_win_02 drv_gest_disapnt a{b X DRV_PAN_SWEEP_OVERLAY DRV_PAN_SWEEP_OVERLAY -> 0 0 0 0 0 0 0 0
+18:a@b:100 13:a@b:101 | a@b azb a@b "" drv_wi azb DRV_PAN_SWEEP_OVERLAY drv_wi -> 100 0 100 0 0 0 0 0
+13:aZb:100 20:aZb:101 4:drv_wi:102 23:drv_win:103 16:a@b:104 29:drv_win_02:105 25:drv_idle_low:106 6:aZb:0 | aZb X DRV_PAN_SWEEP_OVERLAY drv_win a@b aZb aZb DRV_PAN_SWEEP_OVERLAY -> 100 0 0 103 104 100 100 0
+22:a`b:100 | a{b a@b aZb DRV_PAN_SWEEP_OVERLAY x a`b aZb drv_pan_sweep_overlay -> 0 0 0 0 0 100 0 0
+1:Drv_Idle_Low:0 21:drv_wi:101 27:azb:102 19:x:103 0:drv_win_02:104 5:azb:105 26:drv_win_02:106 18:drv_pan_sweep_overlay:107 0::108 | x "" drv_win_02 azb a@b drv_pan_sweep_overlay drv_win x -> 103 104 106 102 0 107 0 103
+3:Drv_Idle_Low:100 6:Drv_Idle_Low:0 23:drv_win_02:102 7:a@b:0 26:a{b:104 28:Drv_Idle_Low:105 8:Drv_Idle_Low:106 9:a{b:107 30:X:0 27:drv_wi:109 13:a@b:0 30:drv_win_02:10b | Drv_Idle_Low azb drv_win drv_win_02 Drv_Idle_Low drv_win_02 drv_win_02 drv_win_02 -> 100 0 0 102 100 102 102 102
+23:drv_win_02:0 10:Drv_Idle_Low:101 15:x:102 17:a`b:103 29:aZb:104 | Drv_Idle_Low X azb drv_win_02 a@b drv_wi drv_wi DRV_PAN_SWEEP_OVERLAY -> 101 102 104 0 0 0 0 0
+7:azb:100 0::0 21:azb:102 0::103 29:a{b:0 16:a{b:105 | a{b drv_win drv_wi drv_win_02 azb aZb drv_wi a`b -> 0 0 0 0 100 100 0 0
+19:DRV_IDLE_LOW:100 | A[B DRV_IDLE_LOW a@b DRV_PAN_SWEEP_OVERLAY x drv_win X DRV_IDLE_LOW -> 0 100 0 0 0 0 0 100
+1:drv_idle_low:100 4:drv_win_02:101 16:azb:102 8:X:103 5:a@b:104 6:A[B:105 | a@b "" drv_pan_sweep_overlay "" A[B x A[B drv_win_02 -> 104 0 0 0 105 103 105 101
+24:x:100 7:drv_idle_low:101 14:a@b:102 | DRV_PAN_SWEEP_OVERLAY "" drv_win_02 a`b drv_idle_low a@b drv_pan_sweep_overlay X -> 0 0 0 0 101 102 0 100
+ | a`b a`b a@b Drv_Idle_Low DRV_PAN_SWEEP_OVERLAY aZb drv_win_02 X -> 0 0 0 0 0 0 0 0
+ | drv_gest_disapnt A[B drv_win_02 a`b drv_pan_sweep_overlay "" a@b DRV_IDLE_LOW -> 0 0 0 0 0 0 0 0
+17:x:100 30:DRV_PAN_SWEEP_OVERLAY:101 19:A[B:102 7:DRV_IDLE_LOW:103 4:a`b:104 26:Drv_Idle_Low:105 21:Drv_Idle_Low:106 13:DRV_PAN_SWEEP_OVERLAY:107 25:drv_gest_disapnt:108 | aZb DRV_PAN_SWEEP_OVERLAY Drv_Idle_Low "" a`b drv_gest_disapnt DRV_IDLE_LOW azb -> 0 101 103 0 104 108 103 0
+8:drv_win_02:100 30:DRV_IDLE_LOW:101 28:DRV_IDLE_LOW:102 24:-:0 | a{b drv_gest_disapnt DRV_IDLE_LOW aZb drv_gest_disapnt drv_win_02 x Drv_Idle_Low -> 0 0 101 0 0 100 0 101
+1:drv_idle_low:100 4:a`b:101 20:x:102 25:DRV_IDLE_LOW:0 4:A[B:104 5:Drv_Idle_Low:105 2:a`b:106 29:A[B:107 2:DRV_IDLE_LOW:108 28:x:109 29:drv_wi:10a | Drv_Idle_Low DRV_IDLE_LOW A[B a@b Drv_Idle_Low drv_win drv_wi A[B -> 100 100 104 0 100 0 10a 104
+4:a{b:0 | x drv_wi a`b DRV_IDLE_LOW a{b drv_wi x A[B -> 0 0 0 0 0 0 0 0
+ | azb a@b drv_win_02 drv_gest_disapnt "" DRV_PAN_SWEEP_OVERLAY x "" -> 0 0 0 0 0 0 0 0
+28:A[B:100 15:a@b:101 16:a{b:102 3:aZb:103 27:x:104 29:a`b:105 19:a{b:0 25:A[B:107 9:-:108 | a@b a{b x x Drv_Idle_Low A[B DRV_PAN_SWEEP_OVERLAY a{b -> 101 102 104 104 0 100 0 102
+9:aZb:100 23:a`b:101 27:azb:0 25:drv_idle_low:103 5:-:104 29:drv_win_02:105 0:aZb:106 2:azb:107 1:a{b:108 18:X:0 13:aZb:10a 9:Drv_Idle_Low:10b | a{b drv_idle_low drv_pan_sweep_overlay Drv_Idle_Low aZb aZb aZb drv_win -> 108 103 0 103 100 100 100 0
+5:drv_win:100 12:drv_gest_disapnt:101 | drv_wi aZb "" a@b x drv_win drv_gest_disapnt DRV_IDLE_LOW -> 0 0 0 0 0 100 101 0
+14:a`b:100 2:drv_gest_disapnt:101 22:x:102 10:a`b:103 7:drv_win_02:0 13:drv_win:105 26:-:106 28:a{b:107 | drv_win X drv_wi azb x drv_win drv_pan_sweep_overlay a{b -> 105 102 0 0 102 105 0 107
+20:azb:100 4:drv_gest_disapnt:101 26:drv_pan_sweep_overlay:102 | drv_pan_sweep_overlay a`b X a`b drv_pan_sweep_overlay DRV_IDLE_LOW X aZb -> 102 0 0 0 102 0 0 100
+30:A[B:100 28:-:0 27:Drv_Idle_Low:102 11:drv_pan_sweep_overlay:103 12:drv_wi:104 7:-:105 20:drv_idle_low:106 23:drv_wi:0 9:Drv_Idle_Low:108 5:azb:0 18:DRV_IDLE_LOW:10a | DRV_IDLE_LOW drv_idle_low drv_idle_low drv_idle_low DRV_IDLE_LOW x aZb drv_wi -> 102 102 102 102 102 0 0 104
+4:azb:100 18:drv_win:101 7:azb:102 16:x:0 6:DRV_PAN_SWEEP_OVERLAY:104 | A[B X drv_wi a{b drv_win drv_win_02 x "" -> 0 0 0 0 101 0 0 0
+20:DRV_IDLE_LOW:0 23:drv_idle_low:0 8:Drv_Idle_Low:102 16:azb:103 8:a@b:104 11:x:105 | azb drv_gest_disapnt drv_idle_low aZb a`b x A[B drv_wi -> 103 0 0 103 0 105 0 0
+8:DRV_IDLE_LOW:100 5:drv_win:101 28:aZb:102 18:a@b:103 30:drv_pan_sweep_overlay:104 5:a{b:105 | aZb drv_win_02 aZb aZb a`b azb A[B drv_wi -> 102 0 102 102 0 102 0 0
+6:drv_idle_low:100 | drv_win_02 x A[B azb drv_idle_low DRV_PAN_SWEEP_OVERLAY a@b aZb -> 0 0 0 0 100 0 0 0
+0::100 21:Drv_Idle_Low:101 7:Drv_Idle_Low:102 18:Drv_Idle_Low:103 0:drv_pan_sweep_overlay:104 25:a{b:105 14:drv_pan_sweep_overlay:106 2:-:107 26:aZb:0 | a{b drv_idle_low "" "" a{b Drv_Idle_Low drv_pan_sweep_overlay DRV_IDLE_LOW -> 105 101 100 100 105 101 106 101
+4:drv_idle_low:100 15:drv_wi:101 17:drv_idle_low:102 30:x:0 10:x:104 3:a`b:0 2:drv_gest_disapnt:106 4:a@b:107 | a{b x a@b a`b drv_win_02 a@b aZb drv_win_02 -> 0 0 107 0 0 107 0 0
+6:Drv_Idle_Low:100 18:drv_wi:101 8:a@b:102 25:azb:103 15:x:104 24:x:105 8:Drv_Idle_Low:106 | a@b Drv_Idle_Low a@b Drv_Idle_Low DRV_PAN_SWEEP_OVERLAY A[B drv_idle_low drv_win -> 102 100 102 100 0 0 100 0
+7:drv_win_02:100 30:x:101 6:a`b:102 17:Drv_Idle_Low:0 | a`b drv_win_02 drv_pan_sweep_overlay azb X drv_win_02 DRV_PAN_SWEEP_OVERLAY drv_win -> 102 100 0 0 101 100 0 0
+14:aZb:100 4:drv_gest_disapnt:101 13:A[B:102 | x drv_win_02 aZb a@b DRV_IDLE_LOW "" a@b drv_wi -> 0 0 100 0 0 0 0 0
+15:Drv_Idle_Low:0 26:a{b:101 3:DRV_PAN_SWEEP_OVERLAY:102 17:a`b:103 19:aZb:104 28:a{b:0 7:aZb:106 29:Drv_Idle_Low:107 27:Drv_Idle_Low:108 0:drv_win:109 | aZb DRV_PAN_SWEEP_OVERLAY drv_idle_low Drv_Idle_Low Drv_Idle_Low drv_gest_disapnt DRV_PAN_SWEEP_OVERLAY Drv_Idle_Low -> 104 102 0 0 0 0 102 0
+0::100 23:-:101 29:a@b:102 12:DRV_PAN_SWEEP_OVERLAY:0 15:azb:104 26:X:105 | a{b aZb x "" "" X DRV_IDLE_LOW a`b -> 0 104 105 100 100 105 0 0
+23:x:100 21:x:101 15:A[B:102 30:a`b:103 14:Drv_Idle_Low:104 21:Drv_Idle_Low:105 22:x:0 | A[B "" drv_gest_disapnt drv_win "" drv_idle_low drv_wi x -> 102 0 0 0 0 104 0 100
+0::100 4:drv_idle_low:101 8:a@b:102 23:drv_gest_disapnt:0 27:drv_pan_sweep_overlay:104 | DRV_IDLE_LOW x a@b a@b a@b drv_idle_low drv_idle_low X -> 101 0 102 102 102 101 101 0
+8:a`b:100 0:DRV_IDLE_LOW:101 | drv_pan_sweep_overlay a`b a`b a`b a@b drv_win drv_win_02 DRV_IDLE_LOW -> 0 100 100 100 0 0 0 0
+11:drv_pan_sweep_overlay:0 26:A[B:101 0::102 19:drv_pan_sweep_overlay:103 8:DRV_PAN_SWEEP_OVERLAY:104 | a{b drv_pan_sweep_overlay a{b DRV_PAN_SWEEP_OVERLAY drv_gest_disapnt a{b x a@b -> 0 0 0 0 0 0 0 0
+5:aZb:0 26:drv_wi:101 17:drv_idle_low:102 29:azb:103 0:a{b:104 11:a`b:0 15:drv_gest_disapnt:106 19:DRV_IDLE_LOW:0 12:-:108 0::109 29:-:10a | drv_win a{b Drv_Idle_Low drv_win aZb a`b aZb azb -> 0 0 102 0 0 0 0 0
+17:drv_idle_low:100 | a@b X drv_idle_low drv_win_02 a`b drv_idle_low a`b A[B -> 0 0 100 0 0 100 0 0
+26:drv_win:100 22:drv_win:101 24:-:102 26:-:103 22:drv_idle_low:104 11:a`b:0 18:drv_wi:106 30:drv_pan_sweep_overlay:107 8:a`b:108 | a@b drv_wi drv_pan_sweep_overlay DRV_PAN_SWEEP_OVERLAY DRV_PAN_SWEEP_OVERLAY Drv_Idle_Low azb x -> 0 106 107 107 107 104 0 0
+5:Drv_Idle_Low:0 19:DRV_PAN_SWEEP_OVERLAY:0 25:a`b:102 0:a{b:103 29:azb:104 0:drv_gest_disapnt:105 24:DRV_PAN_SWEEP_OVERLAY:0 13:a@b:107 23:a{b:108 7:aZb:0 17:drv_win_02:10a 29:-:10b | drv_win_02 drv_gest_disapnt drv_gest_disapnt a{b drv_gest_disapnt a{b a{b Drv_Idle_Low -> 10a 0 0 108 0 108 108 0
+0::100 0::101 27:azb:102 20:drv_win:0 25:a@b:104 | a`b A[B A[B aZb Drv_Idle_Low drv_pan_sweep_overlay drv_gest_disapnt X -> 0 0 0 102 0 0 0 0
+6:drv_idle_low:0 25:Drv_Idle_Low:0 7:A[B:102 12:a`b:103 27:drv_win:104 14:x:0 27:drv_win_02:106 8:-:107 14:DRV_IDLE_LOW:108 10:drv_pan_sweep_overlay:109 24:a@b:10a | aZb x drv_gest_disapnt A[B A[B DRV_IDLE_LOW a@b drv_win -> 0 0 0 102 102 0 10a 104
+30:azb:100 7:drv_wi:101 20:a@b:102 21:a{b:103 28:drv_pan_sweep_overlay:104 0::0 | X drv_win_02 drv_wi X "" DRV_PAN_SWEEP_OVERLAY DRV_IDLE_LOW drv_idle_low -> 0 0 101 0 0 104 0 0
+19:a`b:100 12:aZb:101 19:aZb:102 | drv_pan_sweep_overlay aZb x aZb DRV_IDLE_LOW A[B a@b drv_win_02 -> 0 101 0 101 0 0 0 0
+26:A[B:100 13:-:101 29:drv_wi:102 20:drv_pan_sweep_overlay:103 | "" drv_win_02 azb drv_wi drv_win_02 X drv_win_02 DRV_PAN_SWEEP_OVERLAY -> 0 0 0 102 0 0 0 103
+29:a@b:100 22:a`b:101 12:a{b:102 2:drv_win:0 3:drv_wi:0 12:A[B:105 11:a@b:106 17:-:107 1:a@b:108 | drv_win a`b A[B drv_win_02 DRV_PAN_SWEEP_OVERLAY a@b drv_win DRV_IDLE_LOW -> 0 101 105 0 0 100 0 0
+26:A[B:100 10:-:101 18:DRV_PAN_SWEEP_OVERLAY:102 17:X:0 12:x:104 25:x:105 6:drv_win:106 | DRV_PAN_SWEEP_OVERLAY DRV_PAN_SWEEP_OVERLAY a{b drv_win X a@b drv_win_02 drv_win -> 102 102 0 106 0 0 0 106
+13:DRV_PAN_SWEEP_OVERLAY:100 24:-:101 22:DRV_PAN_SWEEP_OVERLAY:102 27:x:103 | A[B drv_wi aZb drv_wi DRV_PAN_SWEEP_OVERLAY drv_win_02 azb a@b -> 0 0 0 0 100 0 0 0
+15:DRV_IDLE_LOW:0 17:X:101 16:x:102 27:X:103 18:drv_win:104 27:-:105 1:drv_idle_low:106 30:DRV_PAN_SWEEP_OVERLAY:107 0::108 17:-:109 27:a@b:0 | DRV_IDLE_LOW a@b drv_idle_low a`b "" x drv_idle_low aZb -> 0 0 0 0 108 101 0 0
+11:A[B:100 30:drv_gest_disapnt:101 25:DRV_PAN_SWEEP_OVERLAY:102 30:DRV_PAN_SWEEP_OVERLAY:103 19:a`b:104 | drv_win_02 A[B a@b "" drv_idle_low drv_pan_sweep_overlay X DRV_PAN_SWEEP_OVERLAY -> 0 100 0 0 0 102 0 102
+22:a`b:100 22:X:101 27:drv_pan_sweep_overlay:102 | Drv_Idle_Low drv_pan_sweep_overlay aZb X a`b azb drv_pan_sweep_overlay drv_win_02 -> 0 102 0 101 100 0 102 0
+1:a`b:0 15:drv_win:101 3:a`b:0 | drv_wi drv_win a`b x a@b DRV_IDLE_LOW a`b X -> 0 101 0 0 0 0 0 0
+17:DRV_PAN_SWEEP_OVERLAY:100 27:drv_win:101 10:DRV_PAN_SWEEP_OVERLAY:102 24:x:0 5:drv_idle_low:104 19:a{b:0 10:drv_win_02:106 26:azb:107 29:drv_gest_disapnt:0 20:drv_gest_disapnt:109 21:DRV_PAN_SWEEP_OVERLAY:10a 4:A[B:10b | aZb A[B aZb "" x drv_win a{b A[B -> 107 10b 107 0 0 101 0 10b
+26:a{b:100 22:drv_win_02:101 30:X:0 9:aZb:103 0::104 8:x:105 2:drv_idle_low:106 27:DRV_IDLE_LOW:107 | azb drv_wi drv_pan_sweep_overlay drv_idle_low drv_win_02 drv_idle_low drv_idle_low DRV_IDLE_LOW -> 103 0 0 106 101 106 106 106
+26:X:100 25:drv_idle_low:101 27:x:102 8:drv_win:103 16:azb:104 9:drv_pan_sweep_overlay:105 4:drv_gest_disapnt:106 12:drv_win:107 8:drv_pan_sweep_overlay:108 4:-:0 2:drv_wi:10a 28:a{b:10b | drv_pan_sweep_overlay drv_idle_low drv_gest_disapnt Drv_Idle_Low DRV_PAN_SWEEP_OVERLAY drv_idle_low drv_idle_low a{b -> 105 101 106 101 105 101 101 10b
+28:-:100 11:Drv_Idle_Low:101 16:azb:102 28:a`b:103 24:azb:104 27:a@b:105 0:Drv_Idle_Low:106 26:DRV_PAN_SWEEP_OVERLAY:107 8:drv_pan_sweep_overlay:108 | Drv_Idle_Low a`b A[B drv_win_02 a@b aZb X Drv_Idle_Low -> 101 103 0 0 105 102 0 101
+25:a@b:100 13:drv_idle_low:101 0::102 6:-:103 29:Drv_Idle_Low:104 8:a`b:105 | drv_win_02 azb a@b "" a{b drv_idle_low azb a`b -> 0 0 100 102 0 101 0 105
+26:a@b:100 19:drv_win:101 26:DRV_PAN_SWEEP_OVERLAY:102 2:X:0 20:drv_gest_disapnt:104 9:a{b:105 18:a`b:106 29:azb:107 12:-:0 1:a{b:109 20:a{b:10a 25:drv_win_02:10b | DRV_PAN_SWEEP_OVERLAY drv_gest_disapnt drv_idle_low a{b drv_win_02 drv_win DRV_PAN_SWEEP_OVERLAY a{b -> 102 104 0 105 10b 101 102 105
+23:a{b:100 3:drv_pan_sweep_overlay:101 17:drv_pan_sweep_overlay:102 1:drv_gest_disapnt:103 28:a@b:104 | A[B drv_pan_sweep_overlay Drv_Idle_Low "" A[B a@b a{b drv_win -> 0 101 0 0 0 104 100 0
+24:x:100 27:a@b:101 10:a@b:102 20:drv_gest_disapnt:103 25:a{b:104 8:A[B:105 28:a{b:106 16:a{b:107 30:DRV_IDLE_LOW:0 27:a{b:109 3:drv_win:10a | Drv_Idle_Low aZb drv_idle_low "" Drv_Idle_Low drv_pan_sweep_overlay a@b a{b -> 0 0 0 0 0 0 101 104
+10:a{b:100 3:DRV_PAN_SWEEP_OVERLAY:101 23:DRV_IDLE_LOW:102 5:X:103 0:x:104 5:azb:105 22:DRV_IDLE_LOW:106 3:a{b:0 23:A[B:108 10:drv_win:109 23:x:10a | drv_wi DRV_IDLE_LOW DRV_PAN_SWEEP_OVERLAY drv_idle_low a@b a@b A[B drv_pan_sweep_overlay -> 0 102 101 102 0 0 108 101
+12:drv_pan_sweep_overlay:100 8:a`b:101 19:drv_idle_low:102 6:drv_win_02:103 11:DRV_IDLE_LOW:104 5:azb:105 5:drv_win_02:106 | A[B DRV_PAN_SWEEP_OVERLAY drv_wi a`b A[B A[B a{b a{b -> 0 100 0 101 0 0 0 0
+11:DRV_PAN_SWEEP_OVERLAY:100 5:DRV_PAN_SWEEP_OVERLAY:101 18:Drv_Idle_Low:102 | drv_idle_low "" Drv_Idle_Low drv_win_02 drv_idle_low Drv_Idle_Low drv_win_02 a`b -> 102 0 102 0 102 102 0 0
+8:drv_wi:100 8:DRV_IDLE_LOW:101 5:-:0 24:drv_pan_sweep_overlay:103 21:a{b:104 8:a`b:0 0:drv_gest_disapnt:106 21:drv_win:107 26:drv_wi:108 0::109 | a{b a`b a@b azb a`b drv_pan_sweep_overlay drv_wi DRV_IDLE_LOW -> 104 0 0 0 0 103 100 101
+22:drv_win_02:100 22:aZb:101 2:a{b:102 14:drv_win:103 7:x:104 10:Drv_Idle_Low:105 20:drv_win_02:0 26:X:0 18:Drv_Idle_Low:0 | x a{b x DRV_PAN_SWEEP_OVERLAY X drv_gest_disapnt drv_win_02 "" -> 104 102 104 0 104 0 100 0
+0:drv_gest_disapnt:100 7:drv_win_02:101 19:drv_idle_low:102 3:x:103 | drv_win_02 drv_wi drv_wi azb x a@b drv_win_02 drv_idle_low -> 101 0 0 0 103 0 101 102

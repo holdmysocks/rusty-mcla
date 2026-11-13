@@ -2688,14 +2688,12 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
     // (mcPlayerInput A-62088 with mcCarDamage F-10364: a badly damaged car pulls to one
     // side at low speed - past MedDamage the pull grows as (share of the way to MaxDamage)^0.3,
     // times SteerDamageBias, fading out up to SteerDamageSpeedThreshold)
-    let pad_pull;
-    let pull = if !input_ai && t.input.steer_damage_bias > 0.0 && t.input.steer_damage_speed_threshold > 1.0 && t.damage.max_damage > t.damage.med_damage {
-        let share = super::exact::damage_share(st.damage * t.damage.max_damage, t.damage.med_damage, t.damage.max_damage);  // F-10364
-        if share > 0.0 { (1.0 - (speed / t.input.steer_damage_speed_threshold).clamp(0.0, 1.0)) * share * t.input.steer_damage_bias } else { 0.0 }
+    // (its share, input +92; the pull itself is made in the pad's code below, from chassis +224)
+    let pad_pull_share = if !input_ai && t.input.steer_damage_bias > 0.0 && t.input.steer_damage_speed_threshold > 1.0 && t.damage.max_damage > t.damage.med_damage {
+        super::exact::damage_share(st.damage * t.damage.max_damage, t.damage.med_damage, t.damage.max_damage)  // F-10364
     } else {
         0.0
     };
-    pad_pull = pull;
     // (Z2: the original's path in normal play too. The pad's code (mcPlayerInput, physics/pad.rs)
     // holds the steering value P - input object +24: the stick through its dead zone and
     // SteerInputExp, the damaged car's pull added, approached at SteerRate / ReturnRate about the
@@ -2713,7 +2711,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
             vs.pad_steer = input.steer.clamp(-1.0, 1.0);
         } else if !input_ai {
             let sens = ((f32::from_bits(STEER_SENS.load(std::sync::atomic::Ordering::Relaxed)) - 1.0) / 0.5).clamp(-1.0, 1.0);
-            let target = (super::pad::steer_target(input.steer, sens, &t.input) + pull).clamp(-1.0, 1.0);
+            let target = super::pad::steer_pull(super::pad::steer_target(input.steer, sens, &t.input), pad_pull_share, speed, &t.input);
             let sideways = super::exact::fma(row2[0].x, st.vel.x, super::exact::fma(row2[0].z, st.vel.z, row2[0].y * st.vel.y));
             let (brake_pad, hand_pad) = (if vs.gear < 0 { input.throttle } else { input.brake }, if input.handbrake { 1.0 } else { 0.0 });
             if pad_exact {
@@ -2755,7 +2753,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
         }
         vs.steer_back = vs.steer;
     } else {
-    let want = ((input.steer + pull).clamp(-1.0, 1.0) * sss).clamp(-lock, lock);
+    let want = (super::pad::steer_pull(input.steer.clamp(-1.0, 1.0), pad_pull_share, speed, &t.input) * sss).clamp(-lock, lock);
     let returning = want.abs() < vs.steer.abs() || want * vs.steer < 0.0;
     let mut rate = if returning { t.input.return_rate.max(1.0) } else { t.input.steer_rate.max(1.0) };
     if !input_ai {
@@ -3244,7 +3242,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
             }
             // (the steering, A-58585.. and F-63605, after the pedals: it reads the brake just made)
             let sens = ((f32::from_bits(STEER_SENS.load(std::sync::atomic::Ordering::Relaxed)) - 1.0) / 0.5).clamp(-1.0, 1.0);
-            let target = (super::pad::steer_target(stick_x, sens, &t.input) + pad_pull).clamp(-1.0, 1.0);
+            let target = super::pad::steer_pull(super::pad::steer_target(stick_x, sens, &t.input), pad_pull_share, speed224, &t.input);
             vs.pad.goal = target;
             let sideways = super::exact::fma(rows[0].x, v.x, super::exact::fma(rows[0].z, v.z, rows[0].y * v.y));
             vs.pad.steer_next = super::pad::steer_step(vs.pad_steer, target, &t.input, &super::pad::SteerIn {
