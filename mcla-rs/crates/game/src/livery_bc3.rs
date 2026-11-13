@@ -586,12 +586,66 @@ pub fn encode_image(rgba: &[u8], w: usize, h: usize) -> Vec<u8> {
     out
 }
 
+/// The livery's mip chain as the original's work target gets it before the job compresses every level (F-42143): the
+/// pass end F-52621 unlocks the target with the resolve flags' make-mips byte (+24) set, and the target's mip maker F-27026
+/// draws each level from the one above with rage_fastmipmap's PSFastMipMap (loaded by F-58842): four bilinear taps at
+/// +-0.5 of the destination texel x 0.25, which is a centred 4 x 4 box of the level above (texels 2i - 1 .. 2i + 2,
+/// clamped at the edge; measured on the original's env map, render/env_mip.wgsl), written to the 8-bit target (rounded to
+/// nearest). Levels down to 4 x 4: 9 for the 1024 livery, 8 for the editor's 512. Level 0 is `rgba` itself.
+pub fn mip_chain(rgba: &[u8], w: usize, h: usize) -> Vec<(Vec<u8>, usize, usize)> {
+    use rayon::prelude::*;
+    let mut out = vec![(rgba.to_vec(), w, h)];
+    while out.last().map_or(false, |l| l.1 > 4 && l.2 > 4) {
+        let (src, sw, sh) = out.last().unwrap();
+        let (sw, sh) = (*sw, *sh);
+        let (dw, dh) = (sw / 2, sh / 2);
+        let mut dst = vec![0u8; dw * dh * 4];
+        dst.par_chunks_mut(dw * 4).enumerate().for_each(|(y, row)| {
+            for x in 0..dw {
+                let mut acc = [0u32; 4];
+                for dy in -1i32..3 {
+                    let sy = (2 * y as i32 + dy).clamp(0, sh as i32 - 1) as usize;
+                    for dx in -1i32..3 {
+                        let sx = (2 * x as i32 + dx).clamp(0, sw as i32 - 1) as usize;
+                        let o = (sy * sw + sx) * 4;
+                        for c in 0..4 {
+                            acc[c] += src[o + c] as u32;
+                        }
+                    }
+                }
+                for c in 0..4 {
+                    row[x * 4 + c] = ((acc[c] + 8) / 16) as u8;
+                }
+            }
+        });
+        out.push((dst, dw, dh));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// tools/livery_bc3_reference.py: the original's surface copy F-60873 run offline on 15 images of 32 x 32 (noise,
     /// gradients, flat blocks, soft-edged stripes, greys, extremes, transparent fields; 960 blocks): every byte as the port's.
+    /// The generator's constructor F-88260: the 1024 work target has 9 levels, the 512 one 8 (both down to 4 x 4); a flat
+    /// image stays flat, a 4 x 4 box of the level above.
+    #[test]
+    fn mip_chain_levels() {
+        for (n, want) in [(1024usize, 9usize), (512, 8)] {
+            let img: Vec<u8> = (0..n * n).flat_map(|_| [10u8, 200, 30, 255]).collect();
+            let c = mip_chain(&img, n, n);
+            assert_eq!(c.len(), want);
+            assert_eq!((c[want - 1].1, c[want - 1].2), (4, 4));
+            assert!(c.iter().all(|(l, _, _)| l.chunks(4).all(|p| p == [10, 200, 30, 255])));
+        }
+        // texel (1, 1) of level 1 of a 8 x 8 ramp: the mean of source texels 1 .. 4 in x and y
+        let img: Vec<u8> = (0..64).flat_map(|i| [(i % 8 * 16) as u8, (i / 8 * 16) as u8, 0, 255]).collect();
+        let c = mip_chain(&img, 8, 8);
+        assert_eq!(&c[1].0[(4 + 1) * 4..(4 + 1) * 4 + 2], &[40, 40]);
+    }
+
     #[test]
     fn blocks_match_the_original() {
         let text = include_str!("testdata/livery_bc3_ref.txt");

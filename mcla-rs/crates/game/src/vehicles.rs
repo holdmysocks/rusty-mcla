@@ -522,6 +522,9 @@ pub struct CarInstance {
     pub amb_lift: [f32; 6],
     /// the slipstream trail's points (mcCarModel +7200 block - sst_trail.rs)
     pub sst_trail: crate::sst_trail::Trail,
+    /// mcCar +328: the frame update F-16712's ease (F-24995 at +320's rate 3, set by F-11744) towards the nitrous'
+    /// look (`Vehicles::nitro_fx_step`); the streak blur's DesatScale takes it for the local player's car
+    pub nitro_fx: f32,
     /// a cruiser's siren target (+304), set by the police (F-78189's callers: on for the cops of a pull-over or
     /// pursuit and through a police scene, off after an escape or the scene; a cop in no tactic keeps it)
     pub siren: bool,
@@ -4024,7 +4027,7 @@ impl Vehicles {
         }
         self.next_uid += 1;
         let uid = self.next_uid;
-        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, rotor_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, crash: Default::default(), parked: None, item: None, amb_born: 0.0, amb_life: 8.0, amb_id: -1, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), roam_key: String::new(), vinyl: None, vinyl_done: false, size_wheels: None, vinyl_slot: VINYL_SLOT_NONE, setup: None, stages: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, lock: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, pu_stealth_on: false, engine_off: false, exhaust: true, show_driver: false, driver_off: false, hi_driver: false, window_bindings, windows: Default::default(), win_req: [[false; 2]; 2], spoiler: WindowCtl::default(), light_flip: WindowCtl::default(), flip_req: None, roof: RoofCtl::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6], sst_trail: Default::default(), siren: false, light_t: 0.0, steer_parts: Default::default(), valve: Default::default(), amb_slot: amb_slot_start(), amb_light: AmbSlotLights::default(), amb_steer: Default::default(), amb_frames: 0, amb_hit: false, amb_place: None, amb_mwc: None });
+        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, rotor_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, crash: Default::default(), parked: None, item: None, amb_born: 0.0, amb_life: 8.0, amb_id: -1, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), roam_key: String::new(), vinyl: None, vinyl_done: false, size_wheels: None, vinyl_slot: VINYL_SLOT_NONE, setup: None, stages: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, lock: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, pu_stealth_on: false, engine_off: false, exhaust: true, show_driver: false, driver_off: false, hi_driver: false, window_bindings, windows: Default::default(), win_req: [[false; 2]; 2], spoiler: WindowCtl::default(), light_flip: WindowCtl::default(), flip_req: None, roof: RoofCtl::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6], sst_trail: Default::default(), nitro_fx: 0.0, siren: false, light_t: 0.0, steer_parts: Default::default(), valve: Default::default(), amb_slot: amb_slot_start(), amb_light: AmbSlotLights::default(), amb_steer: Default::default(), amb_frames: 0, amb_hit: false, amb_place: None, amb_mwc: None });
         self.cars.len() - 1
     }
 
@@ -4178,6 +4181,19 @@ impl Vehicles {
         c.state.relocate(pos + rot * Vec3::Z * dist, rot);
         c.state.vel = vel;
         c.state.ang_vel = ang;
+    }
+
+    /// Once a frame (F-16712, with the frame's step): each car's +328 eases at 3 a second towards 1 while its +324 holds -
+    /// the nitrous view at its full NitroFov (F-94357: mcCarNitro +24 == the tune's +16), a shot burning (mcCarNitro +32)
+    /// or the slipstream turbo burning (mcCarSSTurbo +40) - else towards 0.
+    pub fn nitro_fx_step(&mut self, dt: f32) {
+        for c in self.cars.iter_mut() {
+            let on = c.state.veh.as_ref().map_or(false, |v| {
+                let full = c.model.simtunes.as_ref().map_or(false, |s| v.nitro_view == s.base.nitro.fov);
+                full || v.nitro_burning || v.sst.burning
+            });
+            c.nitro_fx = ease_at(c.nitro_fx, on, 3.0, dt);
+        }
     }
 
     /// After the step: each turbo's trail fades (mcCarModel F-66688 - kept while the local player is this car,
@@ -4477,7 +4493,8 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 width: w,
                 height: h,
                 format: mcla_formats::rage::xenos::TexFormat::Dxt5,
-                levels: vec![crate::livery_bc3::encode_image(px, w as usize, h as usize)],
+                // (every level of the work target, each compressed: livery_bc3::mip_chain)
+                levels: crate::livery_bc3::mip_chain(px, w as usize, h as usize).iter().map(|(l, lw, lh)| crate::livery_bc3::encode_image(l, *lw, *lh)).collect(),
                 fetch: [0; 6],
             };
             Arc::new(crate::render::upload_as(&gpu.device, &gpu.queue, &t, gpu.bc_supported, true))
