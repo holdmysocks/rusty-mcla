@@ -3184,7 +3184,7 @@ impl App {
         if std::env::var("MCLA_RACE_LEAVE").is_ok() && self.tick_no % 60 == 0 {
             for &uid in &self.game.race_kept {
                 if let Some(c) = self.vehicles.cars.iter().find(|c| c.uid == uid) {
-                    log::info!("race leave: kept {} at ({:.1}, {:.1}, {:.1}) {:.1} m/s, cruiser {}", uid, c.state.pos.x, c.state.pos.y, c.state.pos.z, c.state.speed(), crate::cruisedrive::is_cruiser(c));
+                    log::info!("race leave: kept {} at ({:.1}, {:.1}, {:.1}) {:.1} m/s, cruiser {}, throttle {:.2} brake {:.2} steer {:.2} hold {} deact {} damage {:.2}", uid, c.state.pos.x, c.state.pos.y, c.state.pos.z, c.state.speed(), crate::cruisedrive::is_cruiser(c), c.input.throttle, c.input.brake, c.input.steer, c.input.hold, c.input.deactivated, c.state.damage);
                 }
             }
         }
@@ -13934,9 +13934,26 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     let opps: Vec<raceleave::Opp> = r.participants.iter().enumerate().skip(1).filter_map(|(s, &k)| self.vehicles.cars.get(k).map(|c| raceleave::Opp { slot: s, uid: c.uid, pos: c.state.pos })).collect();
                     let player = pi.and_then(|i| self.vehicles.cars.get(i)).map(|c| c.state.pos);
                     let owner = self.game.race_owner();
-                    let plan = raceleave::plan(&owner, action == MenuAction::StartFreeRoam, self.game.race_arrested, first, player, &opps);
+                    // (GO TO GARAGE of the race-over or pause menu is `go_garage` with this StartFreeRoam: the command
+                    // returnToGarage, which the cores' dispatch lets fall into the release as RETURN TO CRUISE and QUIT)
+                    let cmd = match action {
+                        MenuAction::QuitRace => raceleave::Command::Quit,
+                        _ if self.game.go_garage => raceleave::Command::Garage,
+                        _ => raceleave::Command::Cruise,
+                    };
+                    let series_won = self.game.series_complete();
+                    let cut = self.game.series.as_ref().and_then(|s| s.story.as_ref()).is_some_and(|s| raceleave::SERIES_REWARD_CUT.contains(&s.0.as_str()));
+                    let facts = raceleave::Facts {
+                        arrested: self.game.race_arrested,
+                        first,
+                        finished: pt.is_some(),
+                        series_won,
+                        series_cut: series_won && cut && !self.game.race_dmg_out,
+                        bmt: self.game.series.is_some() && self.game.bmt_goal.is_some(),
+                    };
+                    let plan = raceleave::plan(&owner, cmd, &facts, player, &opps);
                     let voice = r.participants.get(1).and_then(|k| self.drivers.set_of.get(k)).map(|set| prerace::voice_of(&self.opt.data_dir, set).unwrap_or_default()).unwrap_or_default();
-                    log::info!("race leave: {:?}, arrested {}, first {}: kept {:?}, taunts {:?}", owner, self.game.race_arrested, first, plan.keep, plan.taunts);
+                    log::info!("race leave: {:?} {:?}, {:?}: kept {:?}, taunts {:?}", owner, cmd, facts, plan.keep, plan.taunts);
                     (plan, voice)
                 });
                 self.game.race_arrested = false;

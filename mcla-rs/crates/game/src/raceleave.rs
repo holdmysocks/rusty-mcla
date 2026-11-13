@@ -15,8 +15,11 @@
 //! The post-race taunt of the cores in `STORY_TAUNT` and generic_local_hookman: on RETURN TO CRUISE, before the loop,
 //! mcCareerSpeech_PlayTauntpostRace(record 1's racer, the player, the player's record +164 == 1) (0x420c..0x426a), and
 //! after the loop, whatever the command, PlayTauntpostRace(record 1's racer, the player, 0) (0x4a9c..0x4ab9). The
-//! other scripts' taunts (the series', the wager's, the tournament's, TelephoneChallenge's, RACE_GH_06's) have rules of
-//! their own and are not ported.
+//! other scripts' taunts (`taunts`): the tournament, TelephoneChallenge and RACE_GH_06 on QUIT only, NOT_IN_FIRST; the
+//! wager / pink slip hangout NOT_IN_FIRST on QUIT, on RETURN TO CRUISE by its end sequence's play flag; the series by
+//! its chain after the replay check (OrderedSeriesCore 0x3d3d..0x3e84), none when a won series' reward cut plays, and
+//! NOT_IN_FIRST when its beat me there leg is left (0x22b5..0x2396). RaceWrapper, BEAT_SH_04B and the downtown
+//! hangouts have none. Every speaker is record 1's racer.
 
 use glam::Vec3;
 
@@ -81,14 +84,6 @@ impl Owner {
             _ => true,
         }
     }
-
-    pub fn taunts(&self) -> bool {
-        match self {
-            Owner::Story(m) => story_taunts(m),
-            Owner::LocalHookman => true,
-            _ => false,
-        }
-    }
 }
 
 /// The distance under which an opponent stays (Racer_DistanceBetween, 0x433e).
@@ -109,21 +104,88 @@ pub struct Plan {
     pub taunts: Vec<&'static str>,
 }
 
-/// The leave for the cruise. `cruise`: the command is RETURN TO CRUISE (else QUIT); `first`: the player's record +164 is 1.
-pub fn plan(owner: &Owner, cruise: bool, arrested: bool, first: bool, player: Option<Vec3>, opps: &[Opp]) -> Plan {
-    let mut p = Plan::default();
-    if owner.taunts() && cruise {
-        p.taunts.push(if first { "TAUNT_POST_IN_FIRST" } else { "TAUNT_POST_NOT_IN_FIRST" });
+/// The story series whose script sets OrderedSeriesCore's +3260 (the cut after a won series): BESTOF_GH_04
+/// (cut_reward_nikolai_generated) and BESTOF_GH_05 (cut_reward_marcel_generated).
+pub const SERIES_REWARD_CUT: [&str; 2] = ["BESTOF_GH_04", "BESTOF_GH_05"];
+
+/// The race-over command that leaves the race (the registry's raceOverCommand): RETURN TO CRUISE, QUIT, GO TO GARAGE.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Command {
+    Cruise,
+    Quit,
+    Garage,
+}
+
+/// What the scripts read at the leave.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Facts {
+    /// Race_HasBeenArrested
+    pub arrested: bool,
+    /// the player's record +164 is 1 (finished first)
+    pub first: bool,
+    /// the player's record +32 is not INT_MAX (he has a finish time)
+    pub finished: bool,
+    /// the series: bComplete (the player won it with this race)
+    pub series_won: bool,
+    /// the series: local 32 - not damaged out, bComplete and the series' +3260 cut script set (BESTOF_GH_04's
+    /// cut_reward_nikolai, BESTOF_GH_05's cut_reward_marcel: their story scripts write it before starting
+    /// OrderedSeriesCore; every other caller leaves it NULL, and StringCompare(NULL, '') is equal) - the reward cut
+    /// plays and no taunt does
+    pub series_cut: bool,
+    /// the series' beat me there leg is on (its own race-over at 0x22b5)
+    pub bmt: bool,
+}
+
+const IN: &str = "TAUNT_POST_IN_FIRST";
+const NOT: &str = "TAUNT_POST_NOT_IN_FIRST";
+
+/// The post-race taunts of a leave, in order (each PlayTauntpostRace(record 1's racer, the player, b): b set -
+/// TAUNT_POST_IN_FIRST, else TAUNT_POST_NOT_IN_FIRST).
+pub fn taunts(owner: &Owner, cmd: Command, f: &Facts) -> Vec<&'static str> {
+    let by = |b: bool| if b { IN } else { NOT };
+    match owner {
+        // (the include: RETURN TO CRUISE by the place before the loop, NOT_IN_FIRST after it for every command)
+        Owner::Story(m) if story_taunts(m) => match cmd {
+            Command::Cruise => vec![by(f.first), NOT],
+            _ => vec![NOT],
+        },
+        Owner::LocalHookman => match cmd {
+            Command::Cruise => vec![by(f.first), NOT],
+            _ => vec![NOT],
+        },
+        // (TournamentCore, TelephoneChallenge, RACE_GH_06_core: 'quit' only, 0)
+        Owner::Tournament | Owner::TelephoneChallenge if cmd == Command::Quit => vec![NOT],
+        Owner::Story(m) if m == "RACE_GH_06" && cmd == Command::Quit => vec![NOT],
+        // (Hangouts/0x16e89a34 0x42b4..0x436b: returnToHangout nothing, 'quit' 0, 'returnToCruise' its local 11: 1, cleared
+        // by the end sequence's "did not finish" (no finish time; the kinds 16 / 17 and a decided series or tournament,
+        // which keep it, are no wager) and "damaged out or arrested" (arrested without nPlayerCaught, which only a
+        // payback sets) - 0x2ca8..0x2f04. So a finished wager says IN_FIRST in any place.)
+        Owner::Hangout => match cmd {
+            Command::Quit => vec![NOT],
+            Command::Cruise => vec![by(f.finished && !f.arrested)],
+            Command::Garage => vec![],
+        },
+        // (OrderedSeriesCore: its beat me there leg's race-over - returnToCruise / quit / returnToGarage, 0; then the
+        // local race's chain, all of it under !local32: bComplete 1, else returnToCruise or quit 0, else +164 == 1 1,
+        // else 0)
+        Owner::Series if f.bmt => vec![NOT],
+        Owner::Series if f.series_cut => vec![],
+        Owner::Series if f.series_won => vec![IN],
+        Owner::Series if matches!(cmd, Command::Cruise | Command::Quit) => vec![NOT],
+        Owner::Series => vec![by(f.first)],
+        _ => vec![],
     }
+}
+
+/// The leave of a race by `cmd`.
+pub fn plan(owner: &Owner, cmd: Command, f: &Facts, player: Option<Vec3>, opps: &[Opp]) -> Plan {
+    let mut p = Plan { keep: Vec::new(), taunts: taunts(owner, cmd, f) };
     if owner.releases() {
         for o in opps {
-            if crate::brain::racer_distance(player, Some(o.pos)) < KEEP_WITHIN && !arrested {
+            if crate::brain::racer_distance(player, Some(o.pos)) < KEEP_WITHIN && !f.arrested {
                 p.keep.push((o.uid, o.slot.min(7)));
             }
         }
-    }
-    if owner.taunts() {
-        p.taunts.push("TAUNT_POST_NOT_IN_FIRST");
     }
     p
 }
@@ -179,25 +241,51 @@ mod tests {
 
     #[test]
     fn the_leave_is_the_scripts() {
+        use Command::*;
         let opps = [opp(1, 10.0), opp(2, 499.0), opp(3, 500.0), opp(9, 20.0)];
-        let p = plan(&Owner::Wrapper, true, false, true, Some(Vec3::ZERO), &opps);
+        let won = Facts { first: true, finished: true, ..Default::default() };
+        let lost = Facts { finished: true, ..Default::default() };
+        let o = Some(Vec3::ZERO);
+        let p = plan(&Owner::Wrapper, Cruise, &won, o, &opps);
         // (within 500 m, the route by slot - 7 and above take the default, route 7; RaceWrapper has no taunt)
         assert_eq!(p, Plan { keep: vec![(101, 1), (102, 2), (109, 7)], taunts: vec![] });
         // (arrested: nobody stays)
-        assert!(plan(&Owner::Wrapper, true, true, false, Some(Vec3::ZERO), &opps).keep.is_empty());
-        // (a story core with the include's taunts: by the place on RETURN TO CRUISE, then NOT_IN_FIRST after the loop)
+        assert!(plan(&Owner::Wrapper, Cruise, &Facts { arrested: true, ..lost }, o, &opps).keep.is_empty());
+        // (a story core with the include's taunts: by the place on RETURN TO CRUISE, then NOT_IN_FIRST after the loop -
+        // QUIT and GO TO GARAGE fall into the loop with no first taunt)
         let s = Owner::Story("BEAT_SH_03".into());
-        assert_eq!(plan(&s, true, false, true, Some(Vec3::ZERO), &opps).taunts, vec!["TAUNT_POST_IN_FIRST", "TAUNT_POST_NOT_IN_FIRST"]);
-        assert_eq!(plan(&s, false, false, true, Some(Vec3::ZERO), &opps).taunts, vec!["TAUNT_POST_NOT_IN_FIRST"]);
-        assert_eq!(plan(&Owner::LocalHookman, true, false, false, Some(Vec3::ZERO), &opps).taunts, vec!["TAUNT_POST_NOT_IN_FIRST", "TAUNT_POST_NOT_IN_FIRST"]);
+        assert_eq!(plan(&s, Cruise, &won, o, &opps).taunts, vec![IN, NOT]);
+        assert_eq!(plan(&s, Quit, &won, o, &opps).taunts, vec![NOT]);
+        assert_eq!(plan(&s, Garage, &won, o, &opps).taunts, vec![NOT]);
+        assert_eq!(plan(&Owner::LocalHookman, Cruise, &lost, o, &opps).taunts, vec![NOT, NOT]);
         // (the cores without the release, and BEAT_SH_04B's release with no taunt)
-        let n = plan(&Owner::Story("RACE_SH_01".into()), true, false, true, Some(Vec3::ZERO), &opps);
-        assert_eq!(n, Plan::default());
-        let b = plan(&Owner::Story("BEAT_SH_04B".into()), true, false, true, Some(Vec3::ZERO), &opps);
+        assert_eq!(plan(&Owner::Story("RACE_SH_01".into()), Cruise, &won, o, &opps), Plan::default());
+        let b = plan(&Owner::Story("BEAT_SH_04B".into()), Cruise, &won, o, &opps);
         assert_eq!((b.keep.len(), b.taunts.len()), (3, 0));
-        assert_eq!(plan(&Owner::Other, true, false, true, Some(Vec3::ZERO), &opps), Plan::default());
+        assert_eq!(plan(&Owner::Other, Cruise, &won, o, &opps), Plan::default());
         // (no player racer: the distance is 100000)
-        assert!(plan(&Owner::Wrapper, true, false, true, None, &opps).keep.is_empty());
+        assert!(plan(&Owner::Wrapper, Cruise, &won, None, &opps).keep.is_empty());
+        // (the tournament, TelephoneChallenge, RACE_GH_06: QUIT only, 0)
+        for w in [Owner::Tournament, Owner::TelephoneChallenge, Owner::Story("RACE_GH_06".into())] {
+            assert_eq!(taunts(&w, Quit, &won), vec![NOT], "{:?}", w);
+            assert!(taunts(&w, Cruise, &won).is_empty() && taunts(&w, Garage, &won).is_empty(), "{:?}", w);
+        }
+        // (the wager: QUIT 0, RETURN TO CRUISE the end sequence's flag - set in any place -, GO TO GARAGE nothing)
+        assert_eq!(taunts(&Owner::Hangout, Quit, &won), vec![NOT]);
+        assert_eq!(taunts(&Owner::Hangout, Cruise, &lost), vec![IN]);
+        assert_eq!(taunts(&Owner::Hangout, Cruise, &Facts::default()), vec![NOT]);
+        assert_eq!(taunts(&Owner::Hangout, Cruise, &Facts { arrested: true, ..won }), vec![NOT]);
+        assert!(taunts(&Owner::Hangout, Garage, &won).is_empty());
+        // (the series' chain, its reward cut and its beat me there leg)
+        let sr = Owner::Series;
+        assert_eq!(taunts(&sr, Cruise, &Facts { series_won: true, ..won }), vec![IN]);
+        assert!(taunts(&sr, Cruise, &Facts { series_won: true, series_cut: true, ..won }).is_empty());
+        assert_eq!(taunts(&sr, Cruise, &won), vec![NOT]);
+        assert_eq!(taunts(&sr, Quit, &won), vec![NOT]);
+        assert_eq!(taunts(&sr, Garage, &won), vec![IN]);
+        assert_eq!(taunts(&sr, Garage, &lost), vec![NOT]);
+        assert_eq!(taunts(&sr, Garage, &Facts { bmt: true, ..won }), vec![NOT]);
+        assert!(taunts(&Owner::Wrapper, Quit, &won).is_empty());
     }
 
     /// The story lists are the cores' scripts: every name of `STORY_RELEASE` hashes to a story script that has the
@@ -226,5 +314,17 @@ mod tests {
             assert!(!has(&d, "Opponent Distance = "), "{} has the release", m);
             assert!(has(&d, "returnToCruise") || m == "RACE_SH_01", "{}", m);
         }
+        // (the series' reward cut: the story scripts that start OrderedSeriesCore with a cut script are these two)
+        let mut cut = Vec::new();
+        for e in std::fs::read_dir(root.join("game/career/Story")).unwrap().flatten() {
+            let d = mcla_formats::sco::decode(&std::fs::read(e.path()).unwrap()).unwrap().data;
+            if has(&d, "Game/Race/OrderedSeriesCore") && has(&d, "Game/CineScripts/generated/cut_reward_") {
+                cut.push(e.file_name().to_string_lossy().to_string());
+            }
+        }
+        cut.sort();
+        let mut want: Vec<String> = SERIES_REWARD_CUT.iter().map(|m| format!("0x{:08x}", mcla_formats::hash::joaat(&format!("{}_core.sco", m)))).collect();
+        want.sort();
+        assert_eq!(cut, want);
     }
 }

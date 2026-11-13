@@ -15570,6 +15570,15 @@ impl Game {
     pub fn series_decided(&self) -> bool {
         self.series.as_ref().map_or(false, |s| s.wins.iter().any(|w| w.1 >= s.to_win()))
     }
+
+    /// The series' bComplete: its decision F-63112 is the player's.
+    pub fn series_complete(&self) -> bool {
+        self.series.as_ref().map_or(false, |s| {
+            let types: Vec<i32> = s.wins.iter().map(|w| if w.0 == "YOU" { 0 } else { 1 }).collect();
+            let counts: Vec<i32> = s.wins.iter().map(|w| w.1 as i32).collect();
+            crate::career::series_decision(&types, &counts, s.to_win() as i32) == Some(true)
+        })
+    }
 }
 
 /// wins a series asks for (`RACE WINS NEEDED: 3`)
