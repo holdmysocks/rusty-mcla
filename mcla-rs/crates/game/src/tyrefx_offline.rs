@@ -74,3 +74,36 @@ fn the_effect_rule_matches_the_original() {
     }
     report("F-42446 effect rule", n, &bad);
 }
+
+/// F-67671 against the original run offline (tools/tyrefx_order_reference.py): 3,000 cars - motorcycles and cars (chassis
+/// +24), both wheel lists of 0 .. 4 with shuffled wheels, burnout charge and melt at 0, -0, a hair above and negative, no
+/// tyre-effect states - and every call to F-42446 with its five arguments equals `order`'s list.
+#[test]
+fn the_tyre_effect_order_matches_the_original() {
+    let text = include_str!("testdata/tyrefx_order_ref.txt");
+    let mut lines = text.lines();
+    let hex = |t: &str| u32::from_str_radix(t, 16).unwrap();
+    let base: Vec<u32> = lines.next().unwrap().split_whitespace().map(hex).collect();
+    let (s, ch, melt, bw, fl, pl, st) = (0x1000u32, 0x1100u32, 0x1400u32, 0x1440u32, 0x1600u32, 0x1680u32, 0x2000u32);
+    let mut n = 0;
+    for line in lines.filter(|l| !l.is_empty()) {
+        let (pairs, calls) = line.split_once(" -> |").unwrap();
+        let mut m = std::collections::HashMap::new();
+        for c in base.chunks(2).chain(pairs.split_whitespace().map(hex).collect::<Vec<_>>().chunks(2)) {
+            m.insert(c[0], c[1]);
+        }
+        let g = |a: u32| *m.get(&a).unwrap_or(&0);
+        let mut want = String::new();
+        if g(s + 1012) != 0 {
+            let (burn, mel) = (f32::from_bits(g(ch + 580)), f32::from_bits(g(melt + 24)));
+            let list = |l: u32| (0..g(l + 20)).map(|k| g(l + 24 + 4 * k)).collect::<Vec<u32>>();
+            let bike = (g(ch + 24) == 2).then(|| (g(bw), g(bw + 4)));
+            for (si, w, mirror, flag) in order(bike, &list(fl), &list(pl), burn, mel) {
+                want += &format!(" {:x},{:x},{:x},{:x},{:x}", st + 144 * si as u32, g(ch + 128) + 272, w, mirror as u32, flag as u32);
+            }
+        }
+        assert_eq!(want, calls, "{pairs}");
+        n += 1;
+    }
+    assert_eq!(n, 3000);
+}

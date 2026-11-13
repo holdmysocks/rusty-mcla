@@ -102,12 +102,9 @@ impl TyreFx {
             }
             let model = std::sync::Arc::as_ptr(&c.model) as usize;
             let mut states = self.cars.remove(&ci).map(|(_, s)| s).unwrap_or_default();
-            // (burnout charge chassis +580 or the tyres' melt +660 -> +24)
-            let flag_a = vs.burn > 0.0 || vs.melt > 0.0;
-            // the states in the original's order: the freetrain's wheels (+404), then the powertrain's
-            // (+400), each list left before right (mirrored on even places); a bike: two per wheel
-            let list: Vec<(usize, bool, bool)> = if c.model.bike {
-                vec![(0, true, false), (0, false, false), (2, true, flag_a), (2, false, flag_a)]
+            // the states in the original's order (F-67671): the freetrain's wheels (+404), then the powertrain's (+400)
+            let list: Vec<(usize, usize, bool, bool)> = if c.model.bike {
+                order(Some((0, 2)), &[], &[], vs.burn, vs.melt)
             } else {
                 let power: &[usize] = match vs.drive {
                     0 => &[2, 3],
@@ -115,11 +112,9 @@ impl TyreFx {
                     _ => &[0, 1, 2, 3],
                 };
                 let free: Vec<usize> = (0..4).filter(|w| !power.contains(w)).collect();
-                let mut l: Vec<(usize, bool, bool)> = free.iter().enumerate().map(|(k, &w)| (w, k % 2 == 0, false)).collect();
-                l.extend(power.iter().enumerate().map(|(k, &w)| (w, k % 2 == 0, flag_a)));
-                l
+                order(None, &free, power, vs.burn, vs.melt)
             };
-            for (si, &(wi, mirror, fa)) in list.iter().enumerate().take(4) {
+            for &(si, wi, mirror, fa) in list.iter().take(4) {
                 let key = 0x5459_5245_0000_0000 | ((ci as u64) << 4) | si as u64;
                 let s = &mut states[si];
                 let w = &vs.wheels[wi];
@@ -268,6 +263,22 @@ struct WheelIn {
 /// The instance's frame from the matrix's rows (x side, y normal, z backward): its turn, and
 /// whether it is a mirror image (the side negated on the left wheels, the backward row on a wheel
 /// turning backwards) - then the turn is the one of the frame with x negated back.
+/// F-67671's order of a car's tyre-effect states: (state, wheel, mirror, burnout flag) as it calls F-42446. The flag:
+/// the burnout charge (chassis +580) or the melt ([+660] +24) above 0. A motorcycle (`bike`: its front and rear wheel,
+/// [+28] +0 / +4): front mirrored, front, rear mirrored, rear, the flag on the rear. A car: the freetrain list (+404) then the
+/// powertrain list (+400), the state index running on, mirrored at the even places of each list, the flag on the
+/// powertrain's.
+pub fn order<T: Copy>(bike: Option<(T, T)>, free: &[T], power: &[T], burn: f32, melt: f32) -> Vec<(usize, T, bool, bool)> {
+    let flag = burn > 0.0 || melt > 0.0;
+    if let Some((f, r)) = bike {
+        return vec![(0, f, true, false), (1, f, false, false), (2, r, true, flag), (3, r, false, flag)];
+    }
+    let mut l: Vec<(usize, T, bool, bool)> = free.iter().enumerate().map(|(k, &w)| (k, w, k % 2 == 0, false)).collect();
+    let n = l.len();
+    l.extend(power.iter().enumerate().map(|(k, &w)| (n + k, w, k % 2 == 0, flag)));
+    l
+}
+
 fn mtx_rot(m: &[Vec3; 4]) -> (Quat, bool) {
     let (x, y, z) = (m[0].normalize_or(Vec3::X), m[1].normalize_or(Vec3::Y), m[2].normalize_or(Vec3::Z));
     let flip = x.cross(y).dot(z) < 0.0;
