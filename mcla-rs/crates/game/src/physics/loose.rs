@@ -1853,6 +1853,8 @@ impl LooseState {
             let props: Vec<usize> = [who_a, who_b].into_iter().filter_map(|w| if let Who::Obj(o) = w { Some(o) } else { None }).filter(|o| self.objs[*o].inst.is_some()).collect();
             // (stage R: a vehicle on the other side)
             let other_veh = [who_a, who_b].into_iter().find_map(|w| if let Who::Obj(o) = w { self.objs[o].veh.map(|vh| (o, vh.class)) } else { None });
+            // (F-58598 resets the whole manifold: F-12537)
+            let mut reset = false;
             for s in m.slots.iter_mut() {
                 let of = |w: Who| match w {
                     Who::Car => surface_touch(car.hull.surface_of(s.element)),
@@ -1883,9 +1885,10 @@ impl LooseState {
                 let obj = &self.objs[o];
                 let t = &world.types[obj.ty];
                 // (the car's, F-58598: a hull contact with a prop of a type that only breaks,
-                // broken more than two seconds ago, is not felt above 20 m/s)
-                if car.speed > 20.0 && t.min_move < 0.0 && obj.hit && obj.entry.map_or(false, |e| e.age > 2.0) {
+                // broken more than two seconds ago, is not felt above 20 m/s - and the manifold is emptied)
+                if breaks_off(car.speed, t.min_move, obj.hit, obj.entry.map(|e| e.age)) {
                     s.enabled = false;
+                    reset = true;
                     continue;
                 }
                 // (F-55998, against an mcPropInst: the normal as it pushes the car points down)
@@ -1920,10 +1923,25 @@ impl LooseState {
                     }
                 }
             }
+            // (F-12537: the count 0, the selected -1 - every contact of it gone, this tick's island and the next tick's
+            // refresh see none)
+            if reset {
+                m.slots.clear();
+            }
         }
         self.pieces_touched(car);
     }
+}
 
+/// F-58598's test (the car's contact callback, on an enabled hull contact with a prop instance, types 4 / 5): the car's
+/// speed (chassis +224) over 20, the prop's type breaks only (its least move +316 below 0), it is hit (+80 bit 1) and its
+/// entry broken more than 2 s ago (+84 +420). Then the contact is taken from the solver and its manifold is reset. The
+/// hit-prop statistics (gHPR / nHPR) the callback counts for the player are not ported.
+pub(super) fn breaks_off(speed: f32, min_move: f32, hit: bool, age: Option<f32>) -> bool {
+    speed > 20.0 && min_move < 0.0 && hit && age.is_some_and(|a| a > 2.0)
+}
+
+impl LooseState {
     /// The ability hook on the car's contacts (F-46500, mcCarInstance slot 23, pre-solve, after `refresh`): for each
     /// enabled contact of the car with another instance, Agro's strike (F-70024, `agro.rs`) on an ambient car's body
     /// while Agro runs, else the gauge's strike for the class of the other instance. The struck body takes the car's
@@ -6703,5 +6721,30 @@ mod pool_tests {
         assert_eq!(pool_victim(&seen[1..], 5, [0.0, 0.0, 0.0, 300.0]), Some(0));
         assert_eq!(s.reset_props(&world).0, 161);
         assert!(s.out.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod breaks_off_tests {
+    /// tools/prop_break_reference.py: F-58598 run offline, one contact a case (the other's type 3 / 4 / 5, the contact on or
+    /// off, the car's speed, the prop's least move, its hit bit, its entry and age, the car's part; each test on its edge):
+    /// whether the contact is taken from the solver and its manifold reset - 4,000 cases, every one equal.
+    #[test]
+    fn breaks_off_matches_the_original() {
+        let (mut n, mut reset) = (0, 0);
+        for line in include_str!("testdata/prop_break_ref.txt").lines() {
+            let (case, out) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = case.split(' ').map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let o: Vec<&str> = out.split(' ').collect();
+            let f = |i: usize| f32::from_bits(w[i]);
+            // (the port reaches the test for an enabled contact of the hull - a wheel's is off before it - with a prop instance)
+            let fires = (w[0] == 4 || w[0] == 5) && w[1] != 0 && w[7] == 0 && super::breaks_off(f(2), f(3), w[4] != 0, (w[5] != 0).then(|| f(6)));
+            let was = if w[1] != 0 { "c0" } else { "40" };
+            let want = if fires { ["40", "0", "-1"] } else { [was, "3", "1"] };
+            assert_eq!(o, want, "{line}");
+            reset += fires as usize;
+            n += 1;
+        }
+        assert_eq!((n, reset), (4000, 439));
     }
 }

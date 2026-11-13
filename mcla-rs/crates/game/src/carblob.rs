@@ -276,7 +276,7 @@ fn car_records(vehicles: &crate::vehicles::Vehicles, cam: Vec3, night: bool, col
     let blobs = vehicles.blob_cars();
     for (ci, c) in vehicles.cars.iter().enumerate() {
         let player = c.is_player;
-        if vehicles.hide_player && player || (vehicles.interior_glass && player) || c.pu_stealth || c.model.name.to_ascii_lowercase().starts_with("va_") {
+        if vehicles.hide_player && player || (vehicles.interior_glass && player) || c.pu_stealth_on || c.model.name.to_ascii_lowercase().starts_with("va_") {
             continue;
         }
         let n = vehicles.ext_neon(c).filter(|n| n.on());

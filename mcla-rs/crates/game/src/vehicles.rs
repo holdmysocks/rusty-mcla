@@ -469,6 +469,9 @@ pub struct CarInstance {
     pub pu_mirror: f32,
     /// step 19g: Stealth - the car is drawn by pu_fx.rs with PS_Stealth instead of its own look
     pub pu_stealth: bool,
+    /// Stealth / MegaStealth as F-54047 has it (the effect's type only, not its fade): the exhaust, the neon and
+    /// occlusion quads, the lamps' targets
+    pub pu_stealth_on: bool,
     /// the engine is not running (chassis engine +46 = 0): a scene's car_off / engine_off (F-91263) until the script
     /// starts it again (Racer_PlayIgnition) - no engine sound, no exhaust smoke
     pub engine_off: bool,
@@ -4021,7 +4024,7 @@ impl Vehicles {
         }
         self.next_uid += 1;
         let uid = self.next_uid;
-        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, rotor_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, crash: Default::default(), parked: None, item: None, amb_born: 0.0, amb_life: 8.0, amb_id: -1, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), roam_key: String::new(), vinyl: None, vinyl_done: false, size_wheels: None, vinyl_slot: VINYL_SLOT_NONE, setup: None, stages: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, lock: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, engine_off: false, exhaust: true, show_driver: false, driver_off: false, hi_driver: false, window_bindings, windows: Default::default(), win_req: [[false; 2]; 2], spoiler: WindowCtl::default(), light_flip: WindowCtl::default(), flip_req: None, roof: RoofCtl::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6], sst_trail: Default::default(), siren: false, light_t: 0.0, steer_parts: Default::default(), valve: Default::default(), amb_slot: amb_slot_start(), amb_light: AmbSlotLights::default(), amb_steer: Default::default(), amb_frames: 0, amb_hit: false, amb_place: None, amb_mwc: None });
+        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, rotor_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, crash: Default::default(), parked: None, item: None, amb_born: 0.0, amb_life: 8.0, amb_id: -1, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), roam_key: String::new(), vinyl: None, vinyl_done: false, size_wheels: None, vinyl_slot: VINYL_SLOT_NONE, setup: None, stages: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, lock: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, pu_stealth_on: false, engine_off: false, exhaust: true, show_driver: false, driver_off: false, hi_driver: false, window_bindings, windows: Default::default(), win_req: [[false; 2]; 2], spoiler: WindowCtl::default(), light_flip: WindowCtl::default(), flip_req: None, roof: RoofCtl::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6], sst_trail: Default::default(), siren: false, light_t: 0.0, steer_parts: Default::default(), valve: Default::default(), amb_slot: amb_slot_start(), amb_light: AmbSlotLights::default(), amb_steer: Default::default(), amb_frames: 0, amb_hit: false, amb_place: None, amb_mwc: None });
         self.cars.len() - 1
     }
 
@@ -6868,7 +6871,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
             };
             // (F-10129's targets through the checked form: the head, brake and reversing need the car's switch +597 and no
             // Stealth / MegaStealth - F-54047)
-            let t = setup_lamp_targets(world, c.amb_lamps.off, c.pu_stealth, brake, c.state.gear, shift_in);
+            let t = setup_lamp_targets(world, c.amb_lamps.off, c.pu_stealth_on, brake, c.state.gear, shift_in);
             // (the flash, +240 at rate 9: the pad input's target, not switched by +597 - F-44589)
             let flags = [t.head && !lights_off, t.brake, false, c.is_player && flash, t.reverse];
             // (the siren state +300, rate 18: its target +304 is what the car's police tactic writes each update -
@@ -7707,12 +7710,12 @@ impl Vehicles {
 
     /// Every car whose exterior neon is on (`ExtNeon::on`), with its body matrix, for the light quads' pass (F-17121 ->
     /// F-35120): (car index, matrix, neon, is the player's). The in-car view's car makes none (F-17121 skips on +123),
-    /// nor a car in Stealth / MegaStealth (F-17121 skips while F-54047 is true: `pu_stealth`). No bike test: a bike
+    /// nor a car in Stealth / MegaStealth (F-17121 skips while F-54047 is true: `pu_stealth_on`). No bike test: a bike
     /// is an mcCar like a car (F-44722 gates the call on the draw flag +116 only).
     pub fn neon_cars(&self, in_car: bool) -> Vec<(usize, Mat4, ExtNeon, bool)> {
         let mut out = Vec::new();
         for (i, c) in self.cars.iter().enumerate() {
-            if self.hide_player && c.is_player || (in_car && c.is_player) || c.pu_stealth {
+            if self.hide_player && c.is_player || (in_car && c.is_player) || c.pu_stealth_on {
                 continue;
             }
             let Some(n) = self.ext_neon(c).filter(|n| n.on()) else { continue };

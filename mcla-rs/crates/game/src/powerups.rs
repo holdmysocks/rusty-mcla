@@ -262,6 +262,14 @@ pub fn car_look(effect: Option<(u8, f32)>, types: &[TypeTune; 24], player: bool)
     }
 }
 
+/// F-54047: the car is under Stealth or MegaStealth - its holder's effect is of type 3 or 14 (F-73113 / F-63149), with no
+/// test of the fade. The exhaust (F-21480), the neon and occlusion quads (F-17121), the lamps' targets and the
+/// race markers, the map and the hook icons take this; the car's draw (F-73214) and the motion-blur record (F-35860) take
+/// it with the fade above 0 as well (`car_look`). Checked against the original run offline (`stealth_on_matches_the_original`).
+pub fn stealth_on(effect: Option<u8>) -> bool {
+    matches!(effect, Some(STEALTH | MEGA_STEALTH))
+}
+
 /// Step 19g: the lightning's settings of Reverse, Disrupter, Stop and their megas (the types'
 /// ma_ / mi_ blocks - Reverse at +112 / +224, Disrupter and Stop at +3472 / +3584 - and the
 /// manager's bolts).
@@ -1615,6 +1623,7 @@ impl PowerUps {
                 let (mirror, stealth) = car_look(h.effect.as_ref().map(|e| (e.kind, e.left)), &self.types, c.is_player);
                 c.pu_mirror = mirror;
                 c.pu_stealth = stealth;
+                c.pu_stealth_on = stealth_on(h.effect.as_ref().map(|e| e.kind));
                 // (the vehicle's own test, F-71660: the port's motorcycle rider-off is +592 0x10)
                 let flags = if c.state.veh.as_ref().map_or(false, |v| v.wipe.is_some()) { 0x10 } else { 0 };
                 h.veh_ok = vehicle_lets_fire(flags, if c.model.bike { 2 } else { 4 });
@@ -1681,6 +1690,7 @@ impl PowerUps {
                 c.pu_ghost = false;
                 c.pu_mirror = 0.0;
                 c.pu_stealth = false;
+                c.pu_stealth_on = false;
             }
             self.holders[hi].icon = None;
             self.holders[hi].lasers.clear();
@@ -1708,6 +1718,23 @@ pub fn test_hook() -> Option<(u8, u64, Option<u64>, bool)> {
     let fire = it.next().and_then(|f| f.trim().parse().ok());
     let back = it.next().map_or(false, |f| f.trim() == "1");
     Some((kind, frame, fire, back))
+}
+
+#[cfg(test)]
+mod stealth_tests {
+    /// tools/stealth_getter_reference.py: F-54047 run offline over the car (+48), its holder (+68), the holder's effect
+    /// (+236) present or not and the effect's type -1 .. 30 - 256 states, every answer equal.
+    #[test]
+    fn stealth_on_matches_the_original() {
+        let mut n = 0;
+        for line in include_str!("testdata/stealth_getter_ref.txt").lines() {
+            let w: Vec<i32> = line.split(' ').filter(|x| *x != "->").map(|x| x.parse().unwrap()).collect();
+            let effect = (w[0] != 0 && w[1] != 0 && w[2] != 0).then_some(w[3] as u8);
+            assert_eq!(super::stealth_on(effect) as i32, w[4], "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 256);
+    }
 }
 
 #[cfg(test)]
