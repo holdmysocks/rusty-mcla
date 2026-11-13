@@ -10030,6 +10030,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             // (the damage callback's dv since the last frame, for the impact shake)
             let shake_dv = self.vehicles.player_mut().map_or(0.0, |c| std::mem::take(&mut c.state.shake_dv));
+            // (the jolts mcCarDamage's contact callback gave the camera, F-11688 -> F-68650)
+            let cam_jolts = self.vehicles.player_mut().map_or(Vec::new(), |c| std::mem::take(&mut c.state.cam_jolts));
             if let Some(car) = self.vehicles.player() {
                 let render_state = car.render_state(self.vehicles.render_alpha);
                 // the level the cameras' probes see (physics/camprobe.rs): the level's objects as the original's level
@@ -10907,6 +10909,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         sh.jolt(if fixed { 0.25 } else { 0.5 }, 0.78, fixed);
                     }
                     self.shake_sst = sst;
+                    for &(d, a) in &cam_jolts {
+                        sh.jolt(d, a, fixed);
+                    }
                     for (d, a) in self.shake_jolts.drain(..) {
                         sh.jolt(d, a, fixed);
                     }

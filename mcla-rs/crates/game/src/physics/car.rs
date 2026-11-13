@@ -59,6 +59,9 @@ pub struct CarParams {
     pub dmg: [f32; 5],
     /// mcCarDamageTune +48 JoltThreshold: the hit a slow car needs for the pad's rumble (F-11688)
     pub jolt: f32,
+    /// the camera shake tune's +36 ImpactAmplitudeMin, +40 ImpactDurationMin, +44 ImpactAmplitudeMax, +48
+    /// ImpactDurationMax: the jolt F-11688 gives the camera (F-68650)
+    pub cam_impact: [f32; 4],
 }
 
 impl CarParams {
@@ -190,6 +193,7 @@ impl Default for CarParams {
             veh: None,
             dmg: [300.0, 250.0, 2.0, 14.0, 17.0],
             jolt: 10.0,
+            cam_impact: [0.0; 4],
         }
     }
 }
@@ -327,9 +331,13 @@ pub struct CarState {
     pub launch: f32,
     pub damage: f32,
     pub last_impact: f32,
-    /// the biggest change of velocity a contact callback of mcCarDamage (F-11688) has seen
-    /// since the camera last took it (its shake reads the same dv; main.rs zeroes it)
+    /// the biggest change of velocity of the port's own contacts (props, the soft spheres between cars: `damage_call`)
+    /// since the camera last took it (its shake reads the same dv; main.rs zeroes it); the solver's runs give their
+    /// jolts exactly (`cam_jolts`)
     pub shake_dv: f32,
+    /// the camera's jolts the contact callback asked for since main.rs last took them (F-11688 -> F-68650: the
+    /// duration and the amplitude), in order
+    pub cam_jolts: Vec<(f32, f32)>,
     /// the last hit that counted (F-74220): the one that destroys a car tells whether it
     /// explodes (over ExplodeThreshold)
     pub last_hit: f32,
@@ -499,7 +507,7 @@ impl CarState {
             burnout: 0.0,
             launch: 0.0,
             damage: 0.0,
-            last_impact: 0.0, shake_dv: 0.0, last_hit: 0.0, head_on: false, agro: false, blow: [1.0; 2], wipeout: 0.0, visible_hit: false, upset: 0.0, zones: [0.0; 4], zone_half: [0.9, 2.2], dmg: Default::default(),
+            last_impact: 0.0, shake_dv: 0.0, cam_jolts: Vec::new(), last_hit: 0.0, head_on: false, agro: false, blow: [1.0; 2], wipeout: 0.0, visible_hit: false, upset: 0.0, zones: [0.0; 4], zone_half: [0.9, 2.2], dmg: Default::default(),
             engine_factor: 1.0,
             veh: None,
             touches: Vec::new(),
@@ -717,6 +725,49 @@ impl CarState {
         if hit > p.dmg[2] {
             self.take_hit(p, hit);
         }
+    }
+
+    /// mcCarDamage's contact callback (F-11688, `physics::contact_call`) for a run of the solver's contacts: nothing
+    /// on a wrecked car; the jolt (the pad's rumble 1, the camera's jolt for the player), the LandingDampFactor a
+    /// roof-side contact sets (returned: aero +4), the scrape's rumble 2, the zone damage kind 0 then kind 1 at the
+    /// call's point (`to_local` takes it into the car), then the hit: dv x `mult` (F-96323).
+    pub(super) fn run_call(&mut self, p: &CarParams, r: &mut super::contact_call::RunIn, mult: f32, player: bool, to_local: impl Fn(Vec3) -> Vec3) -> Option<f32> {
+        if !(self.damage < 1.0) {
+            return None;
+        }
+        r.jolt = p.jolt;
+        r.impact = p.dmg[2];
+        r.jolt_scale = p.dmg[3];
+        r.local_human = player;
+        r.human = player;
+        r.quiet = true;
+        r.cam = Some(p.cam_impact);
+        let o = super::contact_call::run(r);
+        let d = r.dv;
+        let len = super::exact::fma(d.z, d.z, super::exact::fma(d.x, d.x, d.y * d.y)).sqrt();
+        if o.jolt.is_some() {
+            self.rumble.play(1);
+            if let Some(c) = o.cam {
+                self.cam_jolts.push(c);
+            }
+        }
+        if o.scrape && player {
+            self.rumble.play(2);
+        }
+        let local = to_local(o.point);
+        if let Some(a) = o.zone0 {
+            self.zone_hit(o.point, local, a);
+            self.rumble.play(1);
+        }
+        if let Some(a) = o.zone1 {
+            self.scrape_hit(o.point, local, a, ScrapeIn { v1: r.v1, v2: r.v2, rel: o.rel, n: o.n });
+            self.rumble.play(2);
+        }
+        let hit = len * mult;
+        if hit > p.dmg[2] {
+            self.take_hit(p, hit);
+        }
+        o.aero
     }
 
     /// The zone damage for a scrape (F-74840, kind 1, work/cardmg scrape_rule.md 2): above 0.12

@@ -19,6 +19,7 @@ pub mod exact_inv4;
 pub mod exact_mat;
 pub mod fluid;
 pub mod gjk;
+pub mod contact_call;
 pub mod headon;
 pub mod wipeout;
 pub mod hull;

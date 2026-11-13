@@ -2961,6 +2961,8 @@ impl Vehicles {
                 params.dmg = [d.max_damage, d.med_damage, d.impact_threshold, d.fatal_blow, d.wipeout_threshold];
                 params.jolt = d.jolt_threshold;
             }
+            let c = &s.base.cam_shake;
+            params.cam_impact = [c.impact_amplitude_min, c.impact_duration_min, c.impact_amplitude_max, c.impact_duration_max];
         }
         log::info!("car {}: hubs {:?} bounds {:?}..{:?} wheel radius {:.3}", car.name, car.hubs, car.min, car.max, params.wheel_radius);
         let params_mods = car_params_mods(&car, &params);
