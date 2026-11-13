@@ -5110,7 +5110,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
             }
             // (step 19e: a power-up's hold on the car - Ice, Reverse Steering, Stop)
             crate::powerups::apply_ctl(&mut input, self.cars[i].pu_ctl);
-            self.cars[i].input = CarInput { ai: input.ai || !self.cars[i].is_player, lock: self.cars[i].lock, ..input };
+            self.cars[i].input = CarInput { ai: input.ai || !self.cars[i].is_player, player: self.cars[i].is_player, lock: self.cars[i].lock, ..input };
         }
         // (a new traffic or parked car is bound to its pooled instance before its first render update: the activate hook)
         self.amb_pool_step();
@@ -5765,7 +5765,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 body,
                 cg,
                 two: ws.is_some_and(|w| w.two != 0),
-                wiped: ws.is_some_and(|w| w.wipe.is_some()),
+                wiped: crate::physics::vehsim::out_bits(ws.is_some_and(|w| w.wipe.is_some()), o.state.upset, o.state.damage, vt.bike),
             });
         }
         // (which steps take the level: a car with the original's body, not under MegaStealth - that one meets the map and

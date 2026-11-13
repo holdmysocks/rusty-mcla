@@ -963,6 +963,12 @@ pub fn bike_old(vt: &VehTune) -> bool {
 pub const NEUTRAL_BELOW: f32 = 8.94;
 
 /// A-73788: the gear is not reverse (neutral counts) as the contact callbacks find it
+/// The chassis' +592 bits 0x10 (wiped out: a motorcycle's rider off, a car's upset) or 0x04 (damaged out), as the
+/// car's contact callback F-55998 tests them.
+pub fn out_bits(wipe: bool, upset: f32, damage: f32, bike: bool) -> bool {
+    wipe || (!bike && upset > 0.0) || crate::police::damaged_out(damage)
+}
+
 fn gear_not_reverse(gear: i32, way_after: i32) -> bool {
     if dbg_flag("MCLA_DBG_Y2") { return gear > 0; }
     match REPLAY_WAY_AFTER.load(std::sync::atomic::Ordering::Relaxed) { 0 => if way_after != 0 { way_after > 0 } else { gear >= 0 }, w => w > 0 }
@@ -2688,12 +2694,14 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
     // (mcPlayerInput A-62088 with mcCarDamage F-10364: a badly damaged car pulls to one
     // side at low speed - past MedDamage the pull grows as (share of the way to MaxDamage)^0.3,
     // times SteerDamageBias, fading out up to SteerDamageSpeedThreshold)
-    // (its share, input +92; the pull itself is made in the pad's code below, from chassis +224)
-    let pad_pull_share = if !input_ai && t.input.steer_damage_bias > 0.0 && t.input.steer_damage_speed_threshold > 1.0 && t.damage.max_damage > t.damage.med_damage {
-        super::exact::damage_share(st.damage * t.damage.max_damage, t.damage.med_damage, t.damage.max_damage)  // F-10364
+    let pad_pull;
+    let pull = if !input_ai && t.input.steer_damage_bias > 0.0 && t.input.steer_damage_speed_threshold > 1.0 && t.damage.max_damage > t.damage.med_damage {
+        let share = super::exact::damage_share(st.damage * t.damage.max_damage, t.damage.med_damage, t.damage.max_damage);  // F-10364
+        if share > 0.0 { (1.0 - (speed / t.input.steer_damage_speed_threshold).clamp(0.0, 1.0)) * share * t.input.steer_damage_bias } else { 0.0 }
     } else {
         0.0
     };
+    pad_pull = pull;
     // (Z2: the original's path in normal play too. The pad's code (mcPlayerInput, physics/pad.rs)
     // holds the steering value P - input object +24: the stick through its dead zone and
     // SteerInputExp, the damaged car's pull added, approached at SteerRate / ReturnRate about the
@@ -2711,7 +2719,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
             vs.pad_steer = input.steer.clamp(-1.0, 1.0);
         } else if !input_ai {
             let sens = ((f32::from_bits(STEER_SENS.load(std::sync::atomic::Ordering::Relaxed)) - 1.0) / 0.5).clamp(-1.0, 1.0);
-            let target = super::pad::steer_pull(super::pad::steer_target(input.steer, sens, &t.input), pad_pull_share, speed, &t.input);
+            let target = (super::pad::steer_target(input.steer, sens, &t.input) + pull).clamp(-1.0, 1.0);
             let sideways = super::exact::fma(row2[0].x, st.vel.x, super::exact::fma(row2[0].z, st.vel.z, row2[0].y * st.vel.y));
             let (brake_pad, hand_pad) = (if vs.gear < 0 { input.throttle } else { input.brake }, if input.handbrake { 1.0 } else { 0.0 });
             if pad_exact {
@@ -2753,7 +2761,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
         }
         vs.steer_back = vs.steer;
     } else {
-    let want = (super::pad::steer_pull(input.steer.clamp(-1.0, 1.0), pad_pull_share, speed, &t.input) * sss).clamp(-lock, lock);
+    let want = ((input.steer + pull).clamp(-1.0, 1.0) * sss).clamp(-lock, lock);
     let returning = want.abs() < vs.steer.abs() || want * vs.steer < 0.0;
     let mut rate = if returning { t.input.return_rate.max(1.0) } else { t.input.steer_rate.max(1.0) };
     if !input_ai {
@@ -3242,7 +3250,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
             }
             // (the steering, A-58585.. and F-63605, after the pedals: it reads the brake just made)
             let sens = ((f32::from_bits(STEER_SENS.load(std::sync::atomic::Ordering::Relaxed)) - 1.0) / 0.5).clamp(-1.0, 1.0);
-            let target = super::pad::steer_pull(super::pad::steer_target(stick_x, sens, &t.input), pad_pull_share, speed224, &t.input);
+            let target = (super::pad::steer_target(stick_x, sens, &t.input) + pad_pull).clamp(-1.0, 1.0);
             vs.pad.goal = target;
             let sideways = super::exact::fma(rows[0].x, v.x, super::exact::fma(rows[0].z, v.z, rows[0].y * v.y));
             vs.pad.steer_next = super::pad::steer_step(vs.pad_steer, target, &t.input, &super::pad::SteerIn {
@@ -3426,7 +3434,7 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
     // frozen each tick, further down.)
     {
         // (and no air bag, chassis +672 +48..+51, nor hydraulic ram, +676 +120..+123, moving)
-        let still = input.throttle == 0.0 && input.brake == 0.0 && st.wheels.iter().enumerate().all(|(i, w)| w.grounded || (vt.bike && i % 2 == 1)) && vs.last_speed <= 0.05 && st.ang_vel.length() <= 0.5 && !vs.air.rams_before;
+        let still = input.throttle == 0.0 && input.brake == 0.0 && st.wheels.iter().enumerate().all(|(i, w)| w.grounded || (vt.bike && i % 2 == 1)) && vs.last_speed <= 0.05 && super::chassis_update::spin_len(st.ang_vel.to_array()) <= 0.5 && !vs.air.rams_before;
         vs.still_timer = if still && !dbg_flag("MCLA_DBG_NOFREEZE") { vs.still_timer + dt } else { 0.0 };
         vs.last_speed = speed_in;
     }
@@ -6308,7 +6316,7 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
             b.p = pm;
             b.l = lm;
             let mut g = x.borrow_mut();
-            g.moved = Some((b, vs.two != 0, vs.wipe.is_some()));
+            g.moved = Some((b, vs.two != 0, out_bits(vs.wipe.is_some(), st.upset, st.damage, vt.bike)));
             g.rider = rider_run.is_some();
             drop(g);
             level_yield(&mut vs.loose, x, Stage::Moved).await;
@@ -6459,7 +6467,7 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
                 let xf = |x: f32, z: f32| super::loose::xf(&seen, Vec3::new(x, y, z));
                 Some([xf(car_box.1.x, car_box.0.z), xf(car_box.1.x, car_box.1.z), xf(car_box.0.x, car_box.1.z), xf(car_box.0.x, car_box.0.z)])
             };
-            let car_in = super::loose::CarIn { hull, hull_cg: hull.cg, hull_margin: f32::from_bits(0x3d23_d70a), now: seen, last, prev: car_prev, speed: speed_in, bound: car_box, wheels: loose_wheels, vel: v_in, touch: (t.s.bound_friction, t.s.bound_elasticity), wiped: vs.wipe.is_some() };
+            let car_in = super::loose::CarIn { hull, hull_cg: hull.cg, hull_margin: f32::from_bits(0x3d23_d70a), now: seen, last, prev: car_prev, speed: speed_in, bound: car_box, wheels: loose_wheels, vel: v_in, touch: (t.s.bound_friction, t.s.bound_elasticity), wiped: out_bits(vs.wipe.is_some(), st.upset, st.damage, vt.bike), driver: super::loose::Driver { player: input.player, two: vs.two != 0, stuck: vs.stuck == 2 && gear_not_reverse(vs.gear, vs.way_after), cg_offset: t.s.head_on_cg_offset } };
             if let Some(lw) = loose_world {
                 vs.loose.tick += 1;
                 vs.loose.collide(lw, &car_in, world, car_city_pair);
@@ -6474,6 +6482,8 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
             let mut loose_touch = !loose_ids.is_empty();
             let up = rows1[1];
             let slippery = vs.stuck == 2 && gear_not_reverse(vs.gear, vs.way_after);
+            // (chassis +592 bits 0x10 / 0x04 as F-55998 reads them)
+            let out_bits = out_bits(vs.wipe.is_some(), st.upset, st.damage, vt.bike);
             let head_on = (t.s.bound_friction, t.s.bound_elasticity, t.s.head_on_cg_offset);
             let mut contacts: Vec<super::solver::Contact> = Vec::new();
             // (every contact of the car with the city in the manifolds' order: is it one the solver gets)
@@ -6541,17 +6551,13 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
                     // (the car's callback, F-55998, for a contact with what is fixed: head-on
                     // and fast, the tuning's own friction and elasticity and the body's point
                     // taken lower; while mcCarStuck turns the car, no friction)
-                    let n = c.normal;
-                    let along = ex::fma(n.x, rows1[2].x, ex::fma(rows1[2].y, n.y, rows1[2].z * n.z));
-                    if wiped {
-                        c.friction = head_on.0;
-                        c.elasticity = head_on.1;
-                    } else if along > (ex::guest_cos(f64::from_bits(0x3FDB_ECDE_6000_0000)) as f32) && speed_in > 22.35 {
-                        c.friction = head_on.0;
-                        c.elasticity = head_on.1;
-                        c.on_body.y -= head_on.2;
-                    } else if slippery {
-                        c.friction = 0.0;
+                    let along = super::loose::car_along(c.normal, rows1[2]);
+                    if let Some(t) = super::loose::car_terms(input.player, vs.two != 0, up.y, out_bits, true, along, speed_in > 22.35, slippery, head_on) {
+                        c.friction = t.friction;
+                        if let Some(e) = t.elasticity {
+                            c.elasticity = e;
+                        }
+                        c.on_body.y = t.drop.apply(c.on_body.y);
                     }
                     if dbg_flag("MCLA_DBG_HIT") {
                         eprintln!("HULLCON cell {} polygon {} element {} age {} depth {:?} friction {:?} elasticity {:?} local {:?} on_world {:?} on_body {:?} normal {:?}", m.cell, slot.polygon, slot.element, slot.age, c.depth, c.friction, c.elasticity, c.local, c.on_world, c.on_body, c.normal);

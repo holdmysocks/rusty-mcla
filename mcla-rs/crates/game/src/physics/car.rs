@@ -250,6 +250,8 @@ pub struct CarInput {
     /// (the drive shaft's speed x its wheel's radius, the tick's entry) is under 8.94, else the gear it has - with
     /// `animated`, which would otherwise ask for first out of neutral or reverse
     pub neutral_slow: bool,
+    /// the car's driver record is the player's (+24 == 3; F-55998 reads it), whoever drives
+    pub player: bool,
 }
 
 pub const HYD_FITTED: u8 = 0x40;

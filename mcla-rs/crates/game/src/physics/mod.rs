@@ -4,6 +4,7 @@ pub mod agro;
 pub mod artic;
 pub mod artic_build;
 pub mod artic_collide;
+pub mod chassis_update;
 #[cfg(test)]
 pub mod artic_offline;
 pub mod artic_pose;

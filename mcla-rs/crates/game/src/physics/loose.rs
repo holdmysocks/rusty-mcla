@@ -724,6 +724,42 @@ pub struct CarIn<'a> {
     pub vel: Vec3,
     pub touch: (f32, f32),
     pub wiped: bool,
+    /// what the car's contact callback F-55998 reads of its driver and state ([`car_terms`])
+    pub driver: Driver,
+}
+
+/// The car's driver and state as F-55998's materials part reads them: the player's driver record (+24 == 3), the
+/// two-wheel state (mcCarGyro +18), stuck (mcCarStuck +56 == 2 with the chassis' +20 -> +20), HeadOnCGOffset (tune
+/// +280). The default is the player's car on four wheels (what the port had before the AI branch was decoded).
+#[derive(Clone, Copy, Debug)]
+pub struct Driver {
+    pub player: bool,
+    pub two: bool,
+    pub stuck: bool,
+    pub cg_offset: f32,
+}
+
+impl Default for Driver {
+    fn default() -> Self {
+        Driver { player: true, two: false, stuck: false, cg_offset: 0.0 }
+    }
+}
+
+/// [`car_terms`] on a contact of the car's with an instance: `fixed` its partner's level state is 2 (a vehicle never
+/// is, nor a prop the loose world holds - inactive or active); the normal as it pushes the car, the car's matrix row
+/// 2 and its speed above 22.35 for the head-on test; the own point is side A's when the car is A.
+fn car_terms_loose(car: &CarIn, car_is_a: bool, fixed: bool, t: &mut Touch) {
+    let d = car.driver;
+    let n = if car_is_a { t.normal } else { Vec3::ZERO - t.normal };
+    let along = car_along(n, car.now[2]);
+    if let Some(x) = car_terms(d.player, d.two, car.now[1].y, car.wiped, fixed, along, car.speed > 22.35, d.stuck, (car.touch.0, car.touch.1, d.cg_offset)) {
+        t.friction = x.friction;
+        if let Some(e) = x.elasticity {
+            t.elasticity = e;
+        }
+        let own = if car_is_a { &mut t.a.point } else { &mut t.b.point };
+        own.y = x.drop.apply(own.y);
+    }
 }
 
 /// A wheel's part of the car's bound for the props' side of a tick: its core where it stands, its matrix
@@ -1891,37 +1927,9 @@ impl LooseState {
                     reset = true;
                     continue;
                 }
-                // (F-55998, against an mcPropInst: the normal as it pushes the car points down)
-                let mut n = if car_is_a { s.t.normal } else { Vec3::ZERO - s.t.normal };
-                if n.y < 0.0 {
-                    let k = 1.0 - (obj.matrix[1].y * car.now[1].y).abs();
-                    if k < 1.0 {
-                        let mut y2 = n.y * n.y;
-                        let rest = 1.0 - y2;
-                        if rest > 0.0 {
-                            n.y = k * n.y;
-                            y2 = n.y * n.y;
-                            let q = ((1.0 - y2) / rest).sqrt();
-                            n.x *= q;
-                            n.z *= q;
-                        }
-                        let l2 = fma(n.z, n.z, n.x * n.x) + y2;
-                        if l2 > f32::from_bits(0x3f67_0a3d) && l2 < f32::from_bits(0x3f8d_1eb7) {
-                            let d = dot3(n, n);
-                            let e = 1.0 / d.sqrt();
-                            let e = if e == f32::INFINITY { 0.0 } else { e };
-                            let unit = n * ((1.0 - d * (e * e)) * (0.5 * e) + e);
-                            let back = Vec3::ZERO - unit;
-                            if car_is_a {
-                                s.t.normal = unit;
-                                s.t.back = back;
-                            } else {
-                                s.t.back = unit;
-                                s.t.normal = back;
-                            }
-                        }
-                    }
-                }
+                // (F-55998, against an mcPropInst: the normal laid flat, the materials part; the loose world's
+                // props are inactive or active, level state 1 / 0, never fixed)
+                car_meets_prop(car, obj.matrix[1].y, car_is_a, false, &mut s.t);
             }
             // (F-12537: the count 0, the selected -1 - every contact of it gone, this tick's island and the next tick's
             // refresh see none)
@@ -3609,7 +3617,7 @@ impl LooseState {
         static NONE: std::sync::OnceLock<HullShape> = std::sync::OnceLock::new();
         let hull = NONE.get_or_init(|| HullShape::new(vec![Vec3::ZERO, Vec3::X, Vec3::Y, Vec3::Z], &[[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]]));
         let m = [Vec3::X, Vec3::Y, Vec3::Z, Vec3::ZERO];
-        let car = CarIn { hull, hull_cg: Vec3::ZERO, hull_margin: 0.04, now: m, last: m, prev: m, speed: 0.0, bound: (Vec3::ZERO, Vec3::ZERO), wheels: Vec::new(), vel: Vec3::ZERO, touch: (0.0, 0.0), wiped: false };
+        let car = CarIn { driver: Default::default(), hull, hull_cg: Vec3::ZERO, hull_margin: 0.04, now: m, last: m, prev: m, speed: 0.0, bound: (Vec3::ZERO, Vec3::ZERO), wheels: Vec::new(), vel: Vec3::ZERO, touch: (0.0, 0.0), wiped: false };
         self.step_rest_rider(world, &car, dt, rider);
     }
 
@@ -3863,26 +3871,83 @@ pub struct VehObj {
     pub pair: bool,
 }
 
-/// F-55998 (an mcCarInstance's contact callback) on a contact with the thrown rider - his class 11 is none of the
-/// vehicles' or props' - decoded 2026-11-04 (A-31611 .. A-85558 .. A-95434):
-/// - the driver record's +24 (the 104 B table at [[car +80] +76] +76): 3 the player, else an AI driver;
-/// - an AI driver: unless its mcCarGyro's halfword +18 (the two-wheel state, F-81388's cast) is set or its matrix's
-///   up.y (M +20; M = car +272 or [car +28] +16 by a thread byte) is at least 0x3f3504e6 (cos 45 degrees), the
-///   contact takes friction = BoundFriction (sim tune +116) and elasticity = BoundElasticity (+120), and with up.y
-///   below 0 the car's own world point (F-83617: contact +48 when the car is A, +64 when B) goes down by
-///   HeadOnCGOffset (+280) x |up.y|; that ends it;
-/// - otherwise (the player, or an AI car upright or on two wheels): chassis +592 bit 0x10 or 0x04 (wiped out) gives
-///   BoundFriction / BoundElasticity, else only a fixed partner (level state 2) is touched - never the rider.
-/// Only the enabled contacts (+165 bit 0x80) are walked. `up_y` the car's matrix up.y, `two` its two-wheel state,
-/// `wiped` its +592 bits, `player` its driver; (bound friction, bound elasticity, head-on CG offset) from its tune.
-/// Answers (friction, elasticity, (HeadOnCGOffset, |up.y|) when the point goes down: y = fnmsubs(offset, |up.y|, y)).
-pub fn rider_touch(player: bool, two: bool, up_y: f32, wiped: bool, tune: (f32, f32, f32)) -> Option<RiderTouch> {
+/// F-55998 (an mcCarInstance's contact callback), the part after its vehicle rules (A-31611 .. A-85558 .. A-95434),
+/// for a contact whose partner is no vehicle (its type not 8 / 6): decoded 2026-11-04, the whole branch checked
+/// offline 2026-11-12 (tools/car_terms_reference.py, docs/reference/vehicle/car_terms_check.md):
+/// - the driver record's +24 (the 104 B table at [[car +80] +76] +76; index -1 none): 3 the player, else not;
+/// - not the player: unless its mcCarGyro's halfword +18 (the two-wheel state, the dynamic cast's) is set or its
+///   matrix's up.y (M +20; M = car +272 or [car +28] +16 by a thread byte) is at least 0x3f3504e6 (cos 45 degrees),
+///   the contact takes friction = BoundFriction (sim tune +116) and elasticity = BoundElasticity (+120), and with
+///   up.y below 0 the car's own world point (contact +48 when the car is A, +64 when B) goes down by HeadOnCGOffset
+///   (+280) x |up.y| (fnmsubs); that ends it;
+/// - otherwise chassis +592 bit 0x10 or 0x04 (wiped out, damaged out) gives BoundFriction / BoundElasticity;
+/// - else only a fixed partner (its level state & 3 == 2) is touched: the normal as it pushes the car along the
+///   matrix's row 2 above (float) cos(0.4363323152065277) and the speed +224 above 22.35 give BoundFriction /
+///   BoundElasticity and the own point's y less HeadOnCGOffset (fsubs); failing that, the car stuck (mcCarStuck +56
+///   == 2 with the chassis' +20 -> +20 set) gives friction 0.
+/// Only the enabled contacts (+165 bit 0x80) are walked. `tune` = (bound friction, bound elasticity, head-on CG
+/// offset); `along` the normal along row 2 ([`car_along`]); `fast` the speed above 22.35.
+#[allow(clippy::too_many_arguments)]
+pub fn car_terms(player: bool, two: bool, up_y: f32, wiped: bool, fixed: bool, along: f32, fast: bool, stuck: bool, tune: (f32, f32, f32)) -> Option<CarTerms> {
     let (friction, elasticity, cg_offset) = tune;
     if !player && !two && up_y < f32::from_bits(0x3f35_04e6) {
-        let drop = (up_y < 0.0).then_some((cg_offset, up_y.abs()));
-        return Some((friction, elasticity, drop));
+        let drop = if up_y < 0.0 { Drop::Tilted(cg_offset, up_y.abs()) } else { Drop::None };
+        return Some(CarTerms { friction, elasticity: Some(elasticity), drop });
     }
-    wiped.then_some((friction, elasticity, None))
+    if wiped {
+        return Some(CarTerms { friction, elasticity: Some(elasticity), drop: Drop::None });
+    }
+    if !fixed {
+        return None;
+    }
+    if along > ex::guest_cos(f64::from_bits(0x3FDB_ECDE_6000_0000)) as f32 && fast {
+        Some(CarTerms { friction, elasticity: Some(elasticity), drop: Drop::Head(cg_offset) })
+    } else if stuck {
+        Some(CarTerms { friction: 0.0, elasticity: None, drop: Drop::None })
+    } else {
+        None
+    }
+}
+
+/// The normal `n` (as it pushes the car) along the matrix's row 2, as F-55998 forms it.
+pub fn car_along(n: Vec3, row2: Vec3) -> f32 {
+    fma(n.x, row2.x, fma(row2.y, n.y, row2.z * n.z))
+}
+
+/// What [`car_terms`] writes: the friction, the elasticity (None: left), how the car's own point goes down.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CarTerms {
+    pub friction: f32,
+    pub elasticity: Option<f32>,
+    pub drop: Drop,
+}
+
+/// How [`car_terms`] moves the car's own world point's y.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Drop {
+    None,
+    /// y = fnmsubs(offset, |up.y|, y)
+    Tilted(f32, f32),
+    /// y = y - offset
+    Head(f32),
+}
+
+impl Drop {
+    pub fn apply(self, y: f32) -> f32 {
+        match self {
+            Drop::None => y,
+            Drop::Tilted(k, a) => -k.mul_add(a, -y),
+            Drop::Head(k) => y - k,
+        }
+    }
+}
+
+/// [`car_terms`] on a contact with the thrown rider (class 11: never fixed), as the rider's island takes it.
+pub fn rider_touch(player: bool, two: bool, up_y: f32, wiped: bool, tune: (f32, f32, f32)) -> Option<RiderTouch> {
+    car_terms(player, two, up_y, wiped, false, 0.0, false, false, tune).map(|t| (t.friction, t.elasticity.unwrap_or(tune.1), match t.drop {
+        Drop::Tilted(k, a) => Some((k, a)),
+        _ => None,
+    }))
 }
 
 /// What [`rider_touch`] writes: friction, elasticity, and (offset, |up.y|) for the car's own point.
@@ -3890,7 +3955,88 @@ pub type RiderTouch = (f32, f32, Option<(f32, f32)>);
 
 /// The car's own world point after [`rider_touch`]'s drop (fnmsubs: one rounding).
 pub fn rider_touch_point(y: f32, drop: Option<(f32, f32)>) -> f32 {
-    drop.map_or(y, |(k, a)| (-k).mul_add(a, y))
+    drop.map_or(y, |(k, a)| Drop::Tilted(k, a).apply(y))
+}
+
+#[cfg(test)]
+mod car_terms_tests {
+    use super::*;
+
+    /// F-55998's materials part against the original run offline (tools/car_terms_reference.py, 6,000 contacts:
+    /// partner types 11 / 3 / 1, level states 0..3, drivers player / AI / none, two-wheel, wiped, stuck, head-on).
+    #[test]
+    fn car_terms_match_the_original() {
+        let text = include_str!("testdata/car_terms_ref.txt");
+        let mut n = 0;
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            let (inp, out) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = inp.split_whitespace().map(|t| u32::from_str_radix(t, 16).unwrap()).collect();
+            let o: Vec<u32> = out.split_whitespace().map(|t| u32::from_str_radix(t, 16).unwrap()).collect();
+            let fl = |i: usize| f32::from_bits(w[i]);
+            let player = w[2] != 0xFFFF_FFFF && w[3] == 3;
+            let two = w[4] as u16 != 0;
+            let fixed = w[1] & 3 == 2;
+            let wiped = w[10] & 0x14 != 0;
+            let stuck = w[12] == 2 && w[13] != 0;
+            let car_a = w[14] != 0;
+            let n0 = Vec3::new(fl(15), fl(16), fl(17));
+            let nrm = if car_a { n0 } else { -n0 };
+            let along = car_along(nrm, Vec3::new(fl(7), fl(8), fl(9)));
+            let fast = fl(11) > 22.35;
+            let t = car_terms(player, two, fl(6), wiped, fixed, along, fast, stuck, (fl(19), fl(20), fl(21)));
+            let (mut fr, mut el, mut ya, mut yb) = (0x1111_1111u32, 0x2222_2222u32, w[18], w[22]);
+            if let Some(t) = t {
+                fr = t.friction.to_bits();
+                if let Some(e) = t.elasticity {
+                    el = e.to_bits();
+                }
+                if car_a {
+                    ya = t.drop.apply(fl(18)).to_bits();
+                } else {
+                    yb = t.drop.apply(fl(22)).to_bits();
+                }
+            }
+            assert_eq!([fr, el, ya, yb], [o[0], o[1], o[2], o[3]], "case {n}: {inp}");
+            n += 1;
+        }
+        assert_eq!(n, 6000);
+    }
+
+    /// F-55998's vehicle and prop parts against the original run offline (tools/car_vehicle_reference.py, 6,000
+    /// contacts: partners of types 8 / 6 / 4 / 13, the car A or B, upright and tilted, head-on, from behind and the side,
+    /// and the materials part after them). The points' fourth lanes (+60 / +76) are not the port's.
+    #[test]
+    fn car_vehicle_parts_match_the_original() {
+        let text = include_str!("testdata/car_vehicle_ref.txt");
+        let hull = HullShape::new(vec![Vec3::ZERO, Vec3::X, Vec3::Y, Vec3::Z], &[[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]]);
+        let mut n = 0;
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            let (inp, out) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = inp.split_whitespace().map(|t| u32::from_str_radix(t, 16).unwrap()).collect();
+            let o: Vec<u32> = out.split_whitespace().map(|t| u32::from_str_radix(t, 16).unwrap()).collect();
+            let fl = |i: usize| f32::from_bits(w[i]);
+            let v3 = |i: usize| Vec3::new(fl(i), fl(i + 1), fl(i + 2));
+            let m4 = |i: usize| [v3(i), v3(i + 3), v3(i + 6), v3(i + 9)];
+            let (ty, car_a) = (w[0], w[9] != 0);
+            let driver = Driver { player: w[2] != 0xFFFF_FFFF && w[3] == 3, two: w[4] as u16 != 0, stuck: w[7] == 2 && w[8] != 0, cg_offset: fl(12) };
+            let now = m4(13);
+            let car = CarIn { driver, hull: &hull, hull_cg: Vec3::ZERO, hull_margin: 0.04, now, last: now, prev: now, speed: fl(6), bound: (Vec3::ZERO, Vec3::ZERO), wheels: Vec::new(), vel: v3(37), touch: (fl(10), fl(11)), wiped: w[5] & 0x14 != 0 };
+            let om = m4(25);
+            let mut t = Touch { friction: f32::from_bits(0x1111_1111), elasticity: f32::from_bits(0x2222_2222), normal: v3(40), back: Vec3::ZERO - v3(40), ..Default::default() };
+            t.a.point = v3(43);
+            t.b.point = v3(47);
+            if ty == 8 || ty == 6 {
+                car_meets_vehicle(&car, &om, ty as u8, car_a, &mut t);
+            } else {
+                car_meets_prop(&car, om[1].y, car_a, w[1] & 3 == 2, &mut t);
+            }
+            let got = [t.friction.to_bits(), t.elasticity.to_bits(), t.a.point.x.to_bits(), t.a.point.y.to_bits(), t.a.point.z.to_bits(), t.b.point.x.to_bits(), t.b.point.y.to_bits(), t.b.point.z.to_bits(), t.normal.x.to_bits(), t.normal.y.to_bits(), t.normal.z.to_bits(), t.back.x.to_bits(), t.back.y.to_bits(), t.back.z.to_bits()];
+            let want = [o[0], o[1], o[2], o[3], o[4], o[6], o[7], o[8], o[10], o[11], o[12], o[13], o[14], o[15]];
+            assert_eq!(got, want, "case {n} type {ty}: {inp}");
+            n += 1;
+        }
+        assert_eq!(n, 6000);
+    }
 }
 
 impl VehObj {
@@ -4038,6 +4184,35 @@ pub fn load_others(path: &str, inject: bool, hull_of: &dyn Fn(&str) -> Option<Hu
 /// F-66303's constants on a traffic vehicle's archetype (F-58444: 0x82002C60 = 0.01, 0x820022B4 = 0.001).
 const VEH_DAMPING: [[f32; 3]; 6] = [[0.01; 3], [0.01; 3], [0.001; 3], [0.01; 3], [0.01; 3], [0.001; 3]];
 
+/// F-55998's flattening of the normal `n` (as it pushes the car) by how upright the partner (`other_up_y`, its
+/// matrix's up.y) and the car stand: k = 1 - |a b|; below 1 the normal's y is taken k times and x, z scaled to keep
+/// the length (when 1 - y^2 > 0); a result of squared length in (0x3f670a3d, 0x3f8d1eb7) is made unit as the
+/// callback does and written (Some). The first answer is the normal the vehicle part goes on with: the unit one when
+/// written, the scaled one when the length test fails, `n` when k is not below 1.
+pub fn lay_flat(n: Vec3, other_up_y: f32, car_up_y: f32) -> (Vec3, Option<Vec3>) {
+    let k = 1.0 - (other_up_y * car_up_y).abs();
+    if k >= 1.0 {
+        return (n, None);
+    }
+    let mut n = n;
+    let mut y2 = n.y * n.y;
+    let rest = 1.0 - y2;
+    if rest > 0.0 {
+        n.y = k * n.y;
+        y2 = n.y * n.y;
+        let q = ((1.0 - y2) / rest).sqrt();
+        n.x *= q;
+        n.z *= q;
+    }
+    let l2 = fma(n.z, n.z, n.x * n.x) + y2;
+    if l2 > f32::from_bits(0x3f67_0a3d) && l2 < f32::from_bits(0x3f8d_1eb7) {
+        let u = unit_cb(n);
+        (u, Some(u))
+    } else {
+        (n, None)
+    }
+}
+
 /// A vector made unit as the callback does (vmsum3fp, vrsqrtefp, one step).
 fn unit_cb(n: Vec3) -> Vec3 {
     let d = dot3(n, n);
@@ -4065,22 +4240,10 @@ fn car_meets_vehicle(car: &CarIn, om: &[Vec3; 4], class: u8, car_is_a: bool, t: 
             t.normal = theirs;
         }
     };
-    let k = 1.0 - (om[1].y * car.now[1].y).abs();
-    if k < 1.0 {
-        let mut y2 = n.y * n.y;
-        let rest = 1.0 - y2;
-        if rest > 0.0 {
-            n.y = k * n.y;
-            y2 = n.y * n.y;
-            let q = ((1.0 - y2) / rest).sqrt();
-            n.x *= q;
-            n.z *= q;
-        }
-        let l2 = fma(n.z, n.z, n.x * n.x) + y2;
-        if l2 > f32::from_bits(0x3f67_0a3d) && l2 < f32::from_bits(0x3f8d_1eb7) {
-            n = unit_cb(n);
-            store(t, n, Vec3::ZERO - n);
-        }
+    let (flat, unit) = lay_flat(n, om[1].y, car.now[1].y);
+    n = flat;
+    if let Some(u) = unit {
+        store(t, u, Vec3::ZERO - u);
     }
     let (me, back) = (car.now, car.now[2]);
     let fwd = Vec3::ZERO - back;
@@ -4120,11 +4283,34 @@ fn car_meets_vehicle(car: &CarIn, om: &[Vec3; 4], class: u8, car_is_a: bool, t: 
         t.b.point = mine;
         t.a.point = theirs;
     }
-    // (an mcCar partner; the car wiped out, chassis +592 bits 0x10 / 0x04)
-    if class == 8 || car.wiped {
+    // (A-31611: an mcCar partner, class 8, takes BoundFriction / BoundElasticity; any other the driver branch,
+    // `car_terms`: a vehicle is never fixed - level state 0 or 1)
+    if class == 8 {
         t.friction = car.touch.0;
         t.elasticity = car.touch.1;
+    } else {
+        car_terms_loose(car, car_is_a, false, t);
     }
+}
+
+/// The car's callback F-55998 on a contact with a prop (an mcPropInst, type 4 / 13): the normal as it pushes the car,
+/// pointing down, laid flat by how upright both stand ([`lay_flat`], `other_up_y` the prop matrix's up.y); then its
+/// materials part ([`car_terms_loose`]).
+fn car_meets_prop(car: &CarIn, other_up_y: f32, car_is_a: bool, fixed: bool, t: &mut Touch) {
+    let n = if car_is_a { t.normal } else { Vec3::ZERO - t.normal };
+    if n.y < 0.0 {
+        if let (_, Some(unit)) = lay_flat(n, other_up_y, car.now[1].y) {
+            let back = Vec3::ZERO - unit;
+            if car_is_a {
+                t.normal = unit;
+                t.back = back;
+            } else {
+                t.back = unit;
+                t.normal = back;
+            }
+        }
+    }
+    car_terms_loose(car, car_is_a, fixed, t);
 }
 
 /// The corner of a box bound the push solve measures a torn bumper's thickness from (type 3: per axis the half size less
@@ -6402,7 +6588,7 @@ mod piece_tests {
         let city = flat();
         let hull = HullShape::new(vec![Vec3::new(-1.0, -0.5, -2.0), Vec3::new(1.0, -0.5, -2.0), Vec3::new(0.0, 0.5, -2.0), Vec3::new(0.0, -0.5, 2.0)], &[[0, 1, 2], [0, 3, 1], [1, 3, 2], [2, 3, 0]]);
         let away = [Vec3::X, Vec3::Y, Vec3::Z, Vec3::new(1000.0, 0.0, 1000.0)];
-        let car = CarIn { hull: &hull, hull_cg: Vec3::ZERO, hull_margin: 0.04, now: away, last: away, prev: away, speed: 0.0, bound: (hull.min, hull.max), wheels: Vec::new(), vel: Vec3::ZERO, touch: (0.5, 0.1), wiped: false };
+        let car = CarIn { driver: Default::default(), hull: &hull, hull_cg: Vec3::ZERO, hull_margin: 0.04, now: away, last: away, prev: away, speed: 0.0, bound: (hull.min, hull.max), wheels: Vec::new(), vel: Vec3::ZERO, touch: (0.5, 0.1), wiped: false };
         for (rows, height) in [([Vec3::X, Vec3::Z, Vec3::NEG_Y], 0.25f32), ([Vec3::X, Vec3::Y, Vec3::Z], 0.1665)] {
             let mut s = LooseState::default();
             let id = s.add_piece(&world, [rows[0], rows[1], rows[2], Vec3::new(0.0, height + 0.5, 0.0)], Vec3::ZERO, Vec3::ZERO).unwrap();
@@ -6439,7 +6625,7 @@ mod piece_tests {
         let city = flat();
         let hull = HullShape::new(vec![Vec3::new(-1.0, -0.5, -2.0), Vec3::new(1.0, -0.5, -2.0), Vec3::new(0.0, 0.5, -2.0), Vec3::new(0.0, -0.5, 2.0)], &[[0, 1, 2], [0, 3, 1], [1, 3, 2], [2, 3, 0]]);
         let away = [Vec3::X, Vec3::Y, Vec3::Z, Vec3::new(1000.0, 0.0, 1000.0)];
-        let car = CarIn { hull: &hull, hull_cg: Vec3::ZERO, hull_margin: 0.04, now: away, last: away, prev: away, speed: 0.0, bound: (hull.min, hull.max), wheels: Vec::new(), vel: Vec3::ZERO, touch: (0.5, 0.1), wiped: false };
+        let car = CarIn { driver: Default::default(), hull: &hull, hull_cg: Vec3::ZERO, hull_margin: 0.04, now: away, last: away, prev: away, speed: 0.0, bound: (hull.min, hull.max), wheels: Vec::new(), vel: Vec3::ZERO, touch: (0.5, 0.1), wiped: false };
         let mut s = LooseState::default();
         let id = s.add_piece(&world, [Vec3::X, Vec3::Y, Vec3::Z, Vec3::new(0.0, 0.6, 0.0)], Vec3::ZERO, Vec3::ZERO).unwrap();
         let dt = 1.0 / 60.0;
