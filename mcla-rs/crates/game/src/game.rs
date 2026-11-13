@@ -310,6 +310,11 @@ pub struct VinylEdit {
     /// the zone's layer marks (the garage's per-zone byte array, `[+4 x (zone + 417)]`: F-31588 sets, F-77847
     /// reads, F-82558 counts); cleared on entering CHOOSE GROUP (VinylGroupSelect's MarkAllLayers(0))
     pub marks: Vec<bool>,
+    /// EDIT LAYER on a marked group (Vinyl_Group_Edit, page 5): the zone's group record (`vinyl_group::Rec`, at rest
+    /// the identity) and the zone's layers as they were on entry, which the preview is drawn from and BACK puts back
+    pub group: Option<(crate::vinyl_group::Rec, Vec<crate::vinyl::Layer>)>,
+    /// the left stick is out of its 0.2 rest circle (F-68423: lAnalog on the first update out, lAnalogNotResting after)
+    pub stick_out: bool,
     pub zone: usize,
     pub layer: usize,
     pub row: usize,
@@ -832,6 +837,8 @@ pub struct Game {
     pub nav_y: bool,
     /// the pad's L3 (the vinyl editor's `uinput.l3`: MarkLayer)
     pub nav_l3: bool,
+    /// the pad's left stick as the original's bytes (x, y; 128 at rest) - the vinyl group edit's stick
+    pub vinyl_stick: Option<[u8; 2]>,
     pub nav_select: bool,
     pub nav_start: bool,
     pub nav_slow: f32,
@@ -1654,6 +1661,7 @@ impl Game {
             replay: None,
             nav_x: false,
             nav_l3: false,
+            vinyl_stick: None,
             nav_y: false,
             nav_select: false,
             nav_start: false,
@@ -14007,8 +14015,15 @@ impl Game {
                     }
                     ed.page = 2;
                 } else if x_key {
-                    // EDIT LAYER: only a layer with a vinyl on it
-                    if ed.layer < count {
+                    // EDIT LAYER (F-71339): more than one layer marked and the cursor's among them -> Group_Position
+                    // (Vinyl_Group_Edit; nothing computed, the group record at rest); else only a layer with a vinyl on it
+                    let marked = ed.marks.iter().filter(|m| **m).count();
+                    if marked > 1 && ed.marks.get(ed.layer).copied().unwrap_or(false) {
+                        ed.group = Some((crate::vinyl_group::IDENTITY, livery.zones[zone].clone()));
+                        ed.stick_out = false;
+                        ed.page = 5;
+                        ed.tab = 0;
+                    } else if ed.layer < count {
                         ed.page = 3;
                         ed.tab = 0;
                     } else {
@@ -14048,6 +14063,59 @@ impl Game {
                         }
                         _ => {}
                     }
+                    ed.page = 1;
+                }
+            }
+            5 => {
+                // (Vinyl_Group_Edit: the tabs Position, Scale, Rotate - SetLayerAttribute 1 / 2 / 3)
+                if tab_prev || tab_next {
+                    ed.tab = (ed.tab as isize + tab_next as isize - tab_prev as isize).rem_euclid(3) as usize;
+                }
+                if let Some((mut g, base)) = ed.group.take() {
+                    // (the stick: pad 0's left stick bytes; on the keyboard the arrows held as the stick at full)
+                    let kb = ctx.input(|i| {
+                        let ax = |n: egui::Key, p: egui::Key| if i.key_down(p) { 255u8 } else if i.key_down(n) { 0 } else { 128 };
+                        [ax(egui::Key::ArrowLeft, egui::Key::ArrowRight), ax(egui::Key::ArrowDown, egui::Key::ArrowUp)]
+                    });
+                    // (test: MCLA_VINYL_STICK=x,y holds the left stick at those bytes)
+                    let held = std::env::var("MCLA_VINYL_STICK").ok().and_then(|v| v.split_once(',').and_then(|(a, b)| Some([a.trim().parse().ok()?, b.trim().parse().ok()?])));
+                    let [bx, by] = match held.or(self.vinyl_stick) {
+                        Some(s) if s != [128, 128] && kb == [128, 128] => s,
+                        _ => kb,
+                    };
+                    // (the input pass F-68423: out of the 0.2 rest circle the first update sends lAnalog, every later
+                    // one lAnalogNotResting -> ChangeLayerAttribute, F-66271)
+                    let (fx, fy) = (crate::mc4::stick_float(bx), crate::mc4::stick_float(by));
+                    if (fx * fx + fy * fy).sqrt() < 0.2 {
+                        ed.stick_out = false;
+                    } else if !std::mem::replace(&mut ed.stick_out, true) {
+                    } else if crate::vinyl_group::change(&mut g, zone, ed.tab as u32 + 1, true, false, bx, by) {
+                        // (UI_MENU_NAV_UP on each axis that steps, F-42664; one sound object a frame here)
+                        self.opt_x.s23b.ui_obj = Some("UI_MENU_NAV_UP");
+                    }
+                    let marks = ed.marks.clone();
+                    if enter {
+                        // (FinalizeGroupMovement, F-88223: baked into the marked layers, then the records reset, F-90968)
+                        let mut recs: Vec<crate::vinyl_group::Rec> = base.iter().map(crate::vinyl_group::rec_of).collect();
+                        crate::vinyl_group::bake(zone, &mut recs, &marks, &g);
+                        let mut out = base.clone();
+                        for ((l, r), m) in out.iter_mut().zip(&recs).zip(&marks) {
+                            if *m {
+                                crate::vinyl_group::apply(l, r);
+                            }
+                        }
+                        livery.zones[zone] = out;
+                        ed.page = 1;
+                    } else if back {
+                        // (UndoGroupMovement, F-90968: the record reset, no layer written)
+                        livery.zones[zone] = base;
+                        ed.page = 1;
+                    } else {
+                        // (the redraw F-61384 draws the marked layers through the group record)
+                        livery.zones[zone] = crate::vinyl_group::preview(zone, &base, &marks, &g);
+                        ed.group = Some((g, base));
+                    }
+                } else {
                     ed.page = 1;
                 }
             }
@@ -14213,6 +14281,35 @@ impl Game {
                     vec![back_p, (st("prompt_accept", "ACCEPT"), ICON_A), (st("VE_change_shape", "CHANGE SHAPE"), 11), (st("VE_Prev_Next_Category", "PREV/NEXT"), ICON_LB_RB), cam_p],
                 )
             }
+            5 => {
+                // (Vinyl_Group_Edit: tabs Position / Scale / Rotate with icons 32 / 33 / 34, fs_template 104 / 104 / 105,
+                // prompts 119 / 120 / 121; the read-out F-56493 from the group record)
+                let g = ed.group.as_ref().map_or(crate::vinyl_group::IDENTITY, |x| x.0);
+                let names = [("Position", "POSITION"), ("Scale", "SCALE"), ("Rotate", "ROTATE")];
+                let t = ed.tab.min(2);
+                let (template, what) = match t {
+                    0 => (104, (st("VE_change_position", "CHANGE POSITION"), 14)),
+                    1 => (104, (st("VE_change_scale", "CHANGE SCALE"), 14)),
+                    _ => (105, (st("VE_rotate", "ROTATE"), 13)),
+                };
+                let dims = crate::vinyl_group::readout(&g, t as u32 + 1, true);
+                if let Some(l) = livery.zones[zone].get(ed.layer) {
+                    pictures = vec![("screen.menu.VE_area_layer_mini.shapes".to_string(), self.vinyl_thumb(l.shape))];
+                }
+                (
+                    MenuPage {
+                        layout: MenuLayout::VinylEditTab { template, dims, colors: Vec::new() },
+                        icon: 10,
+                        tabs: names.iter().map(|(k, d2)| st(k, d2)).collect(),
+                        tab_icons: vec![32, 33, 34],
+                        cur_tab: t,
+                        title: st(names[t].0, names[t].1),
+                        rows: vec![row(String::new())],
+                        ..MenuPage::default()
+                    },
+                    vec![back_p, (st("prompt_accept", "ACCEPT"), ICON_A), what, (st("VE_change_camHeight", "CAMERA HEIGHT"), 20)],
+                )
+            }
             3 => {
                 let l = layer.clone().unwrap_or_default();
                 let names = [("Position", "POSITION"), ("Scale", "SCALE"), ("Rotate", "ROTATE"), ("Skew", "SKEW"), ("Alpha", "MASK"), ("Color", "COLOR")];
@@ -14236,7 +14333,7 @@ impl Game {
                 prompts.push(cam_p);
                 (
                     MenuPage {
-                        layout: MenuLayout::VinylEditTab { template, dims, colors },
+                        layout: MenuLayout::VinylEditTab { template, dims: dims.iter().map(|v| crate::vinyl_group::Dim::I(*v)).collect(), colors },
                         icon: 10,
                         tabs: names.iter().map(|(k, d2)| st(k, d2)).collect(),
                         // (GarageTabs icon ids: 32 position, 33 scale, 34 rotate, 35 skew, 36 mask, 31 the palette)

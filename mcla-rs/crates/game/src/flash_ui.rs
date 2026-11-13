@@ -747,9 +747,10 @@ pub enum MenuLayout {
     /// from `menu.offset`, the groups as tabs
     VinylShapes { offset: i32 },
     /// a tab of EDIT LAYER: `template` 104 (two figures), 105 (one), 116 (mask) or 103
-    /// (colour strip); the figures go in `VElayer_dimension`, the labels are the movie's
-    /// own by `cur_tab`; `colors` fill the strip
-    VinylEditTab { template: i32, dims: [i32; 2], colors: Vec<u32> },
+    /// (colour strip); the figures go in `VElayer_dimension` (as many as given, each as the
+    /// value the movie gets: a number or an int), the labels are the movie's own by `cur_tab`;
+    /// `colors` fill the strip
+    VinylEditTab { template: i32, dims: Vec<crate::vinyl_group::Dim>, colors: Vec<u32> },
     /// LAYER OPTIONS (`template_VE_layer_menu`, 113): the layer strip's list (`select` the layer)
     /// with the seven options of the movie's own `VE_layers_menu` over it; the cursor stands on
     /// `menu.elements[select].select`, the layer's `option` (0..6), its list `count` 7
@@ -1156,8 +1157,13 @@ impl FlashMenu {
                 102
             }
             MenuLayout::VinylEditTab { template, dims, colors } => {
-                p.set_path("VElayer_dimension.0", Value::Int(dims[0]));
-                p.set_path("VElayer_dimension.1", Value::Int(dims[1]));
+                for (i, v) in dims.iter().enumerate() {
+                    let v = match *v {
+                        crate::vinyl_group::Dim::F(f) => Value::Float(f),
+                        crate::vinyl_group::Dim::I(n) => Value::Int(n),
+                    };
+                    p.set_path(&format!("VElayer_dimension.{i}"), v);
+                }
                 p.set_global("cur_VE_group_type", Value::Int(1));
                 for (i, c) in colors.iter().enumerate() {
                     p.set_path(&format!("menu.elements.{}.color", i), Value::Int(*c as i32));

@@ -12,6 +12,7 @@ mod save_gaps;
 mod pads;
 mod rewards;
 mod vinyl;
+mod vinyl_group;
 #[cfg(test)]
 mod carparts_small_tests;
 mod ai;
@@ -2940,6 +2941,7 @@ impl App {
         self.game.nav_slow = (now >> 17 & 1) as f32 - (now >> 16 & 1) as f32;
         // (`mc4` step 13b: the pad as it stands, for the mapping editor)
         self.game.opt_x.pad = self.pad_state();
+        self.game.vinyl_stick = self.game.opt_x.pad.map(|s| [s.sticks[0], s.sticks[1]]);
         // (a box that takes the menu buttons outside a menu mode is read as a menu: the keyboard's
         // Enter / Esc reach it in every mode, so the pad's A / B must as well - GitHub #11)
         if self.game.in_menu() || self.game.show_map || watching || self.game.takes_menu_input() {
