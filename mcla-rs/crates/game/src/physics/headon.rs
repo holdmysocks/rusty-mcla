@@ -4,6 +4,7 @@
 //! WipeoutThreshold is wiped out. Rule: docs/reference/cameras/carhit_wipeout_rule.md.
 
 use glam::Vec3;
+use super::artic::V4;
 
 /// The other side of one contact of the run.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -55,10 +56,10 @@ pub struct Own {
 }
 
 /// What the rule did over the run.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct HeadOn {
-    /// the angular impulse for the collider (+384, phCollider slot 38), summed over the contacts
-    pub spin: Vec3,
+    /// the angular impulses for the collider (+384, phCollider slot 38), one a qualifying ambient contact, in order
+    pub spins: Vec<Vec3>,
     /// damage points added (MaxDamage x 0.1 per qualifying contact, F-15289)
     pub damage: f32,
     /// a contact qualified: the wipeout (F-69183), the slow motion (F-46437); from an
@@ -75,8 +76,7 @@ pub struct HeadOn {
 /// state is the port's own: the original's is drawn by 53 other users)
 static RNG: std::sync::Mutex<[u32; 2]> = std::sync::Mutex::new([0x2545_F491, 0x1234_5678]);
 
-fn draw2() -> (u32, u32) {
-    let mut s = RNG.lock().unwrap_or_else(|e| e.into_inner());
+fn draw2(s: &mut [u32; 2]) -> (u32, u32) {
     let a = 0x5CDC_FAA7u64;
     let t1 = s[0] as u64 * a + s[1] as u64;
     let x1 = (t1 as u32) & 0x7F_FFFF;
@@ -86,23 +86,36 @@ fn draw2() -> (u32, u32) {
     (x1, x2)
 }
 
-/// sgn(v) |v|^0.33 per axis, the power in double (F-21955).
+/// sgn(v) |v|^0.33 per axis: the power in double (F-21955, `pow_guest`), rounded, times the sign the two fsel make (1 above
+/// 0, 0 at either zero, -1 below; a NaN takes -1).
 fn soft(r: Vec3) -> Vec3 {
     let f = |v: f32| {
-        let m = (v.abs() as f64).powf(0.330_000_013_113_021_85) as f32;
-        if v > 0.0 {
-            m
-        } else if v < 0.0 {
-            -m
-        } else {
-            0.0
-        }
+        let m = crate::caraudio::pow_guest(v.abs() as f64, f64::from_bits(0x3fd5_1eb8_6000_0000)) as f32;
+        let s = if -v >= 0.0 { 0.0 } else { 1.0 };
+        let s = if v >= 0.0 { s } else { -1.0 };
+        m * s
     };
     Vec3::new(f(r.x), f(r.y), f(r.z))
 }
 
-/// One call of the rule for a run of contacts (the own car's run as A or as B).
+fn v4(v: Vec3) -> V4 {
+    V4::new(v.x, v.y, v.z, 0.0)
+}
+
+fn v3(v: V4) -> Vec3 {
+    Vec3::new(v.0[0], v.0[1], v.0[2])
+}
+
+/// One call of the rule for a run of contacts (the own car's run as A or as B), with the game's generator.
 pub fn run(own: &Own, touches: &[Touch]) -> HeadOn {
+    let mut s = RNG.lock().unwrap_or_else(|e| e.into_inner());
+    run_with(own, touches, &mut s)
+}
+
+/// F-43509 for one run, the generator's state given (0x82860890). Checked against the original run offline:
+/// tools/headon_reference.py, test `head_on_matches_the_original`.
+pub fn run_with(own: &Own, touches: &[Touch], rng: &mut [u32; 2]) -> HeadOn {
+    use super::exact::{dot_xyz, fma, fms};
     let mut out = HeadOn::default();
     if std::env::var_os("MCLA_DBG_HEADON").is_some() && own.dv.length() > 1.0 {
         // (test hook: the run's gates and each contact's two tests)
@@ -119,41 +132,51 @@ pub fn run(own: &Own, touches: &[Touch]) -> HeadOn {
     if own.no_damage || own.agro {
         return out;
     }
-    if own.dv.length() < own.wipeout_threshold {
+    // |dv| as fsqrts of z z + (x x + y y), one fused chain
+    let d = own.dv;
+    if fma(d.z, d.z, fma(d.x, d.x, d.y * d.y)).sqrt() < own.wipeout_threshold {
         return out;
     }
-    let cos25 = (0.436_332_315_206_527_7f64).cos() as f32;
-    let cos45 = (0.785_398_185_253_143_3f64).cos() as f32;
+    let guest_cos = |bits: u64| mcla_formats::guest_math::guest_cos(f64::from_bits(bits)) as f32;
+    let fast = || own.speed > f32::from_bits(0x41b2_cccd);
     for t in touches {
         match t.partner {
             Partner::Ambient { back } | Partner::PlayerCar { back } => {
-                if !(own.speed > 22.35) {
+                if !fast() {
                     continue;
                 }
+                // the own car's way (0 - its back axis + the body's velocity), normalised as the vector unit does it:
+                // vrsqrtefp (a zero length gives 0) and one Newton step
+                let u = V4::ZERO.sub(v4(own.back)).add(v4(own.vel));
+                let l = u.dot3(u);
+                let y = V4(l.rsqrte().0.map(|x| if x == f32::INFINITY { 0.0 } else { x }));
+                let k = l.nmsub(y.mul(y), V4::splat(1.0)).madd(V4::splat(0.5).mul(y), y);
+                let way = v3(u.mul(k));
                 // the own car in front of the other's nose, moving against its facing
-                let u = own.vel - own.back;
-                let d = u.normalize_or_zero();
-                if !(back.dot(t.normal) < -0.7) || !(d.dot(back) > cos45) {
+                if !(dot_xyz(back, t.normal) < f32::from_bits(0xbf33_3333)) || !(dot_xyz(back, way) > guest_cos(0x3fe9_21fb_6000_0000)) {
                     continue;
                 }
-                let (x1, x2) = draw2();
-                let f7 = x1 as f32 * f32::from_bits(0x3480_0000) - 1.0;
-                let f6 = x2 as f32 * f32::from_bits(0x3480_0000) - 1.0;
-                let ky = f7 * 0.25 + 1.0;
-                let kxz = (f6 + 1.0) * 0.15;
-                let w = soft(t.point - own.body_pos).cross(t.impulse);
-                out.spin += Vec3::new(w.x * kxz, w.y * ky, w.z * kxz) * own.spin_mult;
-                out.damage += own.max_damage * 0.1;
+                let (x1, x2) = draw2(rng);
+                let c = f32::from_bits(0x3480_0000);
+                let (f7, f6) = (fms(x1 as f32, c, 1.0), fms(x2 as f32, c, 1.0));
+                let ky = fma(f7, 0.25, 1.0);
+                let kxz = (f6 + 1.0) * f32::from_bits(0x3e19_999a);
+                let r = v4(soft(v3(v4(t.point).sub(v4(own.body_pos)))));
+                let imp = v4(t.impulse);
+                let w = imp.yzx().nmsub(r.zxy(), imp.zxy().mul(r.yzx()));
+                let w = V4::new(kxz * w.0[0], ky * w.0[1], kxz * w.0[2], 0.0);
+                out.spins.push(v3(w.mul(V4::splat(own.spin_mult))));
+                out.damage += own.max_damage * f32::from_bits(0x3dcc_cccd);
                 out.hits += 1;
                 out.hit = true;
                 out.melt = true;
             }
             Partner::Fixed => {
-                if !(own.back.dot(t.normal) > cos25) || !(own.speed > 22.35) {
+                if !(dot_xyz(own.back, t.normal) > guest_cos(0x3fdb_ecde_6000_0000)) || !fast() {
                     continue;
                 }
                 out.cg_drop = true;
-                out.damage += own.max_damage * 0.1;
+                out.damage += own.max_damage * f32::from_bits(0x3dcc_cccd);
                 out.hits += 1;
                 out.hit = true;
             }
@@ -256,7 +279,7 @@ mod tests {
         // the traffic car faces +z (its back axis -z); the normal into the own car points +z
         let nose = Touch { impulse: Vec3::new(0.0, 0.0, 9000.0), normal: Vec3::Z, point: Vec3::new(0.4, 0.3, -2.2), partner: Partner::Ambient { back: Vec3::NEG_Z } };
         let h = run(&own(30.0, 25.0), &[nose]);
-        assert!(h.hit && h.melt && h.damage == 40.0 && !h.cg_drop && h.spin != Vec3::ZERO, "{h:?}");
+        assert!(h.hit && h.melt && h.damage == 40.0 && !h.cg_drop && h.spins.len() == 1 && h.spins[0] != Vec3::ZERO, "{h:?}");
         assert!(!run(&own(22.35, 25.0), &[nose]).hit);
         assert!(!run(&own(30.0, 18.9), &[nose]).hit);
         let tail = Touch { partner: Partner::Ambient { back: Vec3::Z }, ..nose };
@@ -266,6 +289,86 @@ mod tests {
         // a wall straight ahead: the fixed rule (within 25 degrees of the back axis)
         let wall = Touch { partner: Partner::Fixed, ..nose };
         let h = run(&own(30.0, 25.0), &[wall]);
-        assert!(h.hit && h.cg_drop && !h.melt && h.spin == Vec3::ZERO);
+        assert!(h.hit && h.cg_drop && !h.melt && h.spins.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod offline {
+    use super::*;
+
+    /// F-43509 against the original run offline (tools/headon_reference.py): 6,000 runs of 0 .. 6 contacts - the damage
+    /// and Agro gates, |dv| about WipeoutThreshold, speeds about 22.35 m/s, the own car as A or B, ambient cars (class 6
+    /// or a player's car) facing the own car or not, fixed partners ahead or not, disabled contacts, lever-arm lanes at 0,
+    /// the generator's state given. Every angular impulse (slot 38) with its lanes, every AddDamage with its value,
+    /// F-69183 and F-46437, the CG copy, the melt and the generator's state after equal `run_with`'s.
+    #[test]
+    fn head_on_matches_the_original() {
+        let text = include_str!("testdata/headon_ref.txt");
+        let mut lines = text.lines();
+        let hex = |t: &str| u32::from_str_radix(t, 16).unwrap();
+        let base: Vec<u32> = lines.next().unwrap().split_whitespace().map(hex).collect();
+        let (c, d, dt, ch, st, tf, i, it, pair, ab, q, k, tbl) = (0x1040u32, 0x1100u32, 0x1140u32, 0x1200u32, 0x1380u32, 0x13C0u32, 0x1400u32, 0x1500u32, 0x1800u32, 0x1E00u32, 0x2000u32, 0x3000u32, 0x3480u32);
+        let (mut n, mut spins, mut hits) = (0, 0, 0);
+        for line in lines.filter(|l| !l.is_empty()) {
+            let (pairs, out) = line.split_once(" -> ").unwrap();
+            let (state, log) = out.split_once(" |").unwrap();
+            let mut m = std::collections::HashMap::new();
+            let mut ret = [0u32; 32];
+            for p in base.chunks(2).chain(pairs.split_whitespace().map(hex).collect::<Vec<_>>().chunks(2)) {
+                if p[0] >= 0xF000_0000 { ret[(p[0] - 0xF000_0000) as usize] = p[1]; } else { m.insert(p[0], p[1]); }
+            }
+            let g = |a: u32| *m.get(&a).unwrap_or(&0);
+            let byte = |a: u32| g(0x4000_0000 | a) & 0xFF;
+            let gf = |a: u32| f32::from_bits(g(a));
+            let vec = |a: u32| Vec3::new(gf(a), gf(a + 4), gf(a + 8));
+            let a = g(c + 72);
+            let own = Own {
+                dv: Vec3::new(f32::from_bits(ret[20]), f32::from_bits(ret[21]), f32::from_bits(ret[22])),
+                speed: gf(ch + 224), vel: vec(k + 272), body_pos: vec(k + 256), back: vec(i + 48),
+                wipeout_threshold: gf(dt + 36), max_damage: gf(dt + 24), spin_mult: gf(st + 284),
+                no_damage: byte(d + 33) != 0,
+                agro: ret[0] & 0xFF != 0 && a != 0 && g(a + 52) as i32 == 1 && g(a + 48) as i32 == 3,
+            };
+            let mut touches = Vec::new();
+            for kk in 0..(g(it + 12) as i32).max(0) as u32 {
+                let (pr, abk, qk) = (pair + 0xC0 * kk, ab + 0x20 * kk, q + 0x80 * kk);
+                if byte(pr + 165) & 0x80 == 0 {
+                    continue;
+                }
+                let own_a = g(abk) == i;
+                let side = |v: Vec3| if own_a { v } else { v3(V4::ZERO.sub(v4(v))) };
+                let cls = ret[1 + kk as usize] as i32;
+                let back = vec(qk + 48);
+                let partner = if cls == 6 {
+                    Partner::Ambient { back }
+                } else if cls == 8 && ret[8 + kk as usize] & 0xFF != 0 {
+                    Partner::PlayerCar { back }
+                } else if g(tbl + 8 * kk + 4) & 3 == 2 {
+                    Partner::Fixed
+                } else {
+                    Partner::Other
+                };
+                touches.push(Touch { impulse: side(vec(pr + 112)), normal: side(vec(pr + 80)), point: vec(pr + if own_a { 48 } else { 64 }), partner });
+            }
+            let mut rng = [g(0x8286_0890), g(0x8286_0894)];
+            let h = run_with(&own, &touches, &mut rng);
+            let cg = if h.cg_drop { [g(ch + 96), g(ch + 100), g(ch + 104), g(ch + 108)] } else { [0; 4] };
+            let melt = if h.melt { 0x3f80_0000 } else { g(tf + 24) };
+            let want = format!("{:08x} {:08x} {:08x} {:08x} {:08x} {:04x}:{:04x} {:04x}:{:04x}", cg[0], cg[1], cg[2], cg[3], melt, rng[0] >> 16, rng[0] & 0xFFFF, rng[1] >> 16, rng[1] & 0xFFFF);
+            assert_eq!(want, state, "{pairs}");
+            let toks: Vec<&str> = log.split_whitespace().collect();
+            let got_a: Vec<String> = toks.iter().filter(|t| t.starts_with("A,")).map(|t| t.to_string()).collect();
+            let want_a: Vec<String> = h.spins.iter().map(|s| format!("A,0,{:x},{:x},{:x}", s.x.to_bits(), s.y.to_bits(), s.z.to_bits())).collect();
+            assert_eq!(got_a, want_a, "{pairs}");
+            let dmg = format!("D,{:x},{:x}", d, (own.max_damage * f32::from_bits(0x3dcc_cccd)).to_bits());
+            assert_eq!(toks.iter().filter(|t| t.starts_with("D,")).map(|t| t.to_string()).collect::<Vec<_>>(), vec![dmg; h.hits as usize], "{pairs}");
+            assert_eq!(toks.iter().filter(|t| t.starts_with("W,")).count(), h.hits as usize, "{pairs}");
+            assert_eq!(toks.iter().filter(|t| **t == "S").count(), h.hits as usize, "{pairs}");
+            n += 1;
+            spins += h.spins.len();
+            hits += h.hits as usize;
+        }
+        assert_eq!((n, spins, hits), (6000, 169, 426));
     }
 }

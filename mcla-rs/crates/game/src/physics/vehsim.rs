@@ -7039,8 +7039,9 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
                 Vec::new()
             }
         };
-        for h in &head_hits {
-            turning += h.spin;
+        // (each qualifying contact's slot 38 call adds its own impulse to +384, in order)
+        for s in head_hits.iter().flat_map(|h| h.spins.iter()) {
+            turning += *s;
         }
         if !frozen || impulse != Vec3::ZERO || turning != Vec3::ZERO {
             let (f, tq) = if frozen { (Vec3::ZERO, Vec3::ZERO) } else { (force, torque) };
