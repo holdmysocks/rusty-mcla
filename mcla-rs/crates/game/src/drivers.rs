@@ -29,6 +29,8 @@ pub struct Seat<'a> {
     pub speed: f32,
     pub reversing: bool,
     pub player: bool,
+    /// the local player's car is under Stealth (drawn by pu_fx.rs): his figure goes to the Stealth pass (F-25791)
+    pub stealth: bool,
     pub cop: bool,
     pub bike: bool,
     /// step 19d: the character set this driver is ("drv_mb_009_set"), else empty
@@ -2524,6 +2526,7 @@ impl Drivers {
             }
             // (the driver's stencil id: his car's + 1, a rider's his bike's - render/mb.rs, F-10884)
             self.buf.next_stencil = crate::render::mb::driver_stencil_of(s.id);
+            self.buf.next_stealth = s.stealth;
             // (the car's gauge and neon lights and its floor - F-42959; MCLA_DRV_CABIN_OLD=1: none, as outside a car)
             if let Some(offs) = s.lights.filter(|_| std::env::var("MCLA_DRV_CABIN_OLD").is_err()) {
                 let colors = match s.colors {
@@ -2582,6 +2585,11 @@ impl Drivers {
 
     pub fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, gpu: &'a Gpu, draws: &mut usize) {
         self.buf.draw(pass, gpu, false, draws);
+    }
+
+    /// The figures of the Stealth pass (`Seat::stealth`): pu_fx.rs, with its pipeline set.
+    pub fn draw_stealth<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, gpu: &'a Gpu) -> usize {
+        self.buf.draw_stealth(pass, gpu)
     }
 }
 

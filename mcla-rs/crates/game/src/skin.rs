@@ -1019,6 +1019,11 @@ pub struct SkinBuffer {
     pub next_cabin: Option<crate::drivers::Cabin>,
     /// each draw's stencil reference
     draw_stencil: Vec<u32>,
+    /// the next figure is drawn in the Stealth pass (the local player's driver in a car under Stealth: F-25791 draws
+    /// him with pass 0x100000 after F-69818 sets stealthtechnique - pu_fx.rs), not with the others; taken by `emit`
+    pub next_stealth: bool,
+    /// each draw's: in the Stealth pass
+    draw_stealth: Vec<bool>,
     /// this frame's figures (character programs): the model's origin, bystander, the car's lights
     figs: Vec<(Vec3, bool, Option<crate::drivers::Cabin>)>,
     /// per figure: drawn with the set's cockpit view model (F-56050: render state 12, the depth offset, `COCKPIT_DEPTH_OFFSET`)
@@ -1041,6 +1046,7 @@ impl SkinBuffer {
         self.fig_cockpit.clear();
         self.char_draws.clear();
         self.draw_stencil.clear();
+        self.draw_stealth.clear();
     }
 
     /// Skin one character in the given local pose, standing at `root`.
@@ -1082,6 +1088,7 @@ impl SkinBuffer {
         }
         self.hide_from = None;
         let stencil = std::mem::take(&mut self.next_stencil);
+        let stealth = std::mem::take(&mut self.next_stealth);
         let fig = match self.next_lanes.take() {
             Some(l) => {
                 self.lanes.push(l);
@@ -1165,6 +1172,7 @@ impl SkinBuffer {
             }
             self.draw_fig.push(fig);
             self.draw_stencil.push(stencil);
+            self.draw_stealth.push(stealth);
         }
     }
 
@@ -1286,6 +1294,9 @@ impl SkinBuffer {
         // (the stencil reference as the pass has it - 0, the world's - changed only for the figures that carry one)
         let mut stencil = 0u32;
         for (k, (bind, first, count)) in self.draws.iter().enumerate() {
+            if self.draw_stealth.get(k).copied().unwrap_or(false) {
+                continue;
+            }
             let st = self.draw_stencil.get(k).copied().unwrap_or(0);
             if st != stencil {
                 pass.set_stencil_reference(st);
@@ -1313,6 +1324,26 @@ impl SkinBuffer {
         if stencil != 0 {
             pass.set_stencil_reference(0);
         }
+    }
+}
+
+impl SkinBuffer {
+    /// The Stealth pass's figures (`next_stealth`), with its pipeline and group 1 already set: the skinned vertices are in
+    /// the world, so the object is the identity; each draw with its figure's stencil reference.
+    pub fn draw_stealth<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, gpu: &'a Gpu) -> usize {
+        let (Some(vb), Some(ib)) = (self.vb.as_ref(), self.ib.as_ref()) else { return 0 };
+        let n = self.draw_stealth.iter().filter(|s| **s).count();
+        if n == 0 {
+            return 0;
+        }
+        pass.set_bind_group(2, &gpu.identity_obj.bg, &[]);
+        pass.set_vertex_buffer(0, vb.slice(..));
+        pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+        for (k, (_, first, count)) in self.draws.iter().enumerate().filter(|(k, _)| self.draw_stealth.get(*k).copied().unwrap_or(false)) {
+            pass.set_stencil_reference(self.draw_stencil.get(k).copied().unwrap_or(0));
+            pass.draw_indexed(*first..*first + *count, 0, 0..1);
+        }
+        n
     }
 }
 

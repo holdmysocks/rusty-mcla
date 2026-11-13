@@ -507,7 +507,7 @@ pub fn instances(pu: &PowerUps, vehicles: &crate::vehicles::Vehicles, looks: &[(
 
 /// The pass: over the finished scene (its depth tested), before the tone map. The stealth cars
 /// first (the vehicle pass), then the ice blocks and shields (the holder's draw, after the car).
-pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, vehicles: &crate::vehicles::Vehicles, pu: Option<&PowerUps>, cam: Vec3) {
+pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, vehicles: &crate::vehicles::Vehicles, pu: Option<&PowerUps>, cam: Vec3, drivers: Option<&crate::drivers::Drivers>) {
     let guard = STATE.lock().unwrap();
     let Some(s) = guard.as_ref() else { return };
     let (ice, shield) = pu.map_or((Vec::new(), Vec::new()), |pu| instances(pu, vehicles, &s.looks));
@@ -582,6 +582,20 @@ pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, vehicles: &crate::vehicles
                             }
                         }
                     }
+                }
+            }
+        }
+        // (the local player's driver: F-25791 draws his figure with pass 0x100000 after F-69818, which sets
+        // stealthtechnique, alpha blend on, ZWriteEnable off, blend mode 7 - the car's glass draw's states)
+        if let Some(d) = drivers {
+            pass.set_pipeline(&s.stealth_glass);
+            pass.set_bind_group(1, &s.ice_bg, &[]);
+            let n = d.draw_stealth(&mut pass, gpu);
+            // (MCLA_PU_FX_LOG=1: the driver's draws, once a second)
+            if n > 0 && std::env::var("MCLA_PU_FX_LOG").is_ok() {
+                static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                if N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 30 == 0 {
+                    log::info!("pu_fx: the player's driver in the Stealth pass, {n} draws");
                 }
             }
         }

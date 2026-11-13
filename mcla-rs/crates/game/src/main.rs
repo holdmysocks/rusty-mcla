@@ -12663,7 +12663,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // (the cruiser has no driver: mcRacer::LoadDriver, F-39898, returns before it makes one when
                     // the car is vp_chv_police_96 - its own black interior is what shows; GitHub #17)
                     // (the figure's draw F-25791 draws no one in a car under Stealth / MegaStealth - F-54047 - but the
-                    // local player's, F-65988; the player's goes to the Stealth pass: not ported)
+                    // local player's, F-65988; the player's goes to the Stealth pass - `Seat::stealth`, pu_fx.rs)
                     c.placed && !hudmap::in_stealth(c) && c.parked.is_none() && !modcars::hides_driver(&c.model.name) && !c.model.name.eq_ignore_ascii_case(police::COP_CAR) && !n.starts_with("va_") && self.game.mode != Mode::Garage && !staged && !self.vehicles.lights_off && !c.driver.starts_with("hangout:") && !c.driver_off
                 })
                 .map(|(i, c)| {
@@ -12677,7 +12677,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         // trucks and SUVs seat their driver higher than the shared animation does
                         mat = mat * glam::Mat4::from_translation(Vec3::new(0.0, 0.3, 0.0));
                     }
-                    drivers::Seat { id: i, uid: c.uid, car: c.model.name.as_str(), mat, pos: pose.pos, steer: force.unwrap_or(c.input.steer), speed: c.state.fwd_speed(), reversing: c.state.gear < 0, player: c.is_player, cop: c.cop, bike: c.model.bike, set: c.driver_set.as_str(), hi: c.is_player || c.hi_driver, lights: c.model.simtunes.as_ref().and_then(|t| t.driver_lights), colors: if c.is_player { Some(self.vehicles.player_cabin_light) } else { c.look.as_ref().map(|l| l.cabin_light) }, head: c.amb_lamps.s[0], vel: c.state.vel, ride: if c.model.bike { drivers::RideIn { look: if c.is_player { rider_look } else { 0.0 }, ..drivers::RideIn::of(&c.state, &c.input, &c.steer_parts, c.is_player, self.cine.playing.is_some()) } } else { Default::default() }, drv: (!c.model.bike).then(|| drivers::DrvIn::of(&c.state, &c.input, &c.steer_parts, c.is_player, self.cine.playing.is_some(), self.drivers.ckpt_view, if c.is_player { rider_look } else { 0.0 }, &drivers::DrvWorld { race_over: drv_race, horn: c.is_player && self.sound.horn_sounding(c.uid), crash: c.is_player.then_some((self.crash_bits, self.crash_timer)), replay: drv_replay, view: c.is_player.then(|| (boomcam::VIEW_OF_PORT[(self.view_mode as usize).min(5)] as i32, self.cam_fx.as_ref().map_or(boomcam::CamFx::default().look_delay, |f| f.look_delay))) })) }
+                    drivers::Seat { id: i, uid: c.uid, car: c.model.name.as_str(), mat, pos: pose.pos, steer: force.unwrap_or(c.input.steer), speed: c.state.fwd_speed(), reversing: c.state.gear < 0, player: c.is_player, stealth: c.is_player && c.pu_stealth, cop: c.cop, bike: c.model.bike, set: c.driver_set.as_str(), hi: c.is_player || c.hi_driver, lights: c.model.simtunes.as_ref().and_then(|t| t.driver_lights), colors: if c.is_player { Some(self.vehicles.player_cabin_light) } else { c.look.as_ref().map(|l| l.cabin_light) }, head: c.amb_lamps.s[0], vel: c.state.vel, ride: if c.model.bike { drivers::RideIn { look: if c.is_player { rider_look } else { 0.0 }, ..drivers::RideIn::of(&c.state, &c.input, &c.steer_parts, c.is_player, self.cine.playing.is_some()) } } else { Default::default() }, drv: (!c.model.bike).then(|| drivers::DrvIn::of(&c.state, &c.input, &c.steer_parts, c.is_player, self.cine.playing.is_some(), self.drivers.ckpt_view, if c.is_player { rider_look } else { 0.0 }, &drivers::DrvWorld { race_over: drv_race, horn: c.is_player && self.sound.horn_sounding(c.uid), crash: c.is_player.then_some((self.crash_bits, self.crash_timer)), replay: drv_replay, view: c.is_player.then(|| (boomcam::VIEW_OF_PORT[(self.view_mode as usize).min(5)] as i32, self.cam_fx.as_ref().map_or(boomcam::CamFx::default().look_delay, |f| f.look_delay))) })) }
                 })
                 .collect();
             // the distance LOD (F-12028): every seat here is drawn, so its draw-gate tests pass; the scene byte is a story
@@ -13553,7 +13553,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             // (step 19g: the effects on the cars - ice blocks, shields, stealth - pu_fx.rs)
             if !map3d {
-                pu_fx::run(&gpu, &mut enc, &self.vehicles, self.powerups.as_ref(), Vec3::new(globals.cam_pos[0], globals.cam_pos[1], globals.cam_pos[2]));
+                pu_fx::run(&gpu, &mut enc, &self.vehicles, self.powerups.as_ref(), Vec3::new(globals.cam_pos[0], globals.cam_pos[1], globals.cam_pos[2]), Some(&self.drivers));
             }
             // (step 19f: the power-up sources' cards and ground glows - pu_draw.rs)
             if let Some(pu) = self.powerups.as_ref() {
