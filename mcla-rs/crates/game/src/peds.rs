@@ -4354,8 +4354,15 @@ impl Peds {
     /// `alpha`: the render alpha (vehicles.rs `render_alpha`) - each walker is drawn between its pose at the last tick's
     /// start and its end, as the cars are; the port's interpolation, not the original's (it draws each 30 Hz frame as
     /// its update left it). Its place and facing are blended, its clip time and cross-fade too while its clip runs on.
+    /// This frame's GPU skinning of the walkers (D59.gpu-skin), as a command buffer main.rs submits ahead of the
+    /// shadow passes that draw them.
+    pub fn skin_cb(&mut self, gpu: &Gpu) -> Option<wgpu::CommandBuffer> {
+        self.buf.encode_cb(gpu)
+    }
+
     pub fn prepare(&mut self, gpu: &Gpu, cam: Vec3, frustum: &Frustum, hidden: bool, alpha: f32) {
         self.buf.clear();
+        self.buf.gpu_skin = true;
         let tables = self.night_lights.as_ref().and_then(|_| crate::render::LAMP_TABLES.read().ok()?.clone());
         let mut local: Vec<(Quat, Vec3)> = Vec::new();
         // (the LOD of `pick_lods`; a walker it has not seen - none in a normal frame - by the same

@@ -981,9 +981,9 @@ pub struct SkinBuffer {
     verts: Vec<Vertex>,
     indices: Vec<u32>,
     /// D59: this buffer's parts are skinned on the GPU (`skin_cs.wgsl`, bit for bit the CPU's `skin_vertex` - test
-    /// `gpu_skin_matches_the_cpu`), recorded into the frame's command encoder by `encode` (the owner sets it: the
-    /// drivers, whose buffer no shadow pass reads before it is skinned). A part with face shapes or wind stays on the
-    /// CPU. MCLA_SKIN_CPU=1: all on the CPU, as before.
+    /// `gpu_skin_matches_the_cpu`), recorded by `encode` / `encode_cb` (the owner sets it: the drivers into the frame's
+    /// encoder; the walkers and the scenes' cast in a command buffer submitted ahead of their shadow passes). A part with
+    /// face shapes or wind stays on the CPU. MCLA_SKIN_CPU=1: all on the CPU, as before.
     pub gpu_skin: bool,
     /// this frame's vertex count (CPU runs and GPU jobs)
     nverts: u32,
@@ -996,6 +996,10 @@ pub struct SkinBuffer {
     device: Option<wgpu::Device>,
     /// bumped whenever the vertex buffer is made again (the GPU skinning's bind group names it)
     vb_gen: u64,
+    /// MCLA_SKIN_CHECK=1: the CPU's vertices of this frame's GPU jobs (where each sits, its vertices), and the last
+    /// frame's GPU result read back with them (compared word for word at the next `clear`)
+    check: Vec<(u32, Vec<Vertex>)>,
+    check_rb: Option<(wgpu::Buffer, Vec<(u32, Vec<Vertex>)>)>,
     draws: Vec<(Arc<wgpu::BindGroup>, u32, u32)>,
     vb: Option<wgpu::Buffer>,
     ib: Option<wgpu::Buffer>,
@@ -1065,6 +1069,10 @@ fn fig_object(gpu: &Gpu, u: &crate::render::ObjectUniform) -> crate::render::Obj
 
 impl SkinBuffer {
     pub fn clear(&mut self) {
+        if let Some((rb, want)) = self.check_rb.take() {
+            skin_check_compare(self.device.as_ref().unwrap(), &rb, &want);
+        }
+        self.check.clear();
         self.verts.clear();
         self.indices.clear();
         self.nverts = 0;
@@ -1175,6 +1183,9 @@ impl SkinBuffer {
                 });
                 let flags = chars as u32 | (part.alpha as u32) << 1;
                 self.gpu_jobs.push(GpuSkinJob { count: n, src_off, dst: base, mat_off: mo, flags, fill: u32::from_le_bytes(fill) });
+                if skin_check() {
+                    self.check.push((base, part.verts.iter().map(|v| skin_vertex(&self.skin, v, v.pos, chars, part.alpha, fill, None)).collect()));
+                }
             } else {
                 let start = self.verts.len() as u32;
                 for (vi, v) in part.verts.iter().enumerate() {
@@ -1209,6 +1220,17 @@ impl SkinBuffer {
         self.world.get(bone).map(|m| m.w_axis.truncate())
     }
 
+    /// The same in a command buffer of its own (the walkers' and the scenes' buffers: submitted ahead of the shadow
+    /// passes that draw them, which are recorded beside their prepare - main.rs), None with nothing skinned on the GPU.
+    pub fn encode_cb(&mut self, gpu: &Gpu) -> Option<wgpu::CommandBuffer> {
+        if self.gpu_jobs.is_empty() || self.cs.is_none() {
+            return None;
+        }
+        let mut enc = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("skin cs") });
+        self.encode(gpu, &mut enc);
+        Some(enc.finish())
+    }
+
     /// Records this frame's GPU skinning (after `upload`) into the frame's encoder, ahead of the passes that draw it.
     pub fn encode(&mut self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder) {
         let (Some(cs), Some(vb)) = (self.cs.as_mut(), self.vb.as_ref()) else { return };
@@ -1216,6 +1238,12 @@ impl SkinBuffer {
             return;
         }
         cs.encode(&gpu.device, enc, vb, self.vb_gen);
+        if !self.check.is_empty() {
+            let size = self.nverts as u64 * std::mem::size_of::<Vertex>() as u64;
+            let rb = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("skin check"), size, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+            enc.copy_buffer_to_buffer(vb, 0, &rb, 0, size);
+            self.check_rb = Some((rb, std::mem::take(&mut self.check)));
+        }
     }
 
     pub fn upload(&mut self, gpu: &Gpu) {
@@ -1230,7 +1258,7 @@ impl SkinBuffer {
             self.vb_cap = (nv * 3 / 2).max(16384);
             self.vb_gen += 1;
             // (STORAGE: the GPU jobs write it - skin_cs.wgsl)
-            self.vb = Some(gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("skin vb"), size: (self.vb_cap * std::mem::size_of::<Vertex>()) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE, mapped_at_creation: false }));
+            self.vb = Some(gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("skin vb"), size: (self.vb_cap * std::mem::size_of::<Vertex>()) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | if skin_check() { wgpu::BufferUsages::COPY_SRC } else { wgpu::BufferUsages::empty() }, mapped_at_creation: false }));
         }
         if self.ib.is_none() || self.ib_cap < self.indices.len() {
             self.ib_cap = (self.indices.len() * 3 / 2).max(65536);
@@ -1455,6 +1483,44 @@ fn skin_vertex(skin: &[Mat4], v: &SkinVert, bind: Vec3, chars: bool, alpha: bool
 fn skin_on_cpu() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *V.get_or_init(|| std::env::var_os("MCLA_SKIN_CPU").is_some())
+}
+
+/// MCLA_SKIN_CHECK=1: the GPU skinning's vertices read back each frame and compared word for word with the CPU's
+/// `skin_vertex` of the same parts and matrices (the game's own figures; a total is logged every 300 frames)
+fn skin_check() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var_os("MCLA_SKIN_CHECK").is_some() && !skin_on_cpu())
+}
+
+fn skin_check_compare(dev: &wgpu::Device, rb: &wgpu::Buffer, want: &[(u32, Vec<Vertex>)]) {
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    static FRAMES: AtomicU64 = AtomicU64::new(0);
+    static VERTS: AtomicU64 = AtomicU64::new(0);
+    static WORDS: AtomicU64 = AtomicU64::new(0);
+    static MAXD: AtomicU64 = AtomicU64::new(0);
+    let sl = rb.slice(..);
+    sl.map_async(wgpu::MapMode::Read, |_| {});
+    let _ = dev.poll(wgpu::Maintain::Wait);
+    {
+        let got: &[u8] = &sl.get_mapped_range();
+        let vsz = std::mem::size_of::<Vertex>();
+        for (dst, vs) in want {
+            let g: &[u32] = bytemuck::cast_slice(&got[*dst as usize * vsz..(*dst as usize + vs.len()) * vsz]);
+            let w: &[u32] = bytemuck::cast_slice(vs);
+            for (a, b) in g.iter().zip(w) {
+                if a != b {
+                    WORDS.fetch_add(1, Relaxed);
+                    MAXD.fetch_max((*a as i64 - *b as i64).unsigned_abs(), Relaxed);
+                }
+            }
+            VERTS.fetch_add(vs.len() as u64, Relaxed);
+        }
+    }
+    rb.unmap();
+    let f = FRAMES.fetch_add(1, Relaxed) + 1;
+    if f % 300 == 0 {
+        log::info!("skin check: {} buffers-frames, {} vertices, {} words differ (max word distance {})", f, VERTS.load(Relaxed), WORDS.load(Relaxed), MAXD.load(Relaxed));
+    }
 }
 
 /// A new part's id (the GPU skinning's source arena keeps each part's vertices under it).

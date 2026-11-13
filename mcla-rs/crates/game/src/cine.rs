@@ -1368,8 +1368,15 @@ impl Cine {
 
     /// Skin the characters at the scene's time.
     /// `alpha`: the render alpha the cast is drawn at (`Scene::draw_t`; 1 = the tick's end).
+    /// This frame's GPU skinning of the scenes' cast and the hangouts' people (D59.gpu-skin), as a command buffer
+    /// main.rs submits ahead of the shadow passes that draw them.
+    pub fn skin_cb(&mut self, gpu: &Gpu) -> Option<wgpu::CommandBuffer> {
+        self.buf.encode_cb(gpu)
+    }
+
     pub fn prepare(&mut self, gpu: &Gpu, alpha: f32) {
         self.buf.clear();
+        self.buf.gpu_skin = true;
         let mut local: Vec<(Quat, Vec3)> = Vec::new();
         let steps = self.steps.map(|n| n + 1).or_else(|| std::env::var_os("MCLA_DRAW_STEPS").map(|_| 0));
         self.steps = steps;

@@ -13022,6 +13022,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             if cine_old {
                 self.cine.prepare(&gpu, ped_alpha);
             }
+            // (D59.gpu-skin: the walkers' and the scenes' GPU skinning, in command buffers ahead of the shadow passes that
+            // draw them - as on the CPU path, whose vertex writes land before every pass)
+            for cb in [self.peds.skin_cb(&gpu), self.cine.skin_cb(&gpu)].into_iter().flatten() {
+                early_cbs.push(cb);
+            }
             parts.sort_by_key(|p| p.0);
             for (j, cb, n, sec_n) in parts {
                 if j == 0 {
