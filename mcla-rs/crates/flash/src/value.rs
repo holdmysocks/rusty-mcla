@@ -203,19 +203,33 @@ pub fn atoi(s: &str) -> i32 {
 }
 
 /// rage's string hash (Jenkins one-at-a-time over lower-case ASCII).
-pub fn hash(s: &str) -> u32 {
+pub const fn hash(s: &str) -> u32 {
+    let b = s.as_bytes();
     let mut h: u32 = 0;
-    for mut c in s.bytes() {
+    let mut i = 0;
+    while i < b.len() {
+        let mut c = b[i];
         if c.is_ascii_uppercase() {
             c += 32;
         }
         h = h.wrapping_add(c as u32);
         h = h.wrapping_add(h << 10);
         h ^= h >> 6;
+        i += 1;
     }
     h = h.wrapping_add(h << 3);
     h ^= h >> 11;
     h.wrapping_add(h << 15)
+}
+
+/// `hash` of a literal, worked out when the program is built (D59: the property names' hashes were made again on
+/// every member lookup)
+#[macro_export]
+macro_rules! hc {
+    ($s:literal) => {{
+        const H: u32 = $crate::value::hash($s);
+        H
+    }};
 }
 
 #[cfg(test)]

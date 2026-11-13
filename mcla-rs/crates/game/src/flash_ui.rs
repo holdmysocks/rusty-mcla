@@ -2982,3 +2982,56 @@ mod music_key_tests {
         assert_eq!(k.hold, 0.5);
     }
 }
+
+/// D59: the UI movies' per-frame cost, timed offline, and a fingerprint of what they draw (every frame's shapes hashed),
+/// so a faster Flash path can be checked for the same output: MCLA_DATA_DIR=<data> cargo test --release -p mcla
+/// ui_movies_cost -- --ignored --nocapture
+#[cfg(test)]
+mod ui_cost {
+    use super::*;
+    use std::hash::{Hash, Hasher};
+
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc"]
+    fn ui_movies_cost() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let strings = StringTable::parse(&std::fs::read(Path::new(&dir).join("ui/0xa4c1e8fa")).unwrap()).unwrap();
+        let shared = UiShared { textures: Arc::new(HashMap::new()), strings: Arc::new(strings), logic: Arc::new(crate::menu3d::UiLogic::load(&dir)) };
+        let mut hud = FlashHud::load(&dir, &shared).expect("hud");
+        let mut popup = FlashMenu::load(&dir, POPUP_MOVIE, [0.0, 0.0], &shared).expect("popup");
+        let mut map = FlashMinimap::load(&dir, &shared).expect("minimap");
+        let ctx = egui::Context::default();
+        let frames = std::env::var("MCLA_UI_COST_FRAMES").ok().and_then(|v| v.parse().ok()).unwrap_or(3000usize);
+        let dt = 1.0 / 60.0;
+        let (mut t_hud, mut t_popup, mut t_map, mut t_paint) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+        let mut fp = std::collections::hash_map::DefaultHasher::new();
+        for f in 0..frames {
+            let t = f as f32 * dt;
+            let info = HudInfo { speed_kmh: 60.0 + 40.0 * (t * 0.3).sin(), speed_abs: (60.0 + 40.0 * (t * 0.3).sin()) / 3.6, gear: 1 + (t as i32 / 3) % 5, rpm: 2000.0 + 3000.0 * (t * 1.7).sin().abs(), redline: 7000.0, nitro: 0.5, damage: (t * 0.01).min(1.0), player_heading: t * 0.2, night: false, ..HudInfo::default() };
+            let raw = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1920.0, 1080.0))), ..Default::default() };
+            let out = ctx.run(raw, |ctx| {
+                let a = std::time::Instant::now();
+                hud.drive(&info, None, dt);
+                let b = std::time::Instant::now();
+                popup.movie.player.update(dt);
+                let c = std::time::Instant::now();
+                map.drive(&info, Some(t * 10.0), dt);
+                let d = std::time::Instant::now();
+                hud.movie.paint(ctx, &ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("h"))));
+                popup.movie.paint(ctx, &ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("p"))));
+                map.movie.paint(ctx, &ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("m"))));
+                let e = std::time::Instant::now();
+                t_hud += (b - a).as_secs_f64();
+                t_popup += (c - b).as_secs_f64();
+                t_map += (d - c).as_secs_f64();
+                t_paint += (e - d).as_secs_f64();
+            });
+            // (the fingerprint: every shape's debug text)
+            for s in &out.shapes {
+                format!("{:?}", s.shape).hash(&mut fp);
+            }
+        }
+        let us = |s: f64| s * 1e6 / frames as f64;
+        println!("ui cost per frame: hud drive {:.1} us, popup update {:.1} us, map drive {:.1} us, paint (3 movies) {:.1} us; fingerprint {:016x}", us(t_hud), us(t_popup), us(t_map), us(t_paint), fp.finish());
+    }
+}

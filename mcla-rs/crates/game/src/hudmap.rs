@@ -796,6 +796,7 @@ impl State {
     /// Draw the minimap target for frame `f` and hand it out as a texture.
     pub fn minimap(&mut self, ctx: &egui::Context, f: &Frame, els: &[Element], roads: Option<&crate::mapmesh::RoadMap>) -> egui::TextureHandle {
         let q = build(&self.tune, &mut self.assets, f, els, &[], false);
+        crate::uiprof::mark("mm_build");
         // (MCLA_HUDMAP_LOG=1: what is on the map, every 300 frames)
         if self.frame_no % 300 == 1 && std::env::var("MCLA_HUDMAP_LOG").is_ok() {
             let mut kinds: std::collections::BTreeMap<String, usize> = Default::default();
@@ -809,6 +810,7 @@ impl State {
             let (w, h) = (self.target.w, self.target.h);
             let tex = self.tex.get_or_insert_with(|| ctx.load_texture("hudmap:minimap", egui::ColorImage::new([w, h], egui::Color32::TRANSPARENT), egui::TextureOptions::LINEAR)).clone();
             crate::minimap_gpu::queue(w, h, &mut self.assets, &self.tune, roads, f, &q, [0.4, 0.4, 0.4], tex.id());
+            crate::uiprof::mark("mm_queue");
             // (MCLA_SELF_DUMP: the CPU's picture of the same frame beside the GPU's, as the texture holds it)
             if let Ok(dir) = std::env::var("MCLA_SELF_DUMP") {
                 render_minimap(&mut self.target, &mut self.assets, &self.tune, roads, f, &q, [0.4, 0.4, 0.4]);

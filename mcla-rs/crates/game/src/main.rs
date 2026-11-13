@@ -13,6 +13,7 @@ mod pads;
 mod rewards;
 mod vinyl;
 mod vinyl_group;
+mod uiprof;
 #[cfg(test)]
 mod carparts_small_tests;
 mod ai;
@@ -12409,6 +12410,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let vehicles = &self.vehicles;
             let world_ref = &world;
             let tu0 = Instant::now();
+            crate::uiprof::start();
             let out = eg.ctx.run(raw, |ctx| {
                 action = game.ui(ctx, vehicles, world_ref, hud);
                 // (the port's FPS counter, over everything but a photo: hooks.rs)
@@ -12436,6 +12438,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     });
                 }
             });
+            crate::uiprof::mark("end");
+            crate::uiprof::frame_end();
             if action != MenuAction::None {
                 self.pending_action = action;
             }

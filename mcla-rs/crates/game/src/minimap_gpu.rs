@@ -206,6 +206,7 @@ pub fn queue(w: usize, h: usize, assets: &mut Assets, tune: &Tune, roads: Option
                 );
             }
         }
+        crate::uiprof::mark("mmq_roads");
         for d in &q.draws {
             if let Some(m) = assets.mesh(d.mesh) {
                 let ripple = (d.mesh == "target_ripple").then(|| Ripple::new(tune, f.tg, (d.m.w_axis.truncate() - f.cam_pos).length()));
@@ -213,6 +214,7 @@ pub fn queue(w: usize, h: usize, assets: &mut Assets, tune: &Tune, roads: Option
             }
         }
     }
+    crate::uiprof::mark("mmq_draws");
     // (`Target::rim`: after the mask - its alpha goes to the second attachment)
     let (cx, cy) = (w as f32 * 0.5, h as f32 * 0.5);
     for sel in [false, true] {

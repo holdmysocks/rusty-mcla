@@ -5370,6 +5370,7 @@ impl Game {
     fn ui_screens(&mut self, ctx: &egui::Context, vehicles: &Vehicles, world: &World, hud: HudInfo) -> MenuAction {
         let race_dt = std::mem::take(&mut self.ui_sim_dt);
         self.load_ui(ctx);
+        crate::uiprof::mark("load_ui");
         // (the start-up movie, boot.rs: once the UI's shared textures are there)
         if let (Some(b), Some(sh)) = (self.boot.as_mut(), self.ui_shared.as_ref()) {
             b.load(&self.data_dir, sh);
@@ -5602,6 +5603,7 @@ impl Game {
             }
             _ => {}
         }
+        crate::uiprof::mark("early");
         let screen = ctx.screen_rect();
         let dark = egui::Color32::from_rgba_unmultiplied(8, 10, 16, 215);
         let accent = egui::Color32::from_rgb(255, 140, 0);
@@ -5666,6 +5668,7 @@ impl Game {
                 }
             }
         }
+        crate::uiprof::mark("b_nav");
         let up = std::mem::take(&mut self.nav_up);
         let down = std::mem::take(&mut self.nav_down);
         let left = std::mem::take(&mut self.nav_left);
@@ -5805,10 +5808,12 @@ impl Game {
                 self.open_message_box(&id, MenuAction::None);
             }
         }
+        crate::uiprof::mark("b_hooks");
         // a message box (popup movie) takes the input while it is up
         let boxed = self.message_box.is_some();
         // (the start-up boxes answer ACCEPT alone)
         self.save_dialog_step();
+        crate::uiprof::mark("b_savedlg");
         let box_back = back && !(self.fresh_game && matches!(self.save_box, 1 | 3 | 4 | 6 | 7)) && self.save_dlg.is_none();
         if let Some(a) = self.message_box_ui(ctx, up, down, enter, box_back) {
             action = a;
@@ -5911,6 +5916,7 @@ impl Game {
             self.menu_confirm = 0;
             self.mc4_misc_idle();
         }
+        crate::uiprof::mark("b_msgbox");
         let (up, down, left, right, enter, back, tab_prev, tab_next) = if boxed { (false, false, false, false, false, false, false, false) } else { (up, down, left, right, enter, back, tab_prev, tab_next) };
 
         // while driving with the HUD movie, messages go to its splash queue (the top
@@ -5938,6 +5944,7 @@ impl Game {
         // With the phone movie the call comes in on the phone, as in the original: the
         // message on its screen, the phone sliding up at the lower left.
         // (not over the black ARRESTED / TICKETED panel)
+        crate::uiprof::mark("boxes");
         let panel_up = self.arrest_panel.map_or(false, |p| p.0 <= 0.0) || (self.mode == Mode::Paused && self.flash_menu.is_some());
         if let (Some(fp), Some(meshes), false) = (self.flash_phone.as_mut(), self.ui_meshes.as_mut(), panel_up) {
             let dt = ctx.input(|i| i.stable_dt).min(0.1);
@@ -6003,6 +6010,7 @@ impl Game {
             }
         }
 
+        crate::uiprof::mark("phone");
         match self.mode {
             Mode::MainMenu => {
                 // the start screen: the original has no main menu, the career begins right away
@@ -10775,11 +10783,16 @@ impl Game {
                             }
                         }
                     }
+                    crate::uiprof::mark("roam_pre");
                     self.city_map(ctx, vehicles, world, hud);
+                    crate::uiprof::mark("city_map");
                     self.mission_log_ui(ctx, [up, down, left, right, enter], tab_prev, tab_next, hud.map_vp, hud.player_pos, hud.police_state > 1);
                 } else {
+                    crate::uiprof::mark("mission_log");
                     self.hook_icons(ctx, vehicles, &hud);
+                    crate::uiprof::mark("hook_icons");
                     self.race_markers(ctx, vehicles, &hud);
+                    crate::uiprof::mark("race_markers");
                     // (the first target set brings the MINI MAP box - `ng_tut_minimap`: "GPS Targets
                     // will appear highlighted in the Mini Map...", CONTINUE (A))
                     if self.tutorial_box.is_none() && self.mode == Mode::FreeRoam && self.career.stats.contains_key("tut:target_set") && !self.career.stats.contains_key("tut:target") {
@@ -10831,7 +10844,9 @@ impl Game {
                             self.tutorial_box = Some((title, text, 0.0, left));
                         }
                     }
+                    crate::uiprof::mark("tutorial");
                     self.hud(ctx, vehicles, world, hud);
+                    crate::uiprof::mark("hud_egui");
                     // (step 19c: the thirty seconds of a run to the line are the race clock's)
                     let race_hud = self.race_hud(vehicles, &hud).or_else(|| self.mc4_bmt_hud());
                     let idle_cam = self.idle_cam;
@@ -10896,7 +10911,9 @@ impl Game {
                         // (the camera bar: the view's list place, not passed on while a menu is up)
                         fh.camera(shown_camera, menu_up);
                         // (before GO the movie steps with the race clock: its 3-2-1 ends on the GO tick)
+                        crate::uiprof::mark("hud_road");
                         fh.drive(&hud, race_hud, if self.race.as_ref().map_or(false, |r| r.countdown > 0.0) { race_dt } else { dt });
+                        crate::uiprof::mark("hud_drive");
                         // (test hook MCLA_GO_TRACE=1: the 3-2-1-GO the movie shows, every frame)
                         if std::env::var("MCLA_GO_TRACE").is_ok() {
                             if let Some(r) = self.race.as_ref().filter(|r| r.countdown < 4.0 && r.time < 1.0) {
@@ -10912,6 +10929,7 @@ impl Game {
                         let p = ctx.layer_painter(layer);
                         fh.movie.paint(ctx, &p);
                     }
+                    crate::uiprof::mark("flash_hud");
                     // the cut's black mask (TRANSITIONMOVIE `mask`, mask_color 0) over everything
                     if self.cut_mask > 0.0 {
                         let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("cut_mask"));
@@ -10919,6 +10937,7 @@ impl Game {
                         ctx.layer_painter(layer).rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha((self.cut_mask.clamp(0.0, 1.0) * 255.0).round() as u8));
                     }
                     let hm_els = if self.hm.is_some() { crate::hudmap::elements(self, vehicles, hud.heat >= 2) } else { Vec::new() };
+                    crate::uiprof::mark("hm_elements");
                     // (the one GPS target where it is now - `gps_target_pos`)
                     let gps_tp = self.gps_target_pos();
                     if let (Some(fm), false) = (self.flash_map.as_mut(), (self.hud_map_big && (self.hm.is_none() || crate::hudmap::old_bigmap())) || idle_cam) {
@@ -10995,7 +11014,9 @@ impl Game {
                         let drawn = vehicles.cars.iter().find(|c| c.is_player).map(|c| crate::hudmap::shown(c, vehicles.render_alpha));
                         let (car_pos, rows) = drawn.map_or((hud.player_pos, arrow_rows), |(p, back)| (p, level_rows(back)));
                         let top = gps.filter(|_| arrow_mode == 1).map(|(_, d)| crate::mc4::top_arrow_frame(rows, car_pos, hud.player_pos + d).0.to_array());
+                        crate::uiprof::mark("map_arrow_calc");
                         crate::mc4::top_arrow(&mut self.car_x, &self.data_dir, ctx, top, dt);
+                        crate::uiprof::mark("top_arrow");
                         let gps = gps.filter(|_| arrow_mode == 0).map(|g| g.0);
                         fm.highlight = self.tutorial_box.as_ref().map_or(false, |t| t.0.contains("target") && t.2 <= 0.0);
                         fm.own_map = self.hm.is_some();
@@ -11005,6 +11026,7 @@ impl Game {
                         fm.overhead_title = self.overhead_title.clone();
                         fm.overhead_sub = self.overhead_sub.clone();
                         fm.drive(&hud, gps, dt);
+                        crate::uiprof::mark("map_drive");
                         // The original's map (`hudmap.rs`): the 220x220 target drawn from the movie's
                         // camera, shown by the movie itself in `HUD.renderMe` at its depth (20, between
                         // the ring at 3 and the north marker at 22) over the `miniBG` plate.
@@ -11020,6 +11042,7 @@ impl Game {
                             let target = self.gps_armed && (self.mission_target.is_some() || self.gps_pick.is_some()) && !racing;
                             let strobe_on = self.race.as_ref().map_or(true, |r| r.rivals_checkpoints.is_none());
                             let f = hm.frame(if over { 2 } else { 0 }, vp, eye, if over { 0.0 } else { h }, racing, hud.heat as i32, target, strobe_on);
+                            crate::uiprof::mark("hm_frame");
                             hm.tick_once(ctx, dt, hm_els.iter().filter(|e| matches!(e.kind, crate::hudmap::Kind::Checkpoint(_))).count());
                             if over {
                                 let tex = hm.overhead(ctx, &f, &hm_els, self.road_map.as_ref());
@@ -11028,6 +11051,7 @@ impl Game {
                                 let tex = hm.minimap(ctx, &f, &hm_els, self.road_map.as_ref());
                                 fm.movie.swap_handle("HUD.renderMe", 0x4d4d_0001, tex);
                             }
+                            crate::uiprof::mark("hm_minimap");
                             // map_rotation: world north 500 m from the player through the map camera
                             let n = vp * (car_pos + Vec3::new(0.0, 0.0, -500.0)).extend(1.0);
                             if n.w.abs() > 1e-4 {
@@ -11069,6 +11093,7 @@ impl Game {
                 }
             }
         }
+        crate::uiprof::mark("mode_rest");
         // a garage entry's black (TRANSITIONMOVIE, mask_color 0) over everything
         if self.place_mask.max(self.title_mask).max(self.intro_mask) > 0.0 {
             let layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("place_mask"));

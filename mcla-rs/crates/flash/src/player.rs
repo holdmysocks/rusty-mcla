@@ -262,9 +262,74 @@ pub struct Player {
     /// colour (a pad button's picture shown as a keyboard key: `draw::Builder::key_cap`);
     /// empty = as authored.
     pub key_caps: Vec<(String, String, u32)>,
+    /// each code block's actions decoded once (D59: the same actions, not decoded again on every run), by the
+    /// block's address; the table keeps the block alive, so an address is never another block's
+    dcache: std::collections::HashMap<usize, Rc<DTable>>,
+    /// D59: the register files of finished blocks, kept for the next (each starts all `Undef`, as a new one)
+    reg_pool: Vec<Vec<Value>>,
+    /// D59: the empty constant pool a frame block starts with, and the names a function's preloaded registers read
+    empty_pool: Rc<Vec<Rc<str>>>,
+    scope_names: [Value; 3],
+    /// D59: where each name's first entry stands in `registry` (the registry is only ever added to)
+    reg_index: std::collections::HashMap<u32, usize>,
 }
 
 const MAX_WARNINGS: usize = 200;
+
+/// A code block's decoded actions by byte offset (`Dec` and the offset of the next action)
+struct DTable {
+    _code: Code,
+    slots: std::cell::RefCell<Vec<Option<(Dec, usize)>>>,
+}
+
+/// An action as `exec` runs it: the frequent ones ready to run (a push's strings already made), the others as decoded
+#[derive(Clone)]
+enum Dec {
+    End,
+    Op(u8),
+    Push(Rc<[PushC]>),
+    Pool(Rc<Vec<Rc<str>>>),
+    Store(u8),
+    Jump(i16),
+    If(i16),
+    Other(Rc<Action>),
+}
+
+/// a push record's value: made once, or read from a register / the constant pool when run
+#[derive(Clone)]
+enum PushC {
+    V(Value),
+    Reg(u8),
+    Const(u16),
+}
+
+impl Dec {
+    fn of(a: Action) -> Dec {
+        match a {
+            Action::End => Dec::End,
+            Action::Op(op) => Dec::Op(op),
+            Action::Push(vals) => Dec::Push(
+                vals.into_iter()
+                    .map(|v| match v {
+                        PushValue::Str(s) => PushC::V(Value::str(&s)),
+                        PushValue::Float(f) => PushC::V(Value::Float(f)),
+                        PushValue::Null | PushValue::Undefined => PushC::V(Value::Int(0)),
+                        PushValue::Register(r) => PushC::Reg(r),
+                        PushValue::Bool(b) => PushC::V(Value::Bool(b)),
+                        PushValue::Double(d) => PushC::V(Value::Float(d as f32)),
+                        PushValue::Int(i) => PushC::V(Value::Int(i)),
+                        PushValue::Constant(c) => PushC::Const(c),
+                    })
+                    .collect(),
+            ),
+            Action::ConstantPool(v) => Dec::Pool(Rc::new(v.into_iter().map(|s| Rc::from(s.as_str())).collect())),
+            Action::StoreRegister(r) => Dec::Store(r),
+            Action::Jump(o) => Dec::Jump(o),
+            Action::If(o) => Dec::If(o),
+            other => Dec::Other(Rc::new(other)),
+        }
+    }
+}
 
 impl Player {
     pub fn new(movie: Arc<Movie>) -> Player {
@@ -288,6 +353,11 @@ impl Player {
             warnings: Vec::new(),
             scripts: true,
             key_caps: Vec::new(),
+            dcache: std::collections::HashMap::new(),
+            reg_pool: Vec::new(),
+            empty_pool: Rc::new(Vec::new()),
+            scope_names: [Value::str("_root"), Value::str("_parent"), Value::str("_global")],
+            reg_index: std::collections::HashMap::new(),
         };
         p.global = p.alloc(ObjKind::Script);
         p.root = p.alloc_inst(Inst::new(0, 0, None));
@@ -460,11 +530,13 @@ impl Player {
         Self::reg_native(&mut reg, "Sound", native_sound);
         Self::reg_native(&mut reg, "Color", native_color);
         self.registry = reg;
+        self.index_registry();
     }
 
     /// Register a game native (the registry the original fills from C++).
     pub fn register_native(&mut self, name: &str, f: NativeFn) {
         Self::reg_native(&mut self.registry, name, f);
+        self.index_registry();
     }
 
     /// CRT rand() (F-37931): state x 214013 + 2531011, bits 16..30.
@@ -866,28 +938,28 @@ impl Player {
         let (h, s) = Self::key(name);
         let i = self.inst(id)?;
         let v = match s.as_ref() {
-            _ if h == hash("_name") => Some(Value::Str(i.name.clone())),
-            _ if h == hash("_y") => Some(Value::Float(i.y)),
-            _ if h == hash("_x") => Some(Value::Float(i.x)),
-            _ if h == hash("_global") => Some(Value::Obj(Ref::Obj(self.global))),
-            _ if h == hash("this") => Some(Value::Obj(Ref::Inst(id))),
-            _ if h == hash("_alpha") => Some(Value::Float(i.tint[3] as f32 * (100.0 / 255.0))),
-            _ if h == hash("_root") => Some(Value::Obj(Ref::Inst(self.root))),
-            _ if h == hash("_parent") => Some(Value::Obj(Ref::Inst(i.parent.unwrap_or(id)))),
-            _ if h == hash("_rotation") => Some(Value::Float(i.rotation)),
-            _ if h == hash("_xscale") => Some(Value::Float(i.xscale)),
-            _ if h == hash("_yscale") => Some(Value::Float(i.yscale)),
-            _ if h == hash("textColor") => Some(Value::Int((i.tint[0] as i32) << 16 | (i.tint[1] as i32) << 8 | i.tint[2] as i32)),
-            _ if h == hash("onEnterFrame") => Some(i.on_enter_frame.map_or(Value::Undef, Value::Obj)),
-            _ if h == hash("_width") || h == hash("_height") => {
+            _ if h == crate::hc!("_name") => Some(Value::Str(i.name.clone())),
+            _ if h == crate::hc!("_y") => Some(Value::Float(i.y)),
+            _ if h == crate::hc!("_x") => Some(Value::Float(i.x)),
+            _ if h == crate::hc!("_global") => Some(Value::Obj(Ref::Obj(self.global))),
+            _ if h == crate::hc!("this") => Some(Value::Obj(Ref::Inst(id))),
+            _ if h == crate::hc!("_alpha") => Some(Value::Float(i.tint[3] as f32 * (100.0 / 255.0))),
+            _ if h == crate::hc!("_root") => Some(Value::Obj(Ref::Inst(self.root))),
+            _ if h == crate::hc!("_parent") => Some(Value::Obj(Ref::Inst(i.parent.unwrap_or(id)))),
+            _ if h == crate::hc!("_rotation") => Some(Value::Float(i.rotation)),
+            _ if h == crate::hc!("_xscale") => Some(Value::Float(i.xscale)),
+            _ if h == crate::hc!("_yscale") => Some(Value::Float(i.yscale)),
+            _ if h == crate::hc!("textColor") => Some(Value::Int((i.tint[0] as i32) << 16 | (i.tint[1] as i32) << 8 | i.tint[2] as i32)),
+            _ if h == crate::hc!("onEnterFrame") => Some(i.on_enter_frame.map_or(Value::Undef, Value::Obj)),
+            _ if h == crate::hc!("_width") || h == crate::hc!("_height") => {
                 let b = crate::draw::bounds(self, id);
                 Some(Value::Float(match b {
-                    Some(b) if h == hash("_width") => b[2] - b[0],
+                    Some(b) if h == crate::hc!("_width") => b[2] - b[0],
                     Some(b) => b[3] - b[1],
                     None => 0.0,
                 }))
             }
-            _ if h == hash("text") && i.text.is_some() => Some(Value::Str(i.text.clone().unwrap())),
+            _ if h == crate::hc!("text") && i.text.is_some() => Some(Value::Str(i.text.clone().unwrap())),
             _ => None,
         };
         if v.is_some() {
@@ -909,33 +981,33 @@ impl Player {
         let (h, _) = Self::key(name);
         let Some(i) = self.inst_mut(id) else { return };
         let mut dirty = true;
-        if h == hash("_y") {
+        if h == crate::hc!("_y") {
             i.y = v.to_f32();
-        } else if h == hash("_x") {
+        } else if h == crate::hc!("_x") {
             i.x = v.to_f32();
-        } else if h == hash("_alpha") {
+        } else if h == crate::hc!("_alpha") {
             let a = v.to_i32();
             i.tint[3] = (((a << 8) - a) / 100) as u8;
             dirty = false;
-        } else if h == hash("_rotation") {
+        } else if h == crate::hc!("_rotation") {
             i.rotation = v.to_f32() % 360.0;
-        } else if h == hash("textColor") {
+        } else if h == crate::hc!("textColor") {
             let c = v.to_i32();
             i.tint[0] = (c >> 16) as u8;
             i.tint[1] = (c >> 8) as u8;
             i.tint[2] = c as u8;
             dirty = false;
-        } else if h == hash("_xscale") {
+        } else if h == crate::hc!("_xscale") {
             i.xscale = v.to_f32();
-        } else if h == hash("_yscale") {
+        } else if h == crate::hc!("_yscale") {
             i.yscale = v.to_f32();
-        } else if h == hash("onEnterFrame") {
+        } else if h == crate::hc!("onEnterFrame") {
             i.on_enter_frame = v.obj();
             dirty = false;
-        } else if h == hash("onRelease") {
+        } else if h == crate::hc!("onRelease") {
             i.on_release = v.obj();
             dirty = false;
-        } else if h == hash("text") {
+        } else if h == crate::hc!("text") {
             i.text = Some(v.to_string());
             dirty = false;
         } else {
@@ -964,7 +1036,7 @@ impl Player {
                 return if k >= 0 && (k as usize) < v.len() { Some(v[k as usize].clone()) } else { self.obj_get_script(o, name) };
             }
             ObjKind::Array(v) => {
-                if hash(&name.to_string()) == hash("length") {
+                if hash(&name.to_string()) == crate::hc!("length") {
                     return Some(Value::Int(v.len() as i32));
                 }
             }
@@ -986,10 +1058,10 @@ impl Player {
 
     fn obj_get_script(&mut self, o: ObjId, name: &Value) -> Option<Value> {
         let (h, _) = Self::key(name);
-        if h == hash("this") {
+        if h == crate::hc!("this") {
             return Some(Value::Obj(Ref::Obj(o)));
         }
-        if h == hash("prototype") {
+        if h == crate::hc!("prototype") {
             let p = match self.obj(o)?.prototype {
                 Some(p) => p,
                 None => {
@@ -1006,8 +1078,16 @@ impl Player {
         self.registry_or_global(h)
     }
 
+    /// `reg_index` made again from `registry`: each hash's first entry, as `mget` finds it
+    fn index_registry(&mut self) {
+        self.reg_index.clear();
+        for (k, e) in self.registry.iter().enumerate() {
+            self.reg_index.entry(e.0).or_insert(k);
+        }
+    }
+
     fn registry_or_global(&self, h: u32) -> Option<Value> {
-        if let Some(v) = mget(&self.registry, h) {
+        if let Some(v) = self.reg_index.get(&h).and_then(|&k| self.registry.get(k)).map(|e| &e.2) {
             return Some(v.clone());
         }
         self.obj(self.global).and_then(|g| mget(&g.members, h).cloned())
@@ -1130,7 +1210,7 @@ impl Player {
                     return f(self, Ref::Inst(id), args);
                 }
                 // MovieClip.prototype
-                if let Some(Value::Obj(Ref::Obj(mc))) = mget(&self.registry, hash("MovieClip")).cloned() {
+                if let Some(Value::Obj(Ref::Obj(mc))) = mget(&self.registry, crate::hc!("MovieClip")).cloned() {
                     if let Some(p) = self.obj(mc).and_then(|o| o.prototype) {
                         match self.obj(p).and_then(|o| mget(&o.members, h)).cloned() {
                             Some(Value::Native(f)) => return f(self, Ref::Inst(id), args),
@@ -1197,7 +1277,7 @@ impl Player {
             self.warn("script recursion too deep".into());
             return Value::Undef;
         }
-        let mut regs = vec![Value::Undef; 256];
+        let mut regs = self.take_regs();
         if v2 {
             regs[1] = Value::Obj(f);
             for (k, r) in regs_map.iter().enumerate() {
@@ -1206,8 +1286,9 @@ impl Player {
             let n = regs_map.len();
             // a failed lookup leaves the register alone (with `_global` as the scope,
             // `_root`/`_parent` are not found and the parameter registers survive)
-            for (k, nm) in ["_root", "_parent", "_global"].into_iter().enumerate() {
-                if let Some(v) = self.get_member(f, &Value::str(nm)) {
+            for k in 0..3 {
+                let nm = self.scope_names[k].clone();
+                if let Some(v) = self.get_member(f, &nm) {
                     if 3 + n + k < 256 {
                         regs[3 + n + k] = v;
                     }
@@ -1217,6 +1298,7 @@ impl Player {
         let before = self.ret.len();
         self.depth += 1;
         self.exec(&code, start, start + len, f, &mut regs, pool);
+        self.give_regs(regs);
         self.depth -= 1;
         if self.ret.len() > before {
             self.ret.pop().unwrap()
@@ -1232,10 +1314,24 @@ impl Player {
         if !self.scripts {
             return;
         }
-        let mut regs = vec![Value::Undef; 256];
+        let mut regs = self.take_regs();
         let before = self.ret.len();
-        self.exec(code, 0, code.len(), scope, &mut regs, Rc::new(Vec::new()));
+        let pool = self.empty_pool.clone();
+        self.exec(code, 0, code.len(), scope, &mut regs, pool);
+        self.give_regs(regs);
         self.ret.truncate(before);
+    }
+
+    /// 256 registers, all `Undef` (D59: a kept file when there is one)
+    fn take_regs(&mut self) -> Vec<Value> {
+        let mut r = self.reg_pool.pop().unwrap_or_default();
+        r.resize(256, Value::Undef);
+        r
+    }
+
+    fn give_regs(&mut self, mut r: Vec<Value>) {
+        r.clear();
+        self.reg_pool.push(r);
     }
 
     fn pop(&mut self) -> Value {
@@ -1267,49 +1363,78 @@ impl Player {
         let mut pc = start;
         let mut steps = 0u32;
         let end = end.min(code.len());
+        // (the block's decoded actions: `DTable`)
+        let key = Arc::as_ptr(code) as *const u8 as usize;
+        let table = match self.dcache.get(&key) {
+            Some(t) => t.clone(),
+            None => {
+                let t = Rc::new(DTable { _code: code.clone(), slots: std::cell::RefCell::new(vec![None; code.len()]) });
+                self.dcache.insert(key, t.clone());
+                t
+            }
+        };
         while pc < end {
             steps += 1;
             if steps > 2_000_000 {
                 self.warn("script step limit".into());
                 return;
             }
-            let Some((a, next)) = avm1::decode(code, pc) else { return };
+            let held = table.slots.borrow().get(pc).cloned().flatten();
+            let (d, next) = match held {
+                Some(x) => x,
+                None => {
+                    let Some((a, next)) = avm1::decode(code, pc) else { return };
+                    let d = Dec::of(a);
+                    if let Some(slot) = table.slots.borrow_mut().get_mut(pc) {
+                        *slot = Some((d.clone(), next));
+                    }
+                    (d, next)
+                }
+            };
             pc = next;
-            match a {
-                Action::End => return,
-                Action::Op(op) => {
+            let a = match d {
+                Dec::End => return,
+                Dec::Op(op) => {
                     if self.op(op, scope) {
                         return;
                     }
+                    continue;
                 }
-                Action::ConstantPool(v) => pool = Rc::new(v.into_iter().map(|s| Rc::from(s.as_str())).collect()),
-                Action::Push(vals) => {
-                    for v in vals {
+                Dec::Pool(p) => {
+                    pool = p;
+                    continue;
+                }
+                Dec::Push(vals) => {
+                    for v in vals.iter() {
                         let x = match v {
-                            PushValue::Str(s) => Value::str(&s),
-                            PushValue::Float(f) => Value::Float(f),
-                            PushValue::Null | PushValue::Undefined => Value::Int(0),
-                            PushValue::Register(r) => regs.get(r as usize).cloned().unwrap_or(Value::Undef),
-                            PushValue::Bool(b) => Value::Bool(b),
-                            PushValue::Double(d) => Value::Float(d as f32),
-                            PushValue::Int(i) => Value::Int(i),
-                            PushValue::Constant(c) => pool.get(c as usize).map(|s| Value::Str(s.clone())).unwrap_or(Value::Int(0)),
+                            PushC::V(x) => x.clone(),
+                            PushC::Reg(r) => regs.get(*r as usize).cloned().unwrap_or(Value::Undef),
+                            PushC::Const(c) => pool.get(*c as usize).map(|s| Value::Str(s.clone())).unwrap_or(Value::Int(0)),
                         };
                         self.stack.push(x);
                     }
+                    continue;
                 }
-                Action::StoreRegister(r) => {
+                Dec::Store(r) => {
                     let v = self.stack.last().cloned().unwrap_or(Value::Int(0));
                     if let Some(slot) = regs.get_mut(r as usize) {
                         *slot = v;
                     }
+                    continue;
                 }
-                Action::Jump(o) => pc = (pc as i64 + o as i64).max(0) as usize,
-                Action::If(o) => {
+                Dec::Jump(o) => {
+                    pc = (pc as i64 + o as i64).max(0) as usize;
+                    continue;
+                }
+                Dec::If(o) => {
                     if self.pop().to_bool() {
                         pc = (pc as i64 + o as i64).max(0) as usize;
                     }
+                    continue;
                 }
+                Dec::Other(a) => (*a).clone(),
+            };
+            match a {
                 Action::GotoFrame(f) => {
                     if let Some(t) = self.target_inst(scope) {
                         self.goto(t, f as usize);
@@ -1615,7 +1740,7 @@ impl Player {
                 let name = self.pop();
                 let o = self.pop();
                 let v = match &o {
-                    Value::Str(s) if hash(&name.to_string()) == hash("length") => Value::Int(s.len() as i32),
+                    Value::Str(s) if hash(&name.to_string()) == crate::hc!("length") => Value::Int(s.len() as i32),
                     Value::Obj(r) => match self.get_member(*r, &name) {
                         Some(v) => v,
                         None => {
