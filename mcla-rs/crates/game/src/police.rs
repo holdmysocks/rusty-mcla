@@ -15,7 +15,7 @@ use mcla_formats::rage::navsys::{NavNode, NavSys};
 use std::path::Path;
 
 pub const COP_CAR: &str = "vp_chv_police_96";
-/// m/s to mph as the original multiplies (2.237, the image's constant; F-36879, F-?(82716B20) and the others load it)
+/// m/s to mph as the original multiplies (2.237, the image's constant; F-36879, F-16041 and the others load it)
 const MPH: f32 = 2.237;
 
 #[derive(Default)]
