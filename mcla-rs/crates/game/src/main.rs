@@ -35,6 +35,7 @@ mod offroad;
 mod occluder;
 mod racescript;
 mod raceleave;
+mod storywarp;
 mod checkpoints;
 mod powerups;
 mod pu_draw;
@@ -636,6 +637,10 @@ struct App {
     /// ACCEPT on the payback's panel (form 68): the warp to the place's wait camera - (time, the warp, where
     /// the car is held); then `payback_hold` until `cut_payback_get_keys` starts
     payback_in: Option<(f32, Option<hudmap::CineWarp>, (Vec3, glam::Quat))>,
+    /// a story meeting's STORY_LOCATION_CUT_SIMPLE before its scene (`storywarp`)
+    story_in: Option<storywarp::Entry>,
+    /// the next story scene comes after that warp: no black hold before it (the place is in view)
+    story_warp_start: bool,
     payback_hold: bool,
     /// its black (the scene's fade_to_black, garage_core's fade up)
     garage_mask: boomcam::CutMask,
@@ -1648,6 +1653,8 @@ impl App {
             soak_drive: 0,
             place_view: None,
             payback_in: None,
+            story_in: None,
+            story_warp_start: false,
             payback_hold: false,
             garage_mask: Default::default(),
             garage_out: None,
@@ -4402,8 +4409,14 @@ impl App {
                             p.t = t;
                         }
                     }
-                    self.cine_hold = Some((stream, 0));
+                    // (after the story warp the place is in view: the scene's sound at once)
+                    if std::mem::take(&mut self.story_warp_start) {
+                        self.start_scene_audio(stream.as_deref());
+                    } else {
+                        self.cine_hold = Some((stream, 0));
+                    }
                 } else {
+                    self.story_warp_start = false;
                     self.start_scene_audio(stream.as_deref());
                 }
             }
@@ -4732,6 +4745,18 @@ impl App {
                     let k = hangoutin::SETUPS[si].key;
                     let st = |k: &str| self.game.career.strings.get(k).map(|v| v.to_string()).unwrap_or_default();
                     self.game.place_title = Some((st(k), st(&format!("{}_desc", k))));
+                }
+            }
+            // (the story warp's band runs on while its scene plays - the world, and so the warp's own step, stands still then)
+            if self.cuts.playing.is_some() && self.story_in.as_ref().is_some_and(|s| s.stage == storywarp::Stage::Scene) {
+                let done = self.story_in.as_mut().map_or(true, |si| {
+                    si.clock += dt;
+                    si.climb.is_some() || si.clock >= garagein::TITLE_FROM + garagein::TITLE_LEN
+                });
+                if done {
+                    self.story_in = None;
+                    self.place_view = None;
+                    self.game.place_title = None;
                 }
             }
             self.mode_before = self.game.mode;
@@ -6624,7 +6649,97 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.game.write_save(&self.opt.data_dir);
                 }
             }
-            if self.garage_in.is_none() && self.hangout_entry.is_none() && self.hangout_title.is_none() && self.payback_in.is_none() && !self.payback_hold {
+            // ---- a story meeting's warp (`storywarp`): the flight, the core's poll, the scene or the dive onto it ----
+            if let Some(mut si) = self.story_in.take() {
+                si.t += dt;
+                si.clock += dt;
+                let su = &storywarp::SETUPS[si.setup];
+                let scene_name = format!("story/{}", self.cuts.scenes[si.scene].name.to_ascii_lowercase());
+                let mut keep = true;
+                if si.stage != storywarp::Stage::Scene {
+                    // (the car stands where the core's Racer_Deactivate left it)
+                    if let Some(c) = self.vehicles.player_mut() {
+                        c.state.pos = si.hold.0;
+                        c.state.rot = si.hold.1;
+                        c.state.vel = Vec3::ZERO;
+                        c.state.ang_vel = Vec3::ZERO;
+                    }
+                }
+                match si.stage {
+                    storywarp::Stage::Warp => {
+                        let flight = si.warp.as_ref().map_or(0.0, |w| w.total()).max(si.climb.as_ref().map_or(0.0, |c| c.total()));
+                        let (rows, fov) = match (si.climb.as_mut(), si.warp.as_mut().and_then(|w| w.step(dt))) {
+                            (Some(c), _) => c.step(dt).unwrap_or_else(|| c.end()),
+                            (None, Some(v)) => v,
+                            (None, None) => (storywarp::wait_rows(su), garagein::LENS_DEG.to_radians()),
+                        };
+                        self.place_view = Some((rows.eye, rows.look_point(), rows.r1, fov));
+                        self.game.dive_k = 1.0;
+                        // (IsReadyToLoadStuff at the flight's end, seen at the core's next 100 ms poll; then the scene's script)
+                        if si.t >= storywarp::ready_at(flight) {
+                            let dive_to = si.climb.as_ref().filter(|_| std::env::var("MCLA_NO_CINE").is_err()).and_then(|c| {
+                                let (eye, fwd, up, fov) = self.cine.peek_camera(&scene_name, glam::Mat4::IDENTITY, hudmap::CINE_HANDOVER)?;
+                                let (s, lens) = c.end();
+                                Some(hudmap::CineWarp::new(s, hudmap::CamRows::look_at(eye, eye + fwd, up), Vec3::ZERO, lens, fov))
+                            });
+                            log::info!("story warp: ready at {:.3} s (flight {:.3} s), dive {}", si.t, flight, dive_to.is_some());
+                            if let Some(w) = dive_to {
+                                si.dive = Some(w);
+                                si.stage = storywarp::Stage::Dive;
+                            } else {
+                                // (close: warper state 17 hands over to the scene's camera once the scene is up)
+                                self.cuts.queue(si.scene);
+                                self.story_warp_start = true;
+                                si.stage = storywarp::Stage::Scene;
+                            }
+                            si.t = 0.0;
+                        }
+                    }
+                    storywarp::Stage::Dive => {
+                        // (far: state 15's frames, then state 26's flight; the scene starts 1 s before it lands)
+                        let mut view = si.climb.as_ref().map(|c| c.end()).unwrap_or((storywarp::wait_rows(su), garagein::LENS_DEG.to_radians()));
+                        if si.t >= garagein::DIVE_WAIT {
+                            if let Some(w) = si.dive.as_mut() {
+                                if let Some(v) = w.step(dt) {
+                                    view = v;
+                                }
+                                if si.t - garagein::DIVE_WAIT >= w.total() - hudmap::CINE_HANDOVER {
+                                    self.cuts.queue(si.scene);
+                                    self.story_warp_start = true;
+                                    si.stage = storywarp::Stage::Scene;
+                                    si.t = 0.0;
+                                }
+                            }
+                        }
+                        self.place_view = Some((view.0.eye, view.0.look_point(), view.0.r1, view.1));
+                        self.game.dive_k = 1.0;
+                    }
+                    storywarp::Stage::Scene => {
+                        // (the dive still flying over the scene's first second; close, the warp's end held until the
+                        // scene's camera is up - warper state 17)
+                        let flying = si.dive.as_mut().and_then(|w| w.step(dt));
+                        let waiting = si.climb.is_none() && self.cuts.playing.is_none();
+                        self.place_view = flying.or_else(|| waiting.then(|| (storywarp::wait_rows(su), garagein::LENS_DEG.to_radians()))).map(|(rows, fov)| (rows.eye, rows.look_point(), rows.r1, fov));
+                        if flying.is_none() {
+                            si.dive = None;
+                        }
+                        keep = si.dive.is_some() || waiting || (si.climb.is_none() && si.clock < garagein::TITLE_FROM + garagein::TITLE_LEN);
+                    }
+                }
+                // ShowLocationName (Warp_Target_Close's Lerp only): the element's location name and description, 0.1 s in for 2 s
+                let shown = si.climb.is_none() && si.clock >= garagein::TITLE_FROM && si.clock < garagein::TITLE_FROM + garagein::TITLE_LEN;
+                self.game.place_title = shown.then(|| storywarp::location_keys(su.element)).flatten().map(|(n, d)| {
+                    let st = |k: &str| self.game.career.strings.get(k).map(|v| v.to_string()).unwrap_or_default();
+                    (st(n), st(d))
+                });
+                if keep {
+                    self.story_in = Some(si);
+                } else {
+                    self.place_view = None;
+                    self.game.place_title = None;
+                }
+            }
+            if self.garage_in.is_none() && self.hangout_entry.is_none() && self.hangout_title.is_none() && self.payback_in.is_none() && !self.payback_hold && self.story_in.is_none() {
                 self.place_view = None;
                 self.game.place_title = None;
             }
@@ -6737,7 +6852,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             // (test hook MCLA_GARAGE_SHOTS=dir: a frame every 6 ticks while a garage entry runs and its black is up)
             if let Ok(dir) = std::env::var("MCLA_GARAGE_SHOTS") {
-                if (self.garage_in.is_some() || self.hangout_entry.is_some() || self.hangout_title.is_some() || self.game.place_mask > 0.0 || self.cine.playing.is_some()) && self.tick_no % 6 == 0 {
+                if (self.garage_in.is_some() || self.hangout_entry.is_some() || self.hangout_title.is_some() || self.story_in.is_some() || self.game.place_mask > 0.0 || self.cine.playing.is_some()) && self.tick_no % 6 == 0 {
                     log::info!("garage shot {} stage {:?} mask {:.2} title {} placed {:?} car {:?}", self.tick_no, self.garage_in.as_ref().map(|g| (g.stage, g.clock)), self.game.place_mask, self.game.place_title.is_some(), self.garage_return.is_some(), self.vehicles.player().map(|c| c.state.pos));
                     self.photo_request = Some(format!("{}/g_{:05}.png", dir, self.tick_no));
                 }
@@ -6938,7 +7053,22 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         let scene = self.cuts.for_mission(&id, night);
                         log::info!("career: story scene of {} ({:?})", id, scene.map(|i| self.cuts.scenes[i].name.clone()));
                         if let Some(i) = scene.filter(|_| std::env::var("MCLA_NO_CUTS").is_err() && (self.opt.shot.is_none() || std::env::var("MCLA_CUTS").is_ok())) {
-                            self.cuts.queue(i);
+                            // (the nine cores that warp first: Warper_TransitionTo('STORY_LOCATION_CUT_SIMPLE') - `storywarp`)
+                            let w = storywarp::of_id(&id).filter(|_| self.story_in.is_none() && std::env::var("MCLA_NO_STORY_WARP").is_err());
+                            match (w, self.vehicles.player().map(|c| (c.state.pos, c.state.rot))) {
+                                (Some(k), Some(hold)) => {
+                                    let e = storywarp::wait_rows(&storywarp::SETUPS[k]);
+                                    let look = (self.chase.look - self.chase.pos).normalize_or(Vec3::NEG_Z);
+                                    let st = hudmap::CamRows::look_at(self.cam.pos, self.cam.pos + look, self.boom_up.unwrap_or(Vec3::Y));
+                                    let close = st.eye.distance(e.eye) < garagein::CLOSE;
+                                    let warp = close.then(|| hudmap::CineWarp::target_close(st, e, self.cam.fov_y, garagein::LENS_DEG.to_radians()));
+                                    let car = hudmap::CamRows { r0: hold.1 * Vec3::X, r1: hold.1 * Vec3::Y, r2: hold.1 * Vec3::Z, eye: hold.0 };
+                                    let climb = (!close).then(|| hudmap::CineClimb::new(st, car, self.cam.fov_y, garagein::FAR_LENS_DEG.to_radians(), self.screen_v));
+                                    log::info!("story warp: {} from {:?} to {:?} ({:.1} m, warp {}, climb {:?})", id, st.eye, e.eye, st.eye.distance(e.eye), warp.is_some(), climb.as_ref().map(|c| c.kind()));
+                                    self.story_in = Some(storywarp::Entry { setup: k, scene: i, stage: storywarp::Stage::Warp, t: 0.0, clock: 0.0, warp, climb, dive: None, hold });
+                                }
+                                _ => self.cuts.queue(i),
+                            }
                         }
                     }
                     career::News::Money(m) => {
@@ -7381,7 +7511,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         self.roam.near = None;
                         self.roam.near_is_rival = false;
                         self.roam.near_mission = None;
-                    } else if let Some(race) = (if self.game.bmt_end.is_some() { None } else { self.roam.player_state = self.crash_bits as u32; self.roam.scene_busy = self.cuts.playing.is_some() || self.cuts.has_pending() || self.cine.playing.is_some(); self.roam.update(&mut self.game, &mut self.vehicles, &mut gpu, &mut world, flash, sim_dt) }).filter(|&race| {
+                    } else if let Some(race) = (if self.game.bmt_end.is_some() { None } else { self.roam.player_state = self.crash_bits as u32; self.roam.scene_busy = self.story_in.is_some() || self.cuts.playing.is_some() || self.cuts.has_pending() || self.cine.playing.is_some(); self.roam.update(&mut self.game, &mut self.vehicles, &mut gpu, &mut world, flash, sim_dt) }).filter(|&race| {
                         // (a beat me there run's end comes first: its race-over sequence or menu - `Game::bmt_end`)
                         let Some((place, rep, wrecked)) = self.roam.bmt_over.take() else { return true };
                         self.game.bmt_end = Some(game::BmtEnd { race, hookman: self.roam.won_against_rival, place, rep, wrecked, t: 0.0, sel: 0 });
@@ -15162,7 +15292,7 @@ impl App {
         // (the warper's moves: the start-up flight, the race-start warp, the climb, garage / hangout /
         // payback entries and the garage's way out - *(approx.)* which of the gates above holds them is
         // not read; the port's warps hold the car as a scene does)
-        let warping = g.start_warp_on || self.warp.is_some() || self.climb.is_some() || self.garage_in.is_some() || self.garage_out.is_some() || self.hangout_entry.is_some() || self.payback_in.is_some();
+        let warping = g.start_warp_on || self.warp.is_some() || self.climb.is_some() || self.garage_in.is_some() || self.garage_out.is_some() || self.hangout_entry.is_some() || self.payback_in.is_some() || self.story_in.as_ref().is_some_and(|s| s.stage != storywarp::Stage::Scene);
         // (the race's last three seconds before GO, and the race's end - PostRace / race over)
         let race_gate = g.race.as_ref().map_or(false, |r| r.countdown > 0.0 && r.countdown <= 3.0) || g.race_end_t.is_some();
         // (form 108 visible - F-38972 asks its vt+60: the lessons' "ease to pause" from its start to the "ease from
