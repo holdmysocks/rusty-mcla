@@ -12703,6 +12703,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         let unit = |p: glam::Vec4| p / p.truncate().length().max(1e-9);
                         [unit(cvp.row(3) + cvp.row(0)), unit(cvp.row(3) - cvp.row(0)), unit(cvp.row(3) + cvp.row(1)), unit(cvp.row(3) - cvp.row(1))]
                     };
+                    let tq0 = std::time::Instant::now();
                     for (detailed, sec) in loaded_cast().map(|s| (true, s)).chain(sets_cast().map(|s| (false, s))) {
                         let (Some(vb), Some(ib)) = (sec.vb.as_ref(), sec.ib.as_ref()) else { continue };
                         if let (true, Some((eye, d, main_pl, blend))) = (detailed, casc_sel.as_ref()) {
@@ -12813,6 +12814,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             sec_n += 1;
                         }
                     }
+                    let tq1 = std::time::Instant::now();
                     // (cars: those within the tile's far slice of the camera, and a car's length more)
                     // (2026-10-15: into the first two tiles only - every capture has its 2 x 93
                     // VS_CarShadowDepthLocal draws in two tiles and none in the other two; where the
@@ -12835,9 +12837,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     if let Some(s) = &cine_shadow {
                         s.draw(&mut sp, gpu, &mut n);
                     }
+                    let tq2 = std::time::Instant::now();
                     sp.set_pipeline(if gpu.casc_cull_kinds & render::CASC_CULL_PROP != 0 { &gpu.pipeline_casc_inst_cull } else { &gpu.pipeline_casc_inst });
                     sp.set_bind_group(3, &gpu.identity_obj.bg, &[]);
                     self.props.draw(&mut sp, &gpu, self.cam.pos, &lf, None, &mut n);
+                    if passprof::on() {
+                        passprof::job(9, (tq1 - tq0).as_secs_f64() * 1000.0);
+                        passprof::job(10, (tq2 - tq1).as_secs_f64() * 1000.0);
+                        passprof::job(11, tq2.elapsed().as_secs_f64() * 1000.0);
+                    }
                 }
                 (e.finish(), n + sec_n)
             };
@@ -12912,21 +12920,33 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         6 => refl_on,
                         _ => night_fc_on,
                     })
-                    .map(|j| match j {
-                        0 => {
-                            let (c, n, s) = shadow_job();
-                            (j, c, n, s)
+                    .map(|j| {
+                        let t0 = std::time::Instant::now();
+                        let r = match j {
+                            0 => {
+                                let (c, n, s) = shadow_job();
+                                (j, c, n, s)
+                            }
+                            1..=4 => {
+                                let (c, n) = casc_job(j - 1);
+                                (j, c, n, 0)
+                            }
+                            5 => (j, collector_job(), 0, 0),
+                            6 => (j, reflection_job(), 0, 0),
+                            _ => (j, night_job(), 0, 0),
+                        };
+                        if passprof::on() {
+                            passprof::job(j, t0.elapsed().as_secs_f64() * 1000.0);
                         }
-                        1..=4 => {
-                            let (c, n) = casc_job(j - 1);
-                            (j, c, n, 0)
-                        }
-                        5 => (j, collector_job(), 0, 0),
-                        6 => (j, reflection_job(), 0, 0),
-                        _ => (j, night_job(), 0, 0),
+                        r
                     })
                     .collect()
-            }, || rayon::join(|| peds.prepare(gpu, ped_eye, ped_frustum, ped_hidden, ped_alpha), || if let Some(c) = cine_prep { c.prepare(gpu, ped_alpha) }).0));
+            }, || {
+                let t0 = std::time::Instant::now();
+                let r = rayon::join(|| peds.prepare(gpu, ped_eye, ped_frustum, ped_hidden, ped_alpha), || if let Some(c) = cine_prep { c.prepare(gpu, ped_alpha) }).0;
+                passprof::job(8, t0.elapsed().as_secs_f64() * 1000.0);
+                r
+            }));
             if cine_old {
                 self.cine.prepare(&gpu, ped_alpha);
             }
@@ -13436,6 +13456,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
             }
         }
+        passprof::mark("environment: cube");
         if let Some(ef) = env_frustum.as_ref() {
             let mut ep = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("environment"),
@@ -13534,6 +13555,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 ep.draw(0..4, 0..env_glows);
             }
         }
+        passprof::mark("environment: blur+mips");
         // ... and its blurred copy, for the paint's soft specular
         if env_frustum.is_some() {
             for face in 0..6u32 {
@@ -13552,8 +13574,16 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 bp.set_bind_group(0, &gpu.env_blur_bg, &[]);
                 bp.draw(0..3, face..face + 1);
             }
+            passprof::mark("environment: mips");
             // ... and its levels 1 .. 3, as the original's map has (PSFastMipMap; render/env_mip.wgsl)
+            // (D59: only the face drawn this frame. A level is a box of the level above within its own face (clamped at the
+            // face's edge), and level 0 of the other five faces is as it was when they were last mipped, so their levels
+            // would come out the same texels. MCLA_ENV_MIP_ALL=1: all six faces every frame, as before, for the A/B check)
+            let mip_all = std::env::var("MCLA_ENV_MIP_ALL").is_ok();
             for (k, view) in gpu.env_mip_views.iter().enumerate() {
+                if !mip_all && k % 6 != env_face {
+                    continue;
+                }
                 let mut mp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("environment mips"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment { view, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } })],
@@ -13566,6 +13596,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 mp.draw(0..3, 0..1);
             }
         }
+        passprof::mark("environment: set_scene");
         render::ms::set_scene(gpu.scene_n);
         passprof::mark("city");
         // (the city pass as two passes - docs/PERFORMANCE.md 2026-10-24: A, the sky and the opaque sectors, recorded on
@@ -14122,6 +14153,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             c.set((acc, n));
         });
+        // (MCLA_ENV_MIP_CHECK=1: every 7th frame, the cube's mips made one face a frame against all six re-mipped; D59)
+        if self.frame_no % 7 == 0 && std::env::var("MCLA_ENV_MIP_CHECK").is_ok() {
+            let (d, n) = gpu.env_mip_check();
+            log::info!("env mip check: frame {} face {}: {} of {} bytes differ", self.frame_no, self.frame_no % 6, d, n);
+        }
         // (MCLA_ENV_DUMP=<file>: with the screenshot, the cars' environment maps as numbers)
         if shot_buf.is_some() {
             if let Ok(p) = std::env::var("MCLA_ENV_DUMP") {

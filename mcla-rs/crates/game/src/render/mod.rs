@@ -4276,6 +4276,55 @@ impl Gpu {
         }
     }
 
+    /// The cars' environment cube's levels 1 .. ENV_MIPS - 1, all six faces, as raw bytes (for the D59 check below).
+    fn env_mips_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        for level in 1..ENV_MIPS {
+            let size = ENV_SIZE >> level;
+            let bpr = (size * 8 + 255) / 256 * 256;
+            let buf = self.device.create_buffer(&wgpu::BufferDescriptor { label: Some("env mip check"), size: (bpr * size * 6) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
+            let mut enc = self.device.create_command_encoder(&Default::default());
+            enc.copy_texture_to_buffer(
+                wgpu::TexelCopyTextureInfo { texture: &self.env_tex, mip_level: level, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                wgpu::TexelCopyBufferInfo { buffer: &buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(bpr), rows_per_image: Some(size) } },
+                wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 6 },
+            );
+            self.queue.submit([enc.finish()]);
+            let slice = buf.slice(..);
+            slice.map_async(wgpu::MapMode::Read, |_| {});
+            self.device.poll(wgpu::Maintain::Wait);
+            let data = slice.get_mapped_range();
+            for row in 0..size * 6 {
+                out.extend_from_slice(&data[(row * bpr) as usize..(row * bpr + size * 8) as usize]);
+            }
+            drop(data);
+            buf.unmap();
+        }
+        out
+    }
+
+    /// D59 check (MCLA_ENV_MIP_CHECK=1): the cube's mips as the frame left them (only the face drawn that frame is
+    /// re-mipped) against all six faces re-mipped now from their level 0. Returns (differing bytes, bytes).
+    pub fn env_mip_check(&self) -> (usize, usize) {
+        let a = self.env_mips_bytes();
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        for (k, view) in self.env_mip_views.iter().enumerate() {
+            let mut mp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("environment mips (check)"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment { view, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            mp.set_pipeline(&self.pipeline_env_mip);
+            mp.set_bind_group(0, &self.env_mip_bgs[k], &[]);
+            mp.draw(0..3, 0..1);
+        }
+        self.queue.submit([enc.finish()]);
+        let b = self.env_mips_bytes();
+        (a.iter().zip(&b).filter(|(x, y)| x != y).count(), a.len())
+    }
+
     /// A texture the game reads without gamma decoding (see `upload_as`).
     pub fn upload_texture_raw(&mut self, key: u32, tex: &Texture) -> Arc<GpuTexture> {
         if let Some(t) = self.textures.get(&key) {
