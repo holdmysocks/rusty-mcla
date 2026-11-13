@@ -41,6 +41,7 @@ mod pu_fx;
 mod skidmarks;
 mod sst_trail;
 mod readouts;
+mod livery_bc3;
 mod pu_bolt;
 mod pu_dust;
 mod redlight;

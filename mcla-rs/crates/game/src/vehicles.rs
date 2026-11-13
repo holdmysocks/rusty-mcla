@@ -4469,7 +4469,21 @@ if keep || c.state.pos.distance(center) < 450.0 {
     /// Add a livery painted at run time (plain colour RGBA in the body's unwrap).
     pub fn add_vinyl_texture(&mut self, gpu: &mut Gpu, name: &str, w: u32, h: u32, px: &[u8]) {
         let name = name.to_ascii_lowercase();
-        let tex = Arc::new(crate::render::create_rgba(&gpu.device, &gpu.queue, w, h, px, "vinyl"));
+        // The livery job (F-80492) leaves the painted vinyl in the car's texture as DXT5: its surface copy F-60873 with the
+        // block encoder F-45145 (livery_bc3, bit for bit). MCLA_DEBUG_VIEW=838 keeps the uncompressed paint.
+        let tex = if w % 4 == 0 && h % 4 == 0 && std::env::var("MCLA_DEBUG_VIEW").map_or(true, |v| v.trim() != "838") {
+            let t = mcla_formats::rage::texture::Texture {
+                name: format!("vinyl {name}"),
+                width: w,
+                height: h,
+                format: mcla_formats::rage::xenos::TexFormat::Dxt5,
+                levels: vec![crate::livery_bc3::encode_image(px, w as usize, h as usize)],
+                fetch: [0; 6],
+            };
+            Arc::new(crate::render::upload_as(&gpu.device, &gpu.queue, &t, gpu.bc_supported, true))
+        } else {
+            Arc::new(crate::render::create_rgba(&gpu.device, &gpu.queue, w, h, px, "vinyl"))
+        };
         let white = gpu.white.clone();
         let key = mcla_formats::hash::joaat(&format!("vinyl:{name}")) | 1;
         let bind = gpu.texture_bind_group3_c(&white, &white, &tex, key, key, key, vinyl_aniso());
