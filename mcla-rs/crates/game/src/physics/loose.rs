@@ -837,6 +837,11 @@ pub struct LooseState {
     /// objects whose island a car's step solved this tick with the thrown rider and his bike (vehsim.rs): the islands no
     /// car is in that hold one are not solved again (`step_rest_rider`, which empties it)
     pub merged: Vec<usize>,
+    /// (the game's level step) objects whose island a car's step solved this tick: each car's collide numbers the
+    /// islands from its own view, so after the later cars' collides an island the first car solved can stand under
+    /// another number - the islands no car is in that hold one are not solved again (`step_rest_rider`, which
+    /// empties it). The original builds the islands once over every pair and solves each once (F-14298, F-96487).
+    pub stepped: Vec<usize>,
     /// (the game's level step) the other cars of the stepping car's island, whose solve and push its step runs
     pub extras: Vec<ExtraCar>,
     /// (the game's level step) the stepping car's own object in the level (the other cars' steps name it so)
@@ -3502,12 +3507,17 @@ impl LooseState {
     pub fn step_rest_rider(&mut self, world: &LooseWorld, car_in: &CarIn, dt: f32, mut rider: Option<(&mut super::artic_run::RiderRagdoll, RiderJob, &mut super::artic_run::TickOut)>) {
         let asleep = self.islands_asleep();
         let merged = std::mem::take(&mut self.merged);
+        let stepped = std::mem::take(&mut self.stepped);
         for ids in self.islands().1 {
             if ids.iter().any(|k| asleep.contains(&self.manis[*k].island)) {
                 continue;
             }
             // (solved already, in the bike's island with the rider)
             if ids.iter().any(|&k| [self.manis[k].a, self.manis[k].b].iter().any(|w| matches!(w, Who::Obj(o) if merged.contains(o)))) {
+                continue;
+            }
+            // (solved already, in a car's island)
+            if ids.iter().any(|&k| [self.manis[k].a, self.manis[k].b].iter().any(|w| matches!(w, Who::Obj(o) if stepped.contains(o)))) {
                 continue;
             }
             let mut none = Body { at: Vec3::ZERO, rows: [Vec3::X, Vec3::Y, Vec3::Z], vel: Vec3::ZERO, ang: Vec3::ZERO, inv_mass: 0.0, inv_moments: Vec3::ZERO, force: Vec3::ZERO, torque: Vec3::ZERO };
@@ -5092,6 +5102,9 @@ impl LooseState {
             e.obj = re(e.obj);
         }
         self.lead = self.lead.map(re);
+        for o in self.stepped.iter_mut() {
+            *o = re(*o);
+        }
         for o in self.merged.iter_mut() {
             *o = re(*o);
         }

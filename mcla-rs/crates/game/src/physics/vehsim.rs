@@ -7176,6 +7176,10 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
                     None => vs.loose.push_car_island(&mut out, &body, start, dt),
                 },
             };
+            // (the island's objects: solved once, here - not again by the level's pass over the islands no car is in)
+            if answer.is_none() {
+                vs.loose.stepped.extend(out.owners.iter().copied());
+            }
             // (the other cars of the island: the island as each one's step sees it)
             if !vs.loose.extras.is_empty() {
                 vs.loose.extra_views(&out);
