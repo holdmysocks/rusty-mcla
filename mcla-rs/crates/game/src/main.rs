@@ -2591,6 +2591,131 @@ impl App {
         self.game.in_menu() || self.game.show_map || watching || self.game.takes_menu_input() || self.photo.is_some()
     }
 
+    /// A key of the keyboard, pressed or released (the window's KeyboardInput after egui; also the test hook MCLA_KEYS):
+    /// Alt+Enter, the device for the prompts, the fixed keys and the keyboard's table (`key_action`).
+    fn key_event(&mut self, code: KeyCode, pressed: bool, repeat: bool, synthetic: bool) {
+        // (Alt+Enter: the window mode, before anything else hears the Enter - `hooks`)
+        if self.alt_enter_key(code, pressed, repeat, synthetic) {
+            return;
+        }
+        // (a key pressed: the prompts show the keyboard's keys - `glyphs`)
+        if pressed && !synthetic && crate::glyphs::use_keyboard() {
+            log::info!("prompts: keyboard keys");
+        }
+        // (a held key's repeats: only the menus' directions repeat, as the pad's - `key_repeat_counts`)
+        if pressed && repeat {
+            if !key_repeat_counts(code, self.key_repeat_ui()) {
+                return;
+            }
+        }
+        match if pressed { ElementState::Pressed } else { ElementState::Released } {
+            ElementState::Pressed if self.photo.is_some() => {
+                // (the camera keys only while SnapShot has the camera input; the
+                // album's states take Enter = A, Esc = B, Y, the arrows - `photoalbum`)
+                if self.game.album.camera_input() {
+                    self.input.keys.insert(code);
+                    self.input.pending_keys.insert(code);
+                }
+                match code {
+                    KeyCode::Enter | KeyCode::NumpadEnter => self.game.nav_enter = true,
+                    KeyCode::Escape => self.game.nav_back = true,
+                    KeyCode::KeyY => self.game.nav_y = true,
+                    KeyCode::KeyX => self.game.nav_x = true,
+                    KeyCode::ArrowUp => self.game.nav_up = true,
+                    KeyCode::ArrowDown => self.game.nav_down = true,
+                    KeyCode::ArrowLeft => self.game.nav_left = true,
+                    KeyCode::ArrowRight => self.game.nav_right = true,
+                    KeyCode::F12 => self.screenshot_key(),
+                    _ => {}
+                }
+            }
+            ElementState::Pressed => {
+                self.idle = 0.0;
+                if self.game.movie.as_ref().map_or(false, |m| m.any_key) {
+                    // any key ends the attract movie
+                    self.game.nav_enter = true;
+                    return;
+                }
+                // (the keyboard page of OPTIONS, `keybinds`: it is handed the keys, and
+                // while it waits for one nothing else hears it)
+                if self.game.mode == Mode::Paused && self.game.pause_page == crate::mc4::PAGE_KEYBOARD {
+                    let k = &mut self.game.opt_x.ctrl.kbd;
+                    if !repeat && !synthetic {
+                        k.queue.push(code);
+                    }
+                    if k.polling {
+                        return;
+                    }
+                }
+                self.input.keys.insert(code);
+                self.input.pending_keys.insert(code);
+                match code {
+                    // (nothing on the start screen - the user's choice, DECISIONS.md;
+                    // the window's close button quits)
+                    KeyCode::Escape if self.game.mode == Mode::MainMenu => {}
+                    KeyCode::Escape => self.game.nav_back = true,
+                    KeyCode::KeyX if self.game.replay.is_some() => self.game.nav_x = true,
+                    KeyCode::KeyY if self.game.replay.is_some() => self.game.nav_y = true,
+                    // (Y skips the opening film and a story scene - `cine::skip_to`)
+                    KeyCode::KeyY if self.cuts.playing.is_some() || self.game.movie.is_some() => self.game.nav_y = true,
+                    KeyCode::Backspace if self.game.replay.is_some() => self.game.nav_select = true,
+                    KeyCode::KeyP if self.game.replay.is_some() => self.game.nav_start = true,
+                    // (the GPS map's MAP MODE is the pad's START; N on the keyboard)
+                    KeyCode::KeyN if (self.game.show_map || self.game.race_view.is_some()) && self.game.hm.is_some() => self.game.nav_start = true,
+                    // (the arrows are the menus'; one bound to an action of the keyboard's
+                    // table that is a press is that as well, outside a menu)
+                    KeyCode::ArrowUp | KeyCode::ArrowDown | KeyCode::ArrowLeft | KeyCode::ArrowRight => {
+                        match code {
+                            KeyCode::ArrowUp => self.game.nav_up = true,
+                            KeyCode::ArrowDown => self.game.nav_down = true,
+                            KeyCode::ArrowLeft => self.game.nav_left = true,
+                            _ => self.game.nav_right = true,
+                        }
+                        if !self.game.in_menu() && !self.game.show_map {
+                            self.key_action(code);
+                        }
+                    }
+                    KeyCode::Enter | KeyCode::NumpadEnter => self.game.nav_enter = true,
+                    // (on the GPS map WASD are the left stick: the free cursor)
+                    KeyCode::KeyW if self.game.in_menu() && !(self.game.show_map && self.game.hm.is_some()) => self.game.nav_up = true,
+                    KeyCode::KeyS if self.game.in_menu() && !(self.game.show_map && self.game.hm.is_some()) => self.game.nav_down = true,
+                    KeyCode::KeyA if self.game.in_menu() && !(self.game.show_map && self.game.hm.is_some()) => self.game.nav_left = true,
+                    KeyCode::KeyD if self.game.in_menu() && !(self.game.show_map && self.game.hm.is_some()) => self.game.nav_right = true,
+                    // LB / RB: the rim shop's wheel-brand tabs
+                    KeyCode::KeyQ if self.game.in_menu() => self.game.nav_tab_prev = true,
+                    KeyCode::KeyE if self.game.in_menu() => self.game.nav_tab_next = true,
+                    // the shoulder buttons the rim shop steps brands with
+                    KeyCode::KeyQ if self.game.in_menu() => self.game.nav_tab_prev = true,
+                    KeyCode::KeyE if self.game.in_menu() => self.game.nav_tab_next = true,
+                    KeyCode::F1 => self.show_ui = !self.show_ui,
+                    KeyCode::F7 => self.cycle_weather = true,
+                    // (the screenshot key: a PNG in the screenshots folder - `hooks`)
+                    KeyCode::F12 => self.screenshot_key(),
+                    // (the gameplay keys - music, headlights, map, garage, hydraulics, camera,
+                    // abilities, GPS map, reset - are the keyboard's table: `key_action`, below)
+                    KeyCode::PageUp | KeyCode::Equal | KeyCode::KeyZ if self.game.show_map => self.map_zoom_want = (self.map_zoom_want - 1.0).max(0.0),
+                    KeyCode::PageDown | KeyCode::Minus | KeyCode::KeyX if self.game.show_map => self.map_zoom_want = (self.map_zoom_want + 1.0).min(3.0),
+                    KeyCode::KeyE if self.game.show_map => self.game.nav_edit = true,
+                    KeyCode::KeyR if self.game.show_map => self.game.nav_go = true,
+                    KeyCode::Backspace if self.game.show_map => self.game.nav_del = true,
+                    KeyCode::F2 => {
+                        if self.vehicles.player().is_some() {
+                            self.drive = !self.drive;
+                            if !self.drive {
+                                self.cam.pos = self.chase.pos;
+                            }
+                        }
+                    }
+                    // (every other key: the action the keyboard's table has for it)
+                    _ => self.key_action(code),
+                }
+            }
+            ElementState::Released => {
+                self.input.keys.remove(&code);
+            }
+        }
+    }
+
     /// A key was pressed that no fixed key of the window's handler took: the action the
     /// keyboard's table has for it (`keybinds`; the defaults are the keys named here).
     fn key_action(&mut self, code: KeyCode) {
@@ -7487,6 +7612,29 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     let secs = (6.0 + text.len() as f32 * 0.055).min(22.0);
                     self.game.tip = Some((who, text, secs));
                     self.game.phone_prompt = self.mission_log_prompt();
+                }
+            }
+            // (test hook MCLA_KEYS="<tick>:<key>[:<ticks held>] ..": a keyboard key pressed at that tick and let go that many ticks
+            // later (default 3), through the window's key handling (`key_event`); <key> as the keyboard page names it, e.g. F, Y)
+            if let Ok(v) = std::env::var("MCLA_KEYS") {
+                static STAGE: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
+                let mut stage = STAGE.lock().unwrap();
+                for (i, t) in v.split_whitespace().enumerate() {
+                    if stage.len() <= i {
+                        stage.resize(i + 1, 0);
+                    }
+                    let mut it = t.split(':');
+                    let (Some(at), Some(k)) = (it.next().and_then(|a| a.parse::<u64>().ok()), it.next().and_then(crate::keybinds::key_from_name)) else { continue };
+                    let hold = it.next().and_then(|h| h.parse::<u64>().ok()).unwrap_or(3);
+                    let now = self.tick_no as u64;
+                    if stage[i] == 0 && now >= at {
+                        log::info!("MCLA_KEYS: {} down at tick {}", t, now);
+                        self.key_event(k, true, false, false);
+                        stage[i] = 1;
+                    } else if stage[i] == 1 && now >= at + hold {
+                        self.key_event(k, false, false, false);
+                        stage[i] = 2;
+                    }
                 }
             }
             // (HEADLIGHTS held - pad or key - is the player car's flash lamp target: the high beams, F-44589)
@@ -16593,126 +16741,7 @@ impl ApplicationHandler for App {
                     self.input.mouse_woke = false;
                 }
                 if let PhysicalKey::Code(code) = event.physical_key {
-                    // (Alt+Enter: the window mode, before anything else hears the Enter - `hooks`)
-                    if self.alt_enter_key(code, event.state == ElementState::Pressed, event.repeat, is_synthetic) {
-                        return;
-                    }
-                    // (a key pressed: the prompts show the keyboard's keys - `glyphs`)
-                    if event.state == ElementState::Pressed && !is_synthetic && crate::glyphs::use_keyboard() {
-                        log::info!("prompts: keyboard keys");
-                    }
-                    // (a held key's repeats: only the menus' directions repeat, as the pad's - `key_repeat_counts`)
-                    if event.state == ElementState::Pressed && event.repeat {
-                        if !key_repeat_counts(code, self.key_repeat_ui()) {
-                            return;
-                        }
-                    }
-                    match event.state {
-                        ElementState::Pressed if self.photo.is_some() => {
-                            // (the camera keys only while SnapShot has the camera input; the
-                            // album's states take Enter = A, Esc = B, Y, the arrows - `photoalbum`)
-                            if self.game.album.camera_input() {
-                                self.input.keys.insert(code);
-                                self.input.pending_keys.insert(code);
-                            }
-                            match code {
-                                KeyCode::Enter | KeyCode::NumpadEnter => self.game.nav_enter = true,
-                                KeyCode::Escape => self.game.nav_back = true,
-                                KeyCode::KeyY => self.game.nav_y = true,
-                                KeyCode::KeyX => self.game.nav_x = true,
-                                KeyCode::ArrowUp => self.game.nav_up = true,
-                                KeyCode::ArrowDown => self.game.nav_down = true,
-                                KeyCode::ArrowLeft => self.game.nav_left = true,
-                                KeyCode::ArrowRight => self.game.nav_right = true,
-                                KeyCode::F12 => self.screenshot_key(),
-                                _ => {}
-                            }
-                        }
-                        ElementState::Pressed => {
-                            self.idle = 0.0;
-                            if self.game.movie.as_ref().map_or(false, |m| m.any_key) {
-                                // any key ends the attract movie
-                                self.game.nav_enter = true;
-                                return;
-                            }
-                            // (the keyboard page of OPTIONS, `keybinds`: it is handed the keys, and
-                            // while it waits for one nothing else hears it)
-                            if self.game.mode == Mode::Paused && self.game.pause_page == crate::mc4::PAGE_KEYBOARD {
-                                let k = &mut self.game.opt_x.ctrl.kbd;
-                                if !event.repeat && !is_synthetic {
-                                    k.queue.push(code);
-                                }
-                                if k.polling {
-                                    return;
-                                }
-                            }
-                            self.input.keys.insert(code);
-                            self.input.pending_keys.insert(code);
-                            match code {
-                                // (nothing on the start screen - the user's choice, DECISIONS.md;
-                                // the window's close button quits)
-                                KeyCode::Escape if self.game.mode == Mode::MainMenu => {}
-                                KeyCode::Escape => self.game.nav_back = true,
-                                KeyCode::KeyX if self.game.replay.is_some() => self.game.nav_x = true,
-                                KeyCode::KeyY if self.game.replay.is_some() => self.game.nav_y = true,
-                                // (Y skips the opening film and a story scene - `cine::skip_to`)
-                                KeyCode::KeyY if self.cuts.playing.is_some() || self.game.movie.is_some() => self.game.nav_y = true,
-                                KeyCode::Backspace if self.game.replay.is_some() => self.game.nav_select = true,
-                                KeyCode::KeyP if self.game.replay.is_some() => self.game.nav_start = true,
-                                // (the GPS map's MAP MODE is the pad's START; N on the keyboard)
-                                KeyCode::KeyN if (self.game.show_map || self.game.race_view.is_some()) && self.game.hm.is_some() => self.game.nav_start = true,
-                                // (the arrows are the menus'; one bound to an action of the keyboard's
-                                // table that is a press is that as well, outside a menu)
-                                KeyCode::ArrowUp | KeyCode::ArrowDown | KeyCode::ArrowLeft | KeyCode::ArrowRight => {
-                                    match code {
-                                        KeyCode::ArrowUp => self.game.nav_up = true,
-                                        KeyCode::ArrowDown => self.game.nav_down = true,
-                                        KeyCode::ArrowLeft => self.game.nav_left = true,
-                                        _ => self.game.nav_right = true,
-                                    }
-                                    if !self.game.in_menu() && !self.game.show_map {
-                                        self.key_action(code);
-                                    }
-                                }
-                                KeyCode::Enter | KeyCode::NumpadEnter => self.game.nav_enter = true,
-                                // (on the GPS map WASD are the left stick: the free cursor)
-                                KeyCode::KeyW if self.game.in_menu() && !(self.game.show_map && self.game.hm.is_some()) => self.game.nav_up = true,
-                                KeyCode::KeyS if self.game.in_menu() && !(self.game.show_map && self.game.hm.is_some()) => self.game.nav_down = true,
-                                KeyCode::KeyA if self.game.in_menu() && !(self.game.show_map && self.game.hm.is_some()) => self.game.nav_left = true,
-                                KeyCode::KeyD if self.game.in_menu() && !(self.game.show_map && self.game.hm.is_some()) => self.game.nav_right = true,
-                                // LB / RB: the rim shop's wheel-brand tabs
-                                KeyCode::KeyQ if self.game.in_menu() => self.game.nav_tab_prev = true,
-                                KeyCode::KeyE if self.game.in_menu() => self.game.nav_tab_next = true,
-                                // the shoulder buttons the rim shop steps brands with
-                                KeyCode::KeyQ if self.game.in_menu() => self.game.nav_tab_prev = true,
-                                KeyCode::KeyE if self.game.in_menu() => self.game.nav_tab_next = true,
-                                KeyCode::F1 => self.show_ui = !self.show_ui,
-                                KeyCode::F7 => self.cycle_weather = true,
-                                // (the screenshot key: a PNG in the screenshots folder - `hooks`)
-                                KeyCode::F12 => self.screenshot_key(),
-                                // (the gameplay keys - music, headlights, map, garage, hydraulics, camera,
-                                // abilities, GPS map, reset - are the keyboard's table: `key_action`, below)
-                                KeyCode::PageUp | KeyCode::Equal | KeyCode::KeyZ if self.game.show_map => self.map_zoom_want = (self.map_zoom_want - 1.0).max(0.0),
-                                KeyCode::PageDown | KeyCode::Minus | KeyCode::KeyX if self.game.show_map => self.map_zoom_want = (self.map_zoom_want + 1.0).min(3.0),
-                                KeyCode::KeyE if self.game.show_map => self.game.nav_edit = true,
-                                KeyCode::KeyR if self.game.show_map => self.game.nav_go = true,
-                                KeyCode::Backspace if self.game.show_map => self.game.nav_del = true,
-                                KeyCode::F2 => {
-                                    if self.vehicles.player().is_some() {
-                                        self.drive = !self.drive;
-                                        if !self.drive {
-                                            self.cam.pos = self.chase.pos;
-                                        }
-                                    }
-                                }
-                                // (every other key: the action the keyboard's table has for it)
-                                _ => self.key_action(code),
-                            }
-                        }
-                        ElementState::Released => {
-                            self.input.keys.remove(&code);
-                        }
-                    }
+                    self.key_event(code, event.state == ElementState::Pressed, event.repeat, is_synthetic);
                 }
             }
             // (the mouse moved: the pointer may show in a menu - `cursor_wanted`)

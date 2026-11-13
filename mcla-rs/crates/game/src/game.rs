@@ -3937,6 +3937,16 @@ impl Game {
     /// menu, the pad's flash lit the lamps and never reached the man (GitHub #22).
     /// The ARRESTED / TICKETED panel (form 46, CONTINUE (A)) too: in free roam the pad's A never reached it
     /// and the black stayed until the pause menu was opened (GitHub #39).
+    /// A prompt for a driving action (the pad's button icon): on the keyboard it names the key the player's bindings give that
+    /// action (`keybinds`), since the keyboard's own key for the icon (`glyphs::key_name`, e.g. Y) is a menu key. The first
+    /// bound key; none bound, the prompt as it is.
+    pub fn action_key_prompt(&self, action: usize, p: (String, i32)) -> (String, i32) {
+        match self.opt_x.ctrl.kbd.binds.keys[action][0].and_then(crate::keybinds::key_name) {
+            Some(k) => crate::glyphs::with_key(k, p),
+            None => p,
+        }
+    }
+
     pub fn takes_menu_input(&self) -> bool {
         self.message_box.is_some() || self.start_warp_on || self.arrest_panel.is_some() || self.tutorial_box.as_ref().is_some_and(|t| t.0 != "tutorial_challenge_title" && t.0 != "tutorial_flash_title")
     }
@@ -10799,11 +10809,13 @@ impl Game {
                             let prompts = if title.contains("target") || title == "tutorial_slipstream_title" || self.mc4_tut_continue(&title) { vec![(self.career.strings.get("prompt_continue").map(|v| v.to_uppercase()).unwrap_or_else(|| "CONTINUE".into()), crate::flash_ui::ICON_A)] } else if title.contains("mission_log") { vec![(self.career.strings.get("Navmap_Prompt_MissionLog").map(|v| v.to_uppercase()).unwrap_or_else(|| "MISSION LOG".into()), crate::flash_ui::ICON_BACK_BUTTON)] } else if title == "tutorial_challenge_title" || title == "tutorial_flash_title" {
                                 // (forms 82 / 83: one prompt, `tutorial_prompt_flash` - the list 0x829072AC of
                                 // F-28254 / F-34445 -, the flash's button: Y in the walkthrough at 1:44)
-                                vec![(self.career.strings.get("tutorial_prompt_flash").map(|v| v.to_uppercase()).unwrap_or_else(|| "FLASH HEADLIGHTS".into()), crate::flash_ui::ICON_Y)]
+                                // (on the keyboard the key bound to HEADLIGHTS, not the Y the pad's icon stands for: keyboard Y
+                                // does nothing while driving and the player pressed it as told - v0.21.0 play-test)
+                                vec![self.action_key_prompt(crate::keybinds::HEADLIGHTS, (self.career.strings.get("tutorial_prompt_flash").map(|v| v.to_uppercase()).unwrap_or_else(|| "FLASH HEADLIGHTS".into()), crate::flash_ui::ICON_Y))]
                             } else if title == "tutorial_slipstream_use_title" {
                                 // (form 79: the list 0x82906F14 - static init: id 1, `tutorial_prompt_nitro`; the glyph is
                                 // the NITRO action's button, key 7 = X in the default pad map)
-                                vec![(self.career.strings.get("tutorial_prompt_nitro").map(|v| v.to_uppercase()).unwrap_or_else(|| "NITROUS".into()), crate::flash_ui::ICON_X)]
+                                vec![self.action_key_prompt(crate::keybinds::NITRO, (self.career.strings.get("tutorial_prompt_nitro").map(|v| v.to_uppercase()).unwrap_or_else(|| "NITROUS".into()), crate::flash_ui::ICON_X))]
                             } else { Vec::new() };
                             let page = crate::flash_ui::MenuPage { layout: crate::flash_ui::MenuLayout::Tutorial { description: st(&text) }, title: st(&title), select: usize::MAX, prompts, ..Default::default() };
                             let which = std::env::var("MCLA_TUT_MOVIE").unwrap_or_default();
@@ -16841,6 +16853,21 @@ mod ui_original_tests;
 #[cfg(test)]
 mod tests {
     use super::Game;
+
+    /// The CHALLENGE / FLASH box (forms 82 / 83) names the key the flash is bound to on the
+    /// keyboard: F on the default table, the player's own key when they moved it (a new career
+    /// shows "[F]", a table with HEADLIGHTS on Y "[Y]").
+    #[test]
+    fn the_flash_prompt_names_the_bound_key() {
+        use crate::keybinds::{HEADLIGHTS, NITRO};
+        let mut g = Game::new(vec![std::path::PathBuf::from("v").join("vp_nsn_240sx_98")], 0);
+        let p = |g: &Game, a| g.action_key_prompt(a, ("FLASH HEADLIGHTS".into(), crate::flash_ui::ICON_Y)).0;
+        assert_eq!(p(&g, HEADLIGHTS), "\u{6}F\u{6}FLASH HEADLIGHTS");
+        g.opt_x.ctrl.kbd.binds.keys[HEADLIGHTS][0] = Some(winit::keyboard::KeyCode::KeyY);
+        assert_eq!(p(&g, HEADLIGHTS), "\u{6}Y\u{6}FLASH HEADLIGHTS");
+        g.opt_x.ctrl.kbd.binds.keys[NITRO][0] = None;
+        assert_eq!(p(&g, NITRO), "FLASH HEADLIGHTS");
+    }
 
     /// The layer options with marks (COPY F-31237 / F-60961, CUT and DELETE F-71386): the marks count only
     /// when more than one is marked and the cursor's layer is one of them.

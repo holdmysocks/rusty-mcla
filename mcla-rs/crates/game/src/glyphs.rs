@@ -139,9 +139,10 @@ pub fn key_name(icon: i32) -> Option<&'static str> {
             Screen::Replay => "P",
             _ => "ESC",
         },
+        // (the pad's Back outside a replay is the GPS MAP action: its bound key, M by default)
         10 => match s {
             Screen::Replay => "BKSP",
-            _ => "M",
+            _ => gps_key(),
         },
         11..=14 if s == Screen::Photo => "WASD",
         // (the replay's SLOW: the arrows step it as the stick does)
