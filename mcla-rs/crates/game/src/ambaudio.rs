@@ -66,7 +66,7 @@ struct District {
     line: Vec<Vec3>,
     /// +30 bit 0: the district sets the weather categories (+31 s16 rain 0.01 dB, +35 s16 thunder 0.01 dB; the LPFs +33 / +37
     /// are not applied by the port's mixer)
-    weather_mix: Option<(f32, f32)>,
+    weather_mix: Option<[f32; 4]>,
 }
 
 fn parse_district(name: &str, o: &[u8]) -> Option<District> {
@@ -105,7 +105,7 @@ fn parse_district(name: &str, o: &[u8]) -> Option<District> {
     p += 1;
     let line = (0..ne).map(|k| Vec3::new(be_f32(o, p + 12 * k), be_f32(o, p + 12 * k + 4), be_f32(o, p + 12 * k + 8))).collect();
     let [shots, quads] = shots;
-    let weather_mix = (o.get(30).copied().unwrap_or(0) & 1 != 0).then(|| (be_u16(o, 31) as i16 as f32 * 0.01, be_u16(o, 35) as i16 as f32 * 0.01));
+    let weather_mix = (o.get(30).copied().unwrap_or(0) & 1 != 0).then(|| [be_u16(o, 31) as i16 as f32 * 0.01, be_u16(o, 33) as f32, be_u16(o, 35) as i16 as f32 * 0.01, be_u16(o, 37) as f32]);
     Some(District { name: name.to_string(), bed: [be_u32(o, 10), be_u32(o, 14)], bed2: [be_u32(o, 18), be_u32(o, 22)], scene: be_u32(o, 26), line_dist: be_f32(o, 39), line_sound: be_u32(o, 43), circles, shots, quads, locs, line, weather_mix })
 }
 
@@ -242,7 +242,7 @@ struct Rain {
     thunder_snd: u32,
     thunder_gap: (f32, f32),
     ramp: f32,
-    covered_db: (f32, f32),
+    covered_db: [f32; 4],
     /// slots +280 (RAIN_EXT), +836 (RAIN_INT), +284 (thunder); byte +1074; +824 the next thunder
     ext: Option<Handle>,
     int: Option<Handle>,
@@ -330,7 +330,7 @@ impl Ambience {
                 thunder_snd: be_u32(glob, 30),
                 thunder_gap: (be_f32(glob, 34), be_f32(glob, 38)),
                 ramp: be_f32(glob, 58),
-                covered_db: (be_u16(glob, 62) as i16 as f32 * 0.01, be_u16(glob, 66) as i16 as f32 * 0.01),
+                covered_db: [be_u16(glob, 62) as i16 as f32 * 0.01, be_u16(glob, 64) as f32, be_u16(glob, 66) as i16 as f32 * 0.01, be_u16(glob, 68) as f32],
                 cover_target: 1.0,
                 cover: 1.0,
                 // (+824 starts at rand(0, 20), F-20021 @A-56478: drawn in the first update)
@@ -410,16 +410,20 @@ impl Ambience {
         if r.int.map_or(true, |h| !lib.playing(h)) {
             r.int = lib.play_hash(r.int_snd, Req::default().vol(-100.0));
         }
-        // the weather categories by the district (+30 flag) or the listener's cover, ramped over AG+58
+        // the weather categories by the district (+30 flag: dB +31, LPF +33, thunder +35 / +37) or the listener's cover
+        // (AG+62..+68), else 0 dB and 23900 Hz, gain and LPF ramped over AG+58 (F-94235: F-83232 then F-30645 on the
+        // rain controller, then the thunder's)
         let key = (self.cur, covered);
         if r.mix != Some(key) {
-            let (rain_db, thunder_db) = match self.cur.and_then(|d| self.districts[d].weather_mix) {
+            let [rain_db, rain_lpf, thunder_db, thunder_lpf] = match self.cur.and_then(|d| self.districts[d].weather_mix) {
                 Some(m) => m,
                 None if covered => r.covered_db,
-                None => (0.0, 0.0),
+                None => [0.0, 23900.0, 0.0, 23900.0],
             };
             lib.ramp_category("AMBIENCE_BEDS_WEATHER_RAIN", rain_db, r.ramp);
+            lib.ramp_category_lpf("AMBIENCE_BEDS_WEATHER_RAIN", rain_lpf, r.ramp);
             lib.ramp_category("AMBIENCE_BEDS_WEATHER_THUNDER", thunder_db, r.ramp);
+            lib.ramp_category_lpf("AMBIENCE_BEDS_WEATHER_THUNDER", thunder_lpf, r.ramp);
             r.mix = Some(key);
         }
         // the cover moves toward its target at 1 per second (G+92, I: unscaled dt)

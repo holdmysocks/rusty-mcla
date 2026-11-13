@@ -702,8 +702,8 @@ pub struct SoundLib {
     camera_filt: std::collections::HashMap<u32, (u16, u16)>,
     /// the ambience manager's speed fade on the AMBIENCE category (its controller +840, F-54370), dB
     speed_fade: f32,
-    /// ramped category controllers (category hash -> current dB, target dB, dB per second): the weather mix
-    ramps: std::collections::HashMap<u32, (f32, f32, f32)>,
+    /// ramped category controllers (category hash -> the controller's gain and LPF blocks): the weather mix
+    ramps: std::collections::HashMap<u32, Ctl>,
     /// (mode, bike) the camera table was last applied for
     cam_mode: Option<(i32, bool)>,
     /// dynamic mixer scenes (game.dat type 23): name hash -> state
@@ -1212,13 +1212,16 @@ impl SoundLib {
         }
     }
 
-    /// A category's runtime volume moved to `db` over `secs` (F-83232: linear in dB, I).
+    /// A category's controller gain ramped to `db` over `secs` (F-83232: kind 1 param 0, dB2lin(dB); F-58120 ramps
+    /// the linear gain at 1 / min(secs, 10) a second, or sets it at once for `secs` <= 0).
     pub fn ramp_category(&mut self, name: &str, db: f32, secs: f32) {
-        let e = self.ramps.entry(joaat(name)).or_insert((0.0, 0.0, 0.0));
-        if e.1 != db {
-            e.1 = db;
-            e.2 = if secs > 0.0 { (db - e.0).abs() / secs } else { f32::INFINITY };
-        }
+        self.ramps.entry(joaat(name)).or_insert(Ctl::NEUTRAL).gain.set_gain(db2lin(db), secs);
+    }
+
+    /// A category's controller LPF ramped to `hz` over `secs` (F-30645: kind 1 param 2, log2 of the clamped fraction of
+    /// 23900 Hz; F-86551 ramps it at 10.2228 / min(secs, 10) a second, or sets it at once for `secs` <= 0).
+    pub fn ramp_category_lpf(&mut self, name: &str, hz: f32, secs: f32) {
+        self.ramps.entry(joaat(name)).or_insert(Ctl::NEUTRAL).lpf.set_filter(Ctl::filter_value(hz), secs);
     }
 
     /// AudioManager_SetActiveTimeSlow for SFX_HARD (F-38026 / F-55770): its pitch ratio ramped to 0.1, or
@@ -1247,12 +1250,10 @@ impl SoundLib {
             self.slow_hard.0 = if to > cur { (cur + dt).min(to) } else { (cur - dt).max(to) };
             changed = true;
         }
-        for e in self.ramps.values_mut() {
-            if e.0 != e.1 {
-                let step = e.2 * dt;
-                e.0 = if e.1 > e.0 { (e.0 + step).min(e.1) } else { (e.0 - step).max(e.1) };
-                changed = true;
-            }
+        for c in self.ramps.values_mut() {
+            let was = *c;
+            c.step(dt);
+            changed |= *c != was;
         }
         // the per-frame scene update (F-76740): auto-stop, blocking scene, the exclusive scene, loops kept alive
         let mut stops: Vec<(u32, bool)> = Vec::new();
@@ -1311,8 +1312,8 @@ impl SoundLib {
         for (h, db) in &self.camera {
             *rt.entry(*h).or_insert(0.0) += db;
         }
-        for (h, e) in &self.ramps {
-            *rt.entry(*h).or_insert(0.0) += e.0;
+        for (h, c) in &self.ramps {
+            *rt.entry(*h).or_insert(0.0) += lin2db(c.gain.cur);
         }
         if self.speed_fade != 0.0 {
             *rt.entry(joaat("AMBIENCE")).or_insert(0.0) += self.speed_fade;
@@ -1345,6 +1346,9 @@ impl SoundLib {
         };
         for (h, (l, hp)) in &self.camera_filt {
             put(*h, *l as f32, *hp as f32);
+        }
+        for (h, c) in &self.ramps {
+            put(*h, 23900.0 * c.lpf.cur.exp2(), 20.0);
         }
         for sc in self.scenes.values().filter(|s| s.level > 0.0) {
             let s = sc.strength * sc.level;
@@ -3194,6 +3198,81 @@ fn decode_mp3_whole_from(dec: rodio::Decoder<std::io::BufReader<std::fs::File>>,
     }
 }
 
+/// One block of a mixer controller (the original's 64-byte controller: gain +4 / +8 / +12, pitch +16, LPF +28, HPF +40;
+/// each block the current value, the target and the rate a second).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ramp {
+    pub cur: f32,
+    pub to: f32,
+    pub rate: f32,
+}
+
+impl Ramp {
+    /// the filter blocks' full range a second for a 1 s ramp (10.2228: the log2 range of 20 .. 23900 Hz)
+    pub const FILTER_RANGE: f32 = f32::from_bits(0x4123_9091);
+
+    /// The ramp setters' shape (gain F-58120, pitch F-27321, LPF F-86551, HPF F-43839): `t` <= 0 (or NaN) sets the
+    /// value at once and stops the ramp; else the target is the value and the rate +-`range` / min(t, 10) by the side
+    /// the value lies.
+    pub fn set(&mut self, v: f32, t: f32, range: f32) {
+        if !(t > 0.0) {
+            self.cur = v;
+            self.rate = 0.0;
+            return;
+        }
+        let tt = if t - 10.0 >= 0.0 { 10.0 } else { t };
+        self.to = v;
+        self.rate = if v - self.cur > 0.0 { range / tt } else { -range / tt };
+    }
+
+    /// The gain block's setter F-58120 (and kind 0's set): a value at or below 1e-5 is 0; range 1.
+    pub fn set_gain(&mut self, v: f32, t: f32) {
+        self.set(if v > 1e-5 { v } else { 0.0 }, t, 1.0);
+    }
+
+    /// The filter blocks' setter (LPF F-86551, HPF F-43839): no floor, range 10.2228.
+    pub fn set_filter(&mut self, v: f32, t: f32) {
+        self.set(v, t, Self::FILTER_RANGE);
+    }
+
+    /// One block of the step F-44036: cur = fma(rate, dt, cur); a rising ramp at or past its target, or a falling
+    /// one at or below it, takes the target and stops.
+    pub fn step(&mut self, dt: f32) {
+        let r = self.rate;
+        self.cur = r.mul_add(dt, self.cur);
+        if (r > 0.0 && self.cur >= self.to) || (r < 0.0 && self.cur <= self.to) {
+            self.cur = self.to;
+            self.rate = 0.0;
+        }
+    }
+}
+
+/// The gain and LPF blocks of a category's mixer controller (the pitch and HPF blocks stay neutral for the controllers
+/// the port ramps).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ctl {
+    pub gain: Ramp,
+    pub lpf: Ramp,
+}
+
+impl Ctl {
+    /// the idle controller (F-83565's reset values: gain 1, LPF 0 = 23900 Hz)
+    pub const NEUTRAL: Ctl = Ctl { gain: Ramp { cur: 1.0, to: 0.0, rate: 0.0 }, lpf: Ramp { cur: 0.0, to: 0.0, rate: 0.0 } };
+
+    /// F-30645's value: log2 of the Hz clamped to 20 .. 23900 times 1 / 23900 (the log through f64, one rounding)
+    pub fn filter_value(hz: f32) -> f32 {
+        let x = if hz - 20.0 >= 0.0 { hz } else { 20.0 };
+        let x = if x - 23900.0 >= 0.0 { 23900.0 } else { x };
+        let f = x * f32::from_bits(0x382F_7E70);
+        ((f as f64).ln() as f32) * f32::from_bits(0x3FB8_AA3B)
+    }
+
+    pub fn step(&mut self, dt: f32) {
+        self.gain.step(dt);
+        self.lpf.step(dt);
+    }
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -3423,6 +3502,51 @@ mod tests {
     /// MANAGER_PLAYER_SPEED against the original's F-15595 run offline (tools/player_speed_reference.py): the game's table
     /// and 60 random ones, 5,802 frames of camera mode, both speed inputs and the frame time; every controller's new
     /// linear level, bit for bit.
+    /// A mixer controller's ramps against the original's command pass F-83565 and step F-44036 run offline
+    /// (tools/ctl_ramp_reference.py): 400 random command series, 16,627 frames, 7,972 set / ramp commands on the gain,
+    /// pitch, LPF and HPF blocks; every block word after each step, bit for bit; and RampLPF F-30645's value on 2,012 Hz.
+    #[test]
+    fn controller_ramps_match_the_original() {
+        let hex = |w: &str| u32::from_str_radix(&w[1..], 16).unwrap();
+        let fl = |w: &str| f32::from_bits(hex(w));
+        let neutral = [Ramp { cur: 1.0, to: 0.0, rate: 0.0 }, Ramp { cur: 1.0, to: 0.0, rate: 0.0 }, Ramp { cur: 0.0, to: 0.0, rate: 0.0 },
+            Ramp { cur: -Ramp::FILTER_RANGE, to: 0.0, rate: 0.0 }];
+        let mut b = neutral;
+        let (mut frames, mut hz) = (0, 0);
+        for l in include_str!("testdata/ctl_ramp_ref.txt").lines() {
+            let w: Vec<&str> = l.split_whitespace().collect();
+            match w.first().copied() {
+                Some("S") => b = neutral,
+                Some("F") => {
+                    let dt = fl(w[1]);
+                    let arrow = w.iter().position(|x| *x == "->").unwrap();
+                    for c in w[2..arrow].chunks(4) {
+                        let (kind, param, v, t) = (c[0][1..].parse::<u32>().unwrap(), c[1][1..].parse::<usize>().unwrap(), fl(c[2]), fl(c[3]));
+                        let t = if kind == 0 { 0.0 } else { t };
+                        match param {
+                            0 => b[0].set_gain(v, t),
+                            1 => b[1].set(v, t, 1.0),
+                            _ => b[param].set_filter(v, t),
+                        }
+                    }
+                    for r in &mut b {
+                        r.step(dt);
+                    }
+                    let got: Vec<u32> = b.iter().flat_map(|r| [r.cur.to_bits(), r.to.to_bits(), r.rate.to_bits()]).collect();
+                    let want: Vec<u32> = w[arrow + 1..].iter().map(|x| hex(x)).collect();
+                    assert_eq!(got, want, "{l}");
+                    frames += 1;
+                }
+                Some("L") => {
+                    assert_eq!(Ctl::filter_value(fl(w[1])).to_bits(), hex(w[3]), "{l}");
+                    hz += 1;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!((frames, hz), (16627, 2012));
+    }
+
     #[test]
     fn player_speed_matches_the_original() {
         use super::*;
