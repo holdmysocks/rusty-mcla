@@ -65,6 +65,17 @@ pub struct Job {
 }
 
 static JOBS: Mutex<Vec<Job>> = Mutex::new(Vec::new());
+/// D59: vertex lists of drawn pictures, kept for the next (a fresh list of that size each frame touched new pages)
+static POOL: Mutex<Vec<Vec<V>>> = Mutex::new(Vec::new());
+
+fn recycle(mut v: Vec<V>) {
+    v.clear();
+    if let Ok(mut p) = POOL.lock() {
+        if p.len() < 4 {
+            p.push(v);
+        }
+    }
+}
 
 struct Builder {
     w: f32,
@@ -151,13 +162,20 @@ impl Builder {
     }
 }
 
+thread_local! {
+    /// each road layer's last cells and triangle list (by the layer's address)
+    static NEAR: std::cell::RefCell<Vec<(usize, [i32; 4], Vec<u32>)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// `render_minimap` as a job for the GPU (the minimap, mode 0, 220 x 220; the overhead map, mode 2, 749 x 430), into the
 /// egui texture `tex`.
 #[allow(clippy::too_many_arguments)]
 pub fn queue(w: usize, h: usize, assets: &mut Assets, tune: &Tune, roads: Option<&crate::mapmesh::RoadMap>, f: &Frame, q: &Queue, clear_rgb: [f32; 3], tex: egui::TextureId) {
     // (room for as many vertices as the last picture had: the list is not grown step by step every frame)
     static LAST: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let mut b = Builder { w: w as f32, h: h as f32, verts: Vec::with_capacity(LAST.load(std::sync::atomic::Ordering::Relaxed)), cmds: Vec::new() };
+    let mut verts = POOL.lock().ok().and_then(|mut p| p.pop()).unwrap_or_default();
+    verts.reserve(LAST.load(std::sync::atomic::Ordering::Relaxed));
+    let mut b = Builder { w: w as f32, h: h as f32, verts, cmds: Vec::new() };
     let mut road_job = None;
     // (no road is drawn in a frame without an icon - sub_822371E0)
     if !q.draws.is_empty() || !q.rim.is_empty() {
@@ -194,7 +212,25 @@ pub fn queue(w: usize, h: usize, assets: &mut Assets, tune: &Tune, roads: Option
                 if colour[3] <= 0.0 {
                     continue;
                 }
-                layer.near(centre, reach, &mut ids);
+                // (D59: the layer's list is made again only when the cells it reads change - the same cells, the same list)
+                let cells = crate::mapmesh::Layer::cells(centre, reach);
+                let key = layer.tris.as_ptr() as usize;
+                NEAR.with(|n| {
+                    let mut n = n.borrow_mut();
+                    let k = match n.iter().position(|e| e.0 == key) {
+                        Some(k) => k,
+                        None => {
+                            n.push((key, [i32::MIN; 4], Vec::new()));
+                            n.len() - 1
+                        }
+                    };
+                    let e = &mut n[k];
+                    if e.1 != cells {
+                        layer.near_cells(cells, &mut e.2);
+                        e.1 = cells;
+                    }
+                    ids.clone_from(&e.2);
+                });
                 b.ground(
                     ids.iter().map(|&i| {
                         let t = layer.tris[i as usize];
@@ -242,7 +278,8 @@ pub fn queue(w: usize, h: usize, assets: &mut Assets, tune: &Tune, roads: Option
     if let Ok(mut j) = JOBS.lock() {
         // (one picture a texture and frame: a second call replaces the first - keeping roads it brought)
         if let Some(i) = j.iter().position(|x| x.tex == tex) {
-            let old = j.remove(i);
+            let mut old = j.remove(i);
+            recycle(std::mem::take(&mut old.verts));
             if let (Some(r), Some(o)) = (road_job.as_mut(), old.roads) {
                 if r.verts.is_none() && o.key == r.key {
                     r.verts = o.verts;
@@ -497,6 +534,7 @@ fn render_job(device: &wgpu::Device, queue: &wgpu::Queue, renderers: [&egui_wgpu
     if let Ok(dir) = std::env::var("MCLA_SELF_DUMP") {
         crate::flashpic::dump(device, queue, &t.out, job.size, &format!("{dir}/{}.png", if job.size[0] == job.size[1] { "minimap" } else { "overhead" }));
     }
+    recycle(job.verts);
 }
 
 const SHADER: &str = r#"

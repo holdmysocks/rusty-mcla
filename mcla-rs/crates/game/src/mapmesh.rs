@@ -55,9 +55,18 @@ impl Layer {
 
     /// Triangles that may reach within `r` of `p` (each once).
     pub fn near(&self, p: Vec2, r: f32, out: &mut Vec<u32>) {
+        self.near_cells(Self::cells(p, r), out);
+    }
+
+    /// The grid cells `near` reads for `p` and `r`: x0, z0, x1, z1 (D59: the same cells give the same list)
+    pub fn cells(p: Vec2, r: f32) -> [i32; 4] {
+        [((p.x - r) / CELL).floor() as i32, ((p.y - r) / CELL).floor() as i32, ((p.x + r) / CELL).floor() as i32, ((p.y + r) / CELL).floor() as i32]
+    }
+
+    /// The triangles of the cells `c` (`cells`), ascending, each once.
+    pub fn near_cells(&self, c: [i32; 4], out: &mut Vec<u32>) {
         out.clear();
-        let (x0, z0) = (((p.x - r) / CELL).floor() as i32, ((p.y - r) / CELL).floor() as i32);
-        let (x1, z1) = (((p.x + r) / CELL).floor() as i32, ((p.y + r) / CELL).floor() as i32);
+        let [x0, z0, x1, z1] = c;
         for x in x0..=x1 {
             for z in z0..=z1 {
                 if let Some(v) = self.grid.get(&(x, z)) {
@@ -165,6 +174,30 @@ mod tests {
         assert_eq!(out, vec![1]);
         l.near(Vec2::new(450.0, 450.0), 2000.0, &mut out);
         assert_eq!(out, vec![0, 1]);
+    }
+
+    /// D59: the minimap keeps a layer's list while the cells it reads stay the same (minimap_gpu `NEAR`) - two places
+    /// in the same cells give the same list, another cell another
+    #[test]
+    fn the_same_cells_give_the_same_list() {
+        let tris: Vec<[Vec2; 3]> = (0..400).map(|i| {
+            let o = Vec2::new((i % 20) as f32 * 37.0 - 300.0, (i / 20) as f32 * 41.0 - 350.0);
+            [o, o + Vec2::new(30.0, 5.0), o + Vec2::new(4.0, 33.0)]
+        }).collect();
+        let l = Layer::from_tris(tris, vec![[0.0; 3]; 400]);
+        let (mut a, mut b) = (Vec::new(), Vec::new());
+        for k in 0..200 {
+            let p = Vec2::new((k * 13 % 97) as f32 * 6.1 - 290.0, (k * 7 % 89) as f32 * 7.3 - 320.0);
+            let r = 160.0 + (k % 5) as f32 * 20.0;
+            l.near(p, r, &mut a);
+            l.near_cells(Layer::cells(p, r), &mut b);
+            assert_eq!(a, b);
+            let q = p + Vec2::splat(0.25);
+            if Layer::cells(q, r) == Layer::cells(p, r) {
+                l.near(q, r, &mut b);
+                assert_eq!(a, b);
+            }
+        }
     }
 
     #[test]
