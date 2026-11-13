@@ -11,7 +11,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 
 const MAGIC: &[u8; 8] = b"MCLAPC01";
 
@@ -23,7 +23,14 @@ struct Pc {
     writing: Mutex<()>,
 }
 
-static CACHE: OnceLock<Pc> = OnceLock::new();
+/// The cache of the device in use. A device made again (render/mod.rs: the exclusive-fullscreen swap chain failed and the
+/// device was lost, GitHub #33 / #54) gets a cache of its own, which replaces this one: a pipeline given the lost device's
+/// cache panics in wgpu ("PipelineCache[Id(0,1)] does not exist", #54). The replaced one is leaked (once per such start).
+static CACHE: Mutex<Option<&'static Pc>> = Mutex::new(None);
+
+fn current() -> Option<&'static Pc> {
+    CACHE.lock().ok().and_then(|g| *g)
+}
 
 fn off() -> bool {
     std::env::var("MCLA_PIPELINE_CACHE").is_ok_and(|v| v.trim() == "0")
@@ -86,8 +93,12 @@ fn dir() -> PathBuf {
     root.join(name)
 }
 
-/// Makes the cache from its file, once, after the device (asked for [`feature`]).
+/// Makes the cache from its file after the device (again for a device made again) (asked for [`feature`]).
 pub fn init(device: &wgpu::Device, info: &wgpu::AdapterInfo) {
+    // (a device made again starts without the old device's cache, whether or not it gets one of its own)
+    if let Ok(mut g) = CACHE.lock() {
+        *g = None;
+    }
     if off() || !device.features().contains(wgpu::Features::PIPELINE_CACHE) {
         return;
     }
@@ -107,17 +118,20 @@ pub fn init(device: &wgpu::Device, info: &wgpu::AdapterInfo) {
     let cache = unsafe { device.create_pipeline_cache(&wgpu::PipelineCacheDescriptor { label: Some("mcla pipelines"), data, fallback: true }) };
     let n = cache.get_data().map_or(0, |d| d.len());
     log::info!("pipeline cache: {} - {} bytes read, {} kept", path.display(), data.map_or(0, |d| d.len()), n);
-    let _ = CACHE.set(Pc { cache, path, saved: AtomicUsize::new(n), writing: Mutex::new(()) });
+    let pc: &'static Pc = Box::leak(Box::new(Pc { cache, path, saved: AtomicUsize::new(n), writing: Mutex::new(()) }));
+    if let Ok(mut g) = CACHE.lock() {
+        *g = Some(pc);
+    }
 }
 
 /// For the pipelines' `cache` field.
 pub fn get() -> Option<&'static wgpu::PipelineCache> {
-    CACHE.get().map(|p| &p.cache)
+    current().map(|p| &p.cache)
 }
 
 /// Writes the cache when it has grown since the last write (after the pipeline builds, and at the end).
 pub fn save() {
-    let Some(p) = CACHE.get() else { return };
+    let Some(p) = current() else { return };
     let Ok(_w) = p.writing.lock() else { return };
     let Some(d) = p.cache.get_data() else { return };
     if d.len() == p.saved.load(Ordering::Relaxed) {
