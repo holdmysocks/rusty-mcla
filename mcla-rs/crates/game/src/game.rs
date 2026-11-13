@@ -6376,7 +6376,18 @@ impl Game {
                             // F-43165, F-98682)
                             let chased = self.chased_menu();
                             items.push((if chased { s("pause_ReturntoChase", "RETURN TO CHASE") } else { s("pause_continue", "CONTINUE") }, String::new(), Go::Act(MenuAction::Resume)));
-                            if racing {
+                            // (a run to the line is the game state Racing_BeatMeThere: the pause menu's class is the beat me
+                            // there menu (F-76337, kind 13 / 14) - F-63937 over the base: PM_Continue, PM_NextRace off (vt+36
+                            // and no GOAL: no race of a list), PM_Restart, PM_ViewReplay and PM_Results off, PM_AbortRace on
+                            // while the run is not over, PM_WarpGarage through vt+28 (F-59601 -> F-88974); in the menu's
+                            // PauseTab order: CONTINUE, QUIT RACE, GO TO GARAGE)
+                            let run = !racing && self.race.is_none() && self.bmt_goal.is_some() && self.bmt_end.is_none();
+                            if run {
+                                items.push((s("race_quit", "QUIT RACE"), String::new(), if chased { Go::Off } else { Go::Act(MenuAction::QuitRace) }));
+                                if self.go_garage_gate() {
+                                    items.push((s("pause_go_to_garage", "GO TO GARAGE"), String::new(), if self.police_on_player { Go::Off } else { Go::Act(MenuAction::GoToGarage) }));
+                                }
+                            } else if racing {
                                 let series_race = self.event_diff.is_some() && self.wager.is_none() && self.flash_menu.is_some();
                                 let (restart, quit) = match kind {
                                     Some(RaceKind::Delivery) => (s("pause_restart_delivery", "RESTART DELIVERY"), s("pause_quit_delivery", "QUIT DELIVERY")),

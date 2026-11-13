@@ -37,6 +37,9 @@ pub struct Challenge {
     pub cancel_wait: f32,
     /// local19: the line was queued - only then is the flash to skip the run read (0x1371..0x137b)
     pub cancel_shown: bool,
+    /// the opponents over the line: (car uid, race clock in ms at the line) - their racer records'
+    /// finish time (+40), read by CalculateRankOrdered
+    pub fins: Vec<(u32, i32)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1495,6 +1498,7 @@ impl Roamers {
             if flash && ch.cancel_shown && vehicles.player().map_or(true, |c| c.state.damage < 1.0) {
                 log::info!("headlights flashed on the run to the line: straight to the race");
                 game.opt_x.arcade.bmt_left.set(None);
+                game.opt_x.arcade.bmt_run.set(None);
                 let race = ch.race;
                 self.challenge = None;
                 self.won_against_rival = self.rival_challenged;
@@ -1520,6 +1524,7 @@ impl Roamers {
             // the race-over menu - game/race/0xb8b948b6 0x120a..0x1217, 0x1f9f..)
             if flash && vehicles.player().map_or(false, |c| c.state.damage >= 1.0) {
                 game.opt_x.arcade.bmt_left.set(None);
+                game.opt_x.arcade.bmt_run.set(None);
                 let race = ch.race;
                 self.challenge = None;
                 self.won_against_rival = self.rival_challenged;
@@ -1541,6 +1546,25 @@ impl Roamers {
             // (an opponent at the line first does not end the run: "<NAME> FINISHED", and
             // the others have thirty seconds - the hookmen's scripts, `mc4::BmtClose`)
             let dists: Vec<f32> = vehicles.cars.iter().filter(|c| c.racer).map(|c| reach(&c.state)).collect();
+            // (the run is a race of its own - OrderedSeriesCore and the hookmen's cores: Race_Create, one
+            // checkpoint, the HUD's place from CalculateRankOrdered F-37138 every 20 ms loop - PosNumber, PosMax
+            // the racers - and the race clock running from the start; `Game::mc4_bmt_hud`)
+            let ms = (ch.time * 1000.0).round() as i32;
+            for (c, d) in vehicles.cars.iter().filter(|c| c.racer).zip(&dists) {
+                if *d < 20.0 && !ch.fins.iter().any(|f| f.0 == c.uid) {
+                    ch.fins.push((c.uid, ms));
+                }
+            }
+            let mut ranked = vec![crate::game::RankRacer { cp: 0, lap: 0, fin: -1, dist: player_d, present: true }];
+            for (c, d) in vehicles.cars.iter().filter(|c| c.racer).zip(&dists) {
+                let fin = ch.fins.iter().find(|f| f.0 == c.uid).map_or(-1, |f| f.1);
+                ranked.push(crate::game::RankRacer { cp: (fin >= 0) as i32, lap: 0, fin, dist: *d, present: true });
+            }
+            let place = crate::game::rank_rule(true, 1, &ranked, 0);
+            game.opt_x.arcade.bmt_run.set(Some((ch.time, place, ranked.len() as i32)));
+            if (ch.time % 5.0) < dt {
+                log::info!("roamers: the run at {:.1} s, place {} of {}", ch.time, place, ranked.len());
+            }
             let step = ch.close.step(player_d, &dists, 20.0, dt);
             if step == crate::mc4::BmtStep::FirstIn {
                 let who = vehicles.cars.iter().filter(|c| c.racer).min_by(|a, b| a.state.pos.distance_squared(ch.goal).partial_cmp(&b.state.pos.distance_squared(ch.goal)).unwrap()).map(|c| if c.driver.is_empty() { self.men.iter().find(|m| m.owns(c)).map(|m| game.career.name_of(&m.name).to_uppercase()).unwrap_or_else(|| crate::game::pretty_car_name(&c.model.name).to_uppercase()) } else { game.career.name_of(&c.driver).to_uppercase() }).unwrap_or_default();
@@ -1554,6 +1578,7 @@ impl Roamers {
             game.opt_x.arcade.bmt_left.set(ch.close.since.map(|s| (crate::mc4::BMT_CLOSE_SECS - s).max(0.0)));
             if let crate::mc4::BmtStep::Over(s15b_place) = step {
                 game.opt_x.arcade.bmt_left.set(None);
+                game.opt_x.arcade.bmt_run.set(None);
                 let race = ch.race;
                 log::info!("roamers: run to the line over after {:.1} s, player first: {}, place {} ({:?} s after the first man)", ch.time, player_there, s15b_place, ch.close.since);
                 // (the run to the line gives the reputation - and only it - half an event's
@@ -1824,7 +1849,7 @@ impl Roamers {
         // (step 19d: every police car goes underground for the run and the race -
         // PoliceManager_SetAllPoliceUnderground(1, 1))
         vehicles.cars.retain(|c| !c.cop);
-        self.challenge = Some(Challenge { race, goal, time: 0.0, dist, close: Default::default(), diff: man.as_ref().filter(|m| m.mission.is_empty()).map(|m| m.difficulty.clamp(0, 3) as usize), races: kept, cancel_turns: 40, cancel_wait: 0.0, cancel_shown: false });
+        self.challenge = Some(Challenge { race, goal, time: 0.0, dist, close: Default::default(), diff: man.as_ref().filter(|m| m.mission.is_empty()).map(|m| m.difficulty.clamp(0, 3) as usize), races: kept, cancel_turns: 40, cancel_wait: 0.0, cancel_shown: false, fins: Vec::new() });
         None
     }
 }

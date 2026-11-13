@@ -7598,6 +7598,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             // (the run's race is current while it lasts - `Game::race_current`)
             self.game.bmt_goal = self.roam.challenge.as_ref().map(|c| c.goal);
+            if self.roam.challenge.is_none() {
+                self.game.opt_x.arcade.bmt_run.set(None);
+            }
             // (Script_SuspendAllOpponents: the hookmen's cores and the place cores - `Roamers::suspend`,
             // `Game::update_place_holds`)
             self.roam.suspend(self.game.suspend_all_opponents(), self.game.race.is_some(), &mut self.vehicles);
@@ -13822,6 +13825,36 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         }
     }
 
+    /// A run to the line left from its pause menu (QUIT RACE's YES, GO TO GARAGE): raceOverTrigger 1 ends the run's
+    /// loop (OrderedSeriesCore 0x11f9) into its end, 0x221e: the checkpoints cleared, its map element deleted, the rubber
+    /// band shut down, the race clock off. Then the series' leave of its beat me there leg - returnToCruise / quit /
+    /// returnToGarage: PlayTauntpostRace(record 1's racer, the player, 0), 0x22a0..0x2396 (`raceleave::taunts`) - and the
+    /// series is over (0x3e96): a story series not complete puts its meeting back (`Career::story_series_left`). A run
+    /// of a cruising man (generic_local_hookman's include) is ended the same way, without a taunt (not decoded).
+    fn leave_run(&mut self, cmd: raceleave::Command) {
+        if self.game.race.is_some() || self.roam.challenge.is_none() {
+            return;
+        }
+        let man = self.vehicles.cars.iter().position(|c| c.racer);
+        if let Some((id, ..)) = self.roam.series_of.take() {
+            let facts = raceleave::Facts { bmt: true, ..Default::default() };
+            let voice = man.and_then(|k| self.drivers.set_of.get(&k)).map(|set| prerace::voice_of(&self.opt.data_dir, set).unwrap_or_default()).unwrap_or_default();
+            let taunts = raceleave::taunts(&raceleave::Owner::Series, cmd, &facts);
+            log::info!("run to the line left ({:?}): story series {} over, taunts {:?}", cmd, id, taunts);
+            for t in &taunts {
+                self.speech.request_as(t, &voice);
+            }
+            self.game.career.series_drop(&id);
+            self.game.career.story_series_left(&id);
+        } else {
+            log::info!("run to the line left ({:?})", cmd);
+        }
+        self.roam.cancel(&mut self.vehicles);
+        self.game.opt_x.arcade.bmt_left.set(None);
+        self.game.opt_x.arcade.bmt_run.set(None);
+        self.game.bmt_goal = None;
+    }
+
     fn handle_action(&mut self, action: MenuAction) {
         // (the list opened from form 89 after the call had gone: ARCADE's ACCEPT with the flag (F-15258, its flag path)
         // writes nRaceIndex, nNumLaps, nDifficulty, result 3 and closes the menus - the race is the script's, which
@@ -13850,6 +13883,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         }
         if action == MenuAction::None {
             return;
+        }
+        // (a run to the line's QUIT RACE / GO TO GARAGE - its pause menu, `Game` pause tab 0)
+        match action {
+            MenuAction::QuitRace => self.leave_run(raceleave::Command::Quit),
+            MenuAction::GoToGarage => self.leave_run(raceleave::Command::Garage),
+            _ => {}
         }
         let (Some(gpu), Some(world)) = (self.gpu.as_mut(), self.world.as_mut()) else { return };
         // (a pink slip race quit is lost: `Dlg_Desc_Pinkslip_Quit` - step 21)

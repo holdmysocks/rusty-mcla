@@ -8466,6 +8466,8 @@ pub struct ArcadeLive {
     pub pb: Option<PaybackLeg>,
     /// a run to the line is in its last thirty seconds: the seconds left (`roamers`)
     pub bmt_left: std::cell::Cell<Option<f32>>,
+    /// a run to the line is on: its race clock (s), the player's place and the racers (`roamers`)
+    pub bmt_run: std::cell::Cell<Option<(f32, i32, i32)>>,
     /// step 19d: the payback's chase and client, the borrowed vehicle's look, the time
     /// trial's sounds and banner, the hookman's meeting
     pub d: S19d,
@@ -8807,13 +8809,22 @@ impl Game {
         Some((left.abs(), left / 10.0, false))
     }
 
-    /// The run to the line once an opponent is in: the race clock from 0 against a target of
-    /// thirty seconds (the hookmen's scripts, e.g. `game/race/0xb8b948b6` 0x10a6..0x10f0:
-    /// property 0 of HUD control 6 on, Race_SetTargetTime(30000), Race_SetTimer(0), the
-    /// control shown) - the same countdown as a time trial's. Nothing else of a race's HUD.
+    /// The run to the line is a race of its own (OrderedSeriesCore, `game/race/0xb8b948b6`, and
+    /// the hookmen's cores): its HUD is a race's - GO alone at the start (SplashVisibles[3] = 2),
+    /// the race clock running up from the start, the place (PosNumber: CalculateRankOrdered of the
+    /// player, every 20 ms loop) of PosMax racers. Once an opponent is in: the race clock from 0
+    /// against a target of thirty seconds (0x10a6..0x10f0: property 0 of HUD control 6 on,
+    /// Race_SetTargetTime(30000), Race_SetTimer(0), the control shown) - the same countdown as a
+    /// time trial's.
     pub fn mc4_bmt_hud(&self) -> Option<crate::flash_ui::RaceHud> {
-        let left = self.opt_x.arcade.bmt_left.get().filter(|_| self.race.is_none())?;
-        Some(crate::flash_ui::RaceHud { elapsed: BMT_CLOSE_SECS - left, time_left: Some(left), clock_count: Some((left / 10.0, false)), lap: 1, laps: 1, pos: 1, total: 1, ..Default::default() })
+        if self.race.is_some() {
+            return None;
+        }
+        let (time, pos, total) = self.opt_x.arcade.bmt_run.get().unwrap_or((0.0, 1, 1));
+        match self.opt_x.arcade.bmt_left.get() {
+            Some(left) => Some(crate::flash_ui::RaceHud { elapsed: BMT_CLOSE_SECS - left, time_left: Some(left), clock_count: Some((left / 10.0, false)), lap: 1, laps: 1, pos, total, go_only: true, ..Default::default() }),
+            None => self.opt_x.arcade.bmt_run.get().map(|_| crate::flash_ui::RaceHud { elapsed: time, lap: 1, laps: 1, pos, total, go_only: true, ..Default::default() }),
+        }
     }
 
     /// The time trial's clock has passed its target: the state machine's splash
@@ -18116,6 +18127,12 @@ mod tests {
         let h = g.mc4_bmt_hud().unwrap();
         assert_eq!((h.time_left, h.clock_count, h.elapsed, h.total), (Some(12.5), Some((1.25, false)), 17.5, 1));
         g.opt_x.arcade.bmt_left.set(None);
+        // (the run itself: its clock running up, the place of the racers, GO alone)
+        g.opt_x.arcade.bmt_run.set(Some((7.25, 2, 2)));
+        let h = g.mc4_bmt_hud().unwrap();
+        assert_eq!((h.time_left, h.elapsed, h.pos, h.total, h.go_only, h.countdown), (None, 7.25, 2, 2, true, 0.0));
+        g.opt_x.arcade.bmt_run.set(None);
+        assert!(g.mc4_bmt_hud().is_none());
         // (the car page's pictures: by the texture's name, whatever its case)
         if cfgs.is_dir() {
             assert!(g.mc4_reward_picture("timetrial_vp_mit_eclipse_99").map_or(false, |p| p.is_file()));
