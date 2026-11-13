@@ -693,6 +693,7 @@ impl Ambience {
             }
             self.cur = Some(di);
         }
+        crate::ticktimes::pt("amb: district switch");
         // F-99455 after the district: the categories' resolved volumes gate the rest (-80 dB at 0x82018A50)
         let level = |lib: &SoundLib, n: &str| lib.category(n).map_or(0.0, |c| c.volume);
         if level(lib, "AMBIENCE") <= -80.0 {
@@ -733,6 +734,7 @@ impl Ambience {
             }
         }
         let d = self.districts[di].clone();
+        crate::ticktimes::pt("amb: beds set");
         // distant one-shots and quadshots (F-14965), while AMBIENCE_ONESHOTS is above -80 dB; else they stop with their
         // own release (F-61925(mgr, -1)) and the timers wait
         self.shots.retain(|h| lib.playing(*h));
@@ -776,6 +778,7 @@ impl Ambience {
                 }
             }
         }
+        crate::ticktimes::pt("amb: shots");
         // location emitters (F-89955 -> F-80314): the two nearest inside their outer radius (3D), first over the hangout
         // cores' landmark sets (+196, not a disabled one; in a hangout - byte +1077 - only their records with flag 0x4),
         // then over the district's list D; a record whose sound for the time of day is NULL counts as outside
@@ -905,6 +908,7 @@ impl Ambience {
                 }
             }
         }
+        crate::ticktimes::pt("amb: locations");
         // the line emitter (F-49122): the polyline's nearest point, within +39 m
         if d.line.len() >= 2 && d.line_sound != self.null {
             let mut best = (f32::MAX, Vec3::ZERO);

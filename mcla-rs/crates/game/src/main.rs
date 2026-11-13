@@ -9520,6 +9520,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             self.sound.update(a, &self.vehicles, &self.game, &self.police, &self.ability, &self.props.hits, &self.props.scrapes, &|i| self.props.matrix(i), self.cam.pos, right, fwd, rain_snd, horn, self.time_of_day > 19.5 || self.time_of_day < 6.0, &|p: Vec3, q: Vec3| { let d = q - p; let l = d.length(); l > 0.0 && world.collider.raycast(p, d / l, l).is_some() }, &|p: Vec3, q: Vec3| { let d = q - p; let l = d.length(); if l > 0.0 { world.collider.raycast(p, d / l, l).map(|h| h.surface as u8) } else { None } }, Some(&world.collider), dt);
             // the map effects' sounds follow the effect instances (ptxaudio.rs)
             self.sound.effects(&self.fx.instances(), Some(&world.collider));
+            crate::ticktimes::pt("snd: effects");
             crate::ticktimes::mark(crate::ticktimes::S::Other);
             if let Some(v) = self.vehicles.player_mut().and_then(|c| c.state.veh.as_mut()) {
                 (v.hyd.ev_rise, v.hyd.ev_drop, v.hyd.ev_end, v.hyd.ev_switch) = (0, 0, 0, 0);
@@ -9536,6 +9537,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
             }
             a.render(dt);
+            crate::ticktimes::pt("snd: audio render");
             // (the original's music lists, `mc4`: handed to the audio once; PLAY in the playlist
             // menu starts its song - the genre it brings is not a change to start another for)
             if a.lists.is_none() {

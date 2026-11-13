@@ -2693,6 +2693,7 @@ impl Fleet {
                     held += 1;
                     e.engine = EngineSound::new_opponent(lib, &c.model.name, c.model.bike);
                     if let Some(en) = &mut e.engine {
+                        lib.prefetch(&en.sounds());
                         en.owner = e.owner;
                         en.start_at(engine_rpm(c));
                         en.set_bus(lib, 0);

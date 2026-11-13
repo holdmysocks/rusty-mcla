@@ -1045,7 +1045,7 @@ impl Audio {
     /// mixer's state 16 switched on - its enter sound, the categories ramped in over 1 s - or
     /// off (no exit sound: +18 is NULL_SOUND), ramped back over 1 s. Only a change acts.
     pub fn set_time_slow(&mut self, on: bool) {
-        let Ok(mut m) = self.mixer.lock() else { return };
+        let Ok(mut m) = self.lock_mixer() else { return };
         let was = m.slow.map_or(false, |r| r.to == SLOWDOWN_ON);
         if was == on {
             return;
@@ -1062,18 +1062,18 @@ impl Audio {
 
     /// The ambience's share under the slow-down state (AMBIENCE's category gain).
     pub fn ambience_gain(&self) -> f32 {
-        self.mixer.lock().ok().and_then(|m| m.slow.map(|r| r.now()[2])).unwrap_or(1.0)
+        self.lock_mixer().ok().and_then(|m| m.slow.map(|r| r.now()[2])).unwrap_or(1.0)
     }
 
     pub fn set_master(&self, v: f32) {
-        if let Ok(mut m) = self.mixer.lock() {
+        if let Ok(mut m) = self.lock_mixer() {
             m.master = v;
         }
     }
 
     /// Number of voices currently mixing (debug).
     pub fn voices(&self) -> usize {
-        self.mixer.lock().map(|m| m.voices.len()).unwrap_or(0)
+        self.lock_mixer().map(|m| m.voices.len()).unwrap_or(0)
     }
 
     /// Wave names of a bank folder.
@@ -1092,7 +1092,15 @@ impl Audio {
         if let Some(c) = self.clips.get(key) {
             return c.clone();
         }
+        let t = Instant::now();
         let c = load_wav(&self.root.join(format!("{key}.wav"))).map(Arc::new);
+        // (test hook MCLA_READ_LOG_MS=<ms>: a wave read on the game thread longer than that is logged)
+        if let Some(lim) = std::env::var("MCLA_READ_LOG_MS").ok().and_then(|v| v.parse::<f32>().ok()) {
+            let ms = t.elapsed().as_secs_f32() * 1000.0;
+            if ms > lim {
+                log::info!("audio: clip {key} read in {ms:.1} ms (game thread)");
+            }
+        }
         if c.is_none() && self.available {
             log::warn!("audio: missing clip {}", key);
         }
@@ -1113,7 +1121,7 @@ impl Audio {
 
     /// A voice that is not one of the 96 game voices (the offline stream).
     fn push_any(&mut self, v: Voice) {
-        if let Ok(mut m) = self.mixer.lock() {
+        if let Ok(mut m) = self.lock_mixer() {
             m.voices.push(v);
         }
     }
@@ -1122,7 +1130,7 @@ impl Audio {
     pub fn stream_playing(&self) -> Option<&str> {
         let on = match (&self.voice, self.offline.is_some()) {
             (Some(s), _) => !s.empty(),
-            (None, true) => self.mixer.lock().is_ok_and(|m| m.voices.iter().any(|v| v.id == STREAM_VOICE)),
+            (None, true) => self.lock_mixer().is_ok_and(|m| m.voices.iter().any(|v| v.id == STREAM_VOICE)),
             _ => false,
         };
         self.stream_name.as_deref().filter(|_| on)
@@ -1168,7 +1176,7 @@ impl Audio {
     }
 
     fn push(&mut self, v: Voice) {
-        if let Ok(mut m) = self.mixer.lock() {
+        if let Ok(mut m) = self.lock_mixer() {
             if m.voices.len() < 96 {
                 m.voices.push(v);
             }
@@ -1204,7 +1212,7 @@ impl Audio {
     }
 
     fn set_loop_clip(&mut self, id: u64, clip: Arc<Clip>, gains: (f32, f32), speed: f32) {
-        let Ok(mut m) = self.mixer.lock() else { return };
+        let Ok(mut m) = self.lock_mixer() else { return };
         if let Some(v) = m.voices.iter_mut().find(|v| v.id == id) {
             v.tl = gains.0;
             v.tr = gains.1;
@@ -1224,7 +1232,7 @@ impl Audio {
     /// frame a new voice starts at; a one-shot voice ends at its last frame.
     pub fn drive(&mut self, id: u64, clip: &Arc<Clip>, mix: Mix, speed: f32, looping: bool, start: f64, filt: (u16, u16)) {
         let gains = mix.gains;
-        let Ok(mut m) = self.mixer.lock() else { return };
+        let Ok(mut m) = self.lock_mixer() else { return };
         if let Some(out) = mix.pans_chain {
             if let Some(c) = m.chains.iter_mut().find(|c| c.id == mix.chain) {
                 c.out = out;
@@ -1251,8 +1259,19 @@ impl Audio {
     }
 
     /// Set an effect chain's settings for this frame (made on the first call; dropped when not set for a second).
+    /// The mixer's lock from the game thread; with MCLA_TICKPTS the wait is counted (`ticktimes::lock_wait`).
+    fn lock_mixer(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, Mixer>> {
+        if !crate::ticktimes::counting() {
+            return self.mixer.lock();
+        }
+        let t = Instant::now();
+        let g = self.mixer.lock();
+        crate::ticktimes::lock_wait(t.elapsed().as_secs_f64() * 1000.0);
+        g
+    }
+
     pub fn set_chain(&mut self, id: u32, p: &ChainParams) {
-        let Ok(mut m) = self.mixer.lock() else { return };
+        let Ok(mut m) = self.lock_mixer() else { return };
         if let Some(c) = m.chains.iter_mut().find(|c| c.id == id) {
             c.set(p);
         } else if m.chains.len() < 16 {
@@ -1266,7 +1285,7 @@ impl Audio {
     /// Hold a driven voice where it is, silent, for this frame (its sound is on a paused audio timer: F-89113 skips the
     /// sound and the type's pause method stops its voice); the next `drive` goes on from there.
     pub fn hold(&mut self, id: u64) {
-        let Ok(mut m) = self.mixer.lock() else { return };
+        let Ok(mut m) = self.lock_mixer() else { return };
         if let Some(v) = m.voices.iter_mut().find(|v| v.id == id) {
             v.held = true;
             v.fresh = true;
@@ -1405,7 +1424,7 @@ impl Audio {
 
     pub fn end_frame(&mut self) {
         self.watch_output();
-        if let Ok(mut m) = self.mixer.lock() {
+        if let Ok(mut m) = self.lock_mixer() {
             for v in m.voices.iter_mut().filter(|v| v.id != 0 && v.id != STREAM_VOICE) {
                 if !v.fresh {
                     v.held = false;
@@ -1541,7 +1560,7 @@ impl Audio {
         self.voice_vol = volume;
         // (offline: a mixer voice, so the capture holds it)
         if self.offline.is_some() {
-            if let Ok(mut m) = self.mixer.lock() {
+            if let Ok(mut m) = self.lock_mixer() {
                 m.voices.retain(|v| v.id != STREAM_VOICE);
             }
             if let Some(c) = rel.and_then(|r| crate::sndobj::decode_mp3(&self.root.join(r))) {

@@ -471,6 +471,14 @@ impl EngineSound {
 
     /// The entity's constructor (F-43725) sets the rpm +200, the slewed rpm +204 and the previous rpm +208 to the car's
     /// engine rpm (F-12794) when it is made: a racer handed another car starts at its engine's rpm, not at 0.
+    /// Every sound this engine can play (its loops, ignition, kaput, revs, gear changes and backfire): what
+    /// `SoundLib::prefetch` queues when the engine is made (D59).
+    pub fn sounds(&self) -> Vec<u32> {
+        let mut v: Vec<u32> = self.recs.iter().map(|r| r.sound).collect();
+        v.extend([self.ign_sound, self.kaput_sound, self.revs_sound, self.gear_sound, self.gear_special, self.backfire]);
+        v
+    }
+
     pub fn start_at(&mut self, rpm: f32) {
         self.s = rpm;
         self.prev_rpm = rpm;

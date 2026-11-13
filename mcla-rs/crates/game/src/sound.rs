@@ -820,6 +820,7 @@ impl Sound {
     }
 
     pub fn update(&mut self, a: &mut Audio, vehicles: &Vehicles, game: &Game, police: &Police, ability: &Abilities, prop_hits: &[PropHit], prop_scrapes: &[PropScrape], prop_matrix: &dyn Fn(u32) -> Option<[[f32; 4]; 4]>, cam_pos: Vec3, cam_right: Vec3, cam_fwd: Vec3, rain: f32, horn: bool, night: bool, probe: &dyn Fn(Vec3, Vec3) -> bool, probe_at: &dyn Fn(Vec3, Vec3) -> Option<u8>, collider: Option<&crate::physics::collision::WorldCollider>, dt: f32) {
+        crate::ticktimes::pt("snd: start");
         let wet = rain > 0.0;
         a.set_listener(cam_pos, cam_right);
         if !self.lib_tried {
@@ -989,6 +990,7 @@ impl Sound {
                 }
                 keep
             });
+            crate::ticktimes::pt("snd: requests");
             // the listener is the render camera's matrix (F-37562 keeps it, F-99037 hands it over every frame), pitch included
             lib.listener = (cam_pos, cam_right, cam_fwd);
             // (test hook MCLA_LISTENER_TRACE=1: the player's car in the listener's axes and its pan, every frame)
@@ -1556,6 +1558,7 @@ impl Sound {
                     e.stop(lib);
                 }
                 self.engine = crate::engaudio::EngineSound::new(lib, &name, p.model.bike).map(|mut e| {
+                    lib.prefetch(&e.sounds());
                     e.start_at(crate::caraudio::engine_rpm(p));
                     (name.clone(), e)
                 });
@@ -1588,6 +1591,7 @@ impl Sound {
             self.ignition = 0;
             self.engine_running = true;
         }
+        crate::ticktimes::pt("car: engine chosen");
         let orig_engine = self.engine.is_some();
         if let (Some(lib), Some((_, eng))) = (&mut self.lib, &mut self.engine) {
             let vs = st.veh.as_deref();
@@ -1622,6 +1626,7 @@ impl Sound {
             // engine sits a little towards the centre of the mix whatever the camera does
             a.engine(0, &name, st.rpm, throttle, (eng_vol, eng_vol));
         }
+        crate::ticktimes::pt("car: engine run");
         // police events for the cars' sounds: a pull-over chirps and speaks, the chase runs the sirens, the radio
         // timer asks for the worldized chatter (the original's AI triggers: VEHICLE_EXTRA_AUDIO_RULE.md section 5)
         let fleet_on = self.fleet.is_some();
@@ -1661,7 +1666,9 @@ impl Sound {
                 speech_busy: self.speech_busy,
                 siren: crate::caraudio::SirenTune::of(&police.tun),
             };
+            crate::ticktimes::pt("car: fleet in");
             fleet.update(lib, vehicles, cam_pos, ctl, wet, game.mode == Mode::Race, pol, dt);
+            crate::ticktimes::pt("car: fleet update");
             // the ambient cars' occluder switches of their updates (F-70175, F-74101), their outputs again to the voices
             if let Some(oc) = &mut self.occl {
                 let sw = fleet.traffic_occ();
@@ -1675,6 +1682,7 @@ impl Sound {
         }
         self.nitro_btn = p.input.nitro;
 
+        crate::ticktimes::pt("car: fleet");
         if driving {
             // gear changes
             if !orig_engine && st.gear != self.gear && self.gear > 0 && st.gear > 0 {
@@ -1966,6 +1974,7 @@ impl Sound {
         if self.beds.is_none() {
             self.beds = Some(load_beds(a.root()));
         }
+        crate::ticktimes::pt("amb: beds");
         let district = game.district_at(st.pos);
         let base = if game.mode == Mode::Garage {
             "GARAGE_01"
@@ -1987,6 +1996,7 @@ impl Sound {
                 (_, true) => "WILSHIRE_NIGHT",
             }
         };
+        crate::ticktimes::pt("amb: district");
         if let (Some(lib), Some(amb)) = (&mut self.lib, &mut self.amb) {
             // the original's district ambience (ambaudio.rs) at the listener; the port's rain bed stays until the
             // original's rain sounds are decoded
@@ -2040,8 +2050,10 @@ impl Sound {
             }
             // the hangout cores' audio natives (AudioManager_InitHangout / _SuspendHangout / _DestroyHangout with the core,
             // _EnterHangoutState / _ExitHangoutState with the pull-in - `Game::hangout_audio`)
+            crate::ticktimes::pt("amb: reverb");
             let cores: Vec<(&str, Vec3, bool)> = crate::hangoutin::SETUPS.iter().filter(|s| game.mc4_hangout_core_running(s.key)).map(|s| (s.key, s.line[1], game.place_hold.contains_key(&s.uid))).collect();
             amb.hangouts(lib, &cores, game.hangout_audio.map(|(si, _)| crate::hangoutin::SETUPS[si].key));
+            crate::ticktimes::pt("amb: hangouts");
             let mph = if game.mode == Mode::Paused { 0.0 } else { speed * 2.237 };
             // mgr +1079 (F-37136 clears it at a scene's start, F-65984 sets it at its finish)
             amb.positional = !self.scene;
@@ -2061,6 +2073,7 @@ impl Sound {
                 }
                 None => amb.update(lib, cam_pos, night, game.mode == Mode::Garage, forced, mph, game.mode == Mode::Race, dt, &mut crate::ambaudio::NoOccluders),
             }
+            crate::ticktimes::pt("amb: slots");
             // rain and thunder (WEATHER_AUDIO_RULE.md): the player's wheel cover probes, the listener's probe 50 m up
             let wheels: Vec<Vec3> = if p.model.bike { vec![st.wheels[0].world_pos, st.wheels[2].world_pos] } else { [0, 2, 1, 3].iter().map(|&i| st.wheels[i].world_pos).collect() };
             amb.cover_probe(wet, &wheels, probe);
@@ -2076,6 +2089,7 @@ impl Sound {
         }
 
         a.update_music((driving || game.mode == Mode::Paused) && !game.radio_held);
+        crate::ticktimes::pt("snd: ambience done");
         self.finish(a, dt);
         crate::ticktimes::pt("snd: end");
     }

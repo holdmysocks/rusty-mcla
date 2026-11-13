@@ -1470,14 +1470,17 @@ impl SoundLib {
                 return None;
             }
         }
-        if !mp3 {
-            self.loader.cancel(file);
-        }
         let t = std::time::Instant::now();
-        let c = if mp3 { decode_mp3(file) } else { crate::audio::load_wav_clip(file) };
+        let claimed = if mp3 { None } else { self.loader.claim(file) };
+        let waited = claimed.is_some();
+        let c = match claimed {
+            Some(c) => c,
+            None if mp3 => decode_mp3(file),
+            None => crate::audio::load_wav_clip(file),
+        };
         let ms = t.elapsed().as_secs_f32() * 1000.0;
-        if ms > 20.0 {
-            log::info!("audio: {} read in {:.0} ms", file.display(), ms);
+        if ms > std::env::var("MCLA_READ_LOG_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(20.0) {
+            log::info!("audio: {} {} in {:.0} ms", file.display(), if waited { "waited for (loader)" } else { "read" }, ms);
         }
         let c = c.map(|mut c| {
             c.loop_start = loop_start.max(0) as usize;
@@ -1536,6 +1539,47 @@ impl SoundLib {
             }
         }
         log::info!("audio: {} waves of the resident banks queued", self.resident.len());
+    }
+
+    /// Queue on the loader's thread every wave the sounds `roots` can play, not yet read (D59: a car's engine,
+    /// gear and backfire sounds when its engine entity is made, so their first play does not read them on the game
+    /// thread). A wave played before its read is done is read on the spot, or waited for when it is being read, so
+    /// what plays is the same either way.
+    pub fn prefetch(&mut self, roots: &[u32]) {
+        let mut files = Vec::new();
+        let mut seen = hashbrown::HashSet::new();
+        for &r in roots {
+            self.collect_waves(r, 0, &mut seen, &mut files);
+        }
+        for (f, ls) in files {
+            if !self.clips.contains_key(&f) {
+                self.loader.ask(&f, ls, false);
+            }
+        }
+    }
+
+    fn collect_waves(&mut self, hash: u32, depth: usize, seen: &mut hashbrown::HashSet<u32>, out: &mut Vec<(PathBuf, i32)>) {
+        if hash == 0 || hash == NONE || depth > 24 || !seen.insert(hash) {
+            return;
+        }
+        let Some(o) = self.snd.get(hash).map(|o| o.to_vec()) else { return };
+        let mut kids: Vec<u32> = Vec::new();
+        match audcfg::parse_sound(&o).payload {
+            Payload::Simple { bank, wave } => {
+                if let Some(w) = self.bank_waves(bank).and_then(|m| m.get(&wave).cloned()) {
+                    out.push((w.file, w.loop_start));
+                }
+            }
+            Payload::Looping { child, .. } | Payload::Envelope { child, .. } | Payload::Wrapper { child } | Payload::Retriggered { child, .. } | Payload::VariableBlock { child, .. } | Payload::MathOperation { child, .. } => kids.push(child),
+            Payload::OnStop { child, on_stop, third } => kids.extend([child, on_stop, third]),
+            Payload::Crossfade { near, far, .. } => kids.extend([near, far]),
+            Payload::TwinLoop { children, .. } | Payload::Sequential { children } | Payload::Multitrack { children } => kids = children,
+            Payload::Randomized { children, .. } => kids = children.into_iter().map(|c| c.0).collect(),
+            Payload::Streaming { .. } | Payload::Speech | Payload::Other(_) => {}
+        }
+        for k in kids {
+            self.collect_waves(k, depth + 1, seen, out);
+        }
     }
 
     // ---------------------------------------------------------------------------------------------- building
@@ -2029,6 +2073,7 @@ impl SoundLib {
 
     pub fn update(&mut self, dt: f32, audio: &mut Audio) {
         self.step_scenes(dt);
+        crate::ticktimes::pt("lib: scenes");
         for (id, p) in std::mem::take(&mut self.chain_params) {
             audio.set_chain(id, &p);
         }
@@ -2040,6 +2085,7 @@ impl SoundLib {
             }
         }
         self.take_loaded();
+        crate::ticktimes::pt("lib: scenes, loads");
         let mut insts = std::mem::take(&mut self.insts);
         let (lp, lr, lf) = self.listener;
         let mut drives = Vec::new();
@@ -2087,6 +2133,7 @@ impl SoundLib {
                 drives.push(self.emit(v, inst, (lp, lr, lf)));
             }
         }
+        crate::ticktimes::pt("lib: instances");
         // the voice manager (F-46122): the waves ranked by their levels, 96 a bucket; the first 80 (manager +12 = +24 - +28,
         // F-68447: driversettings.xml NumPhysicalVoices 100 less NumNewPhysicalVoiceBufferVoices 20; recorded 80 / 100 / 20
         // all through a drive, F-11111 never called) are heard: a waiting one starts while physical voices of the 100
@@ -2589,6 +2636,8 @@ struct LoadQ {
     bulk: std::collections::VecDeque<(PathBuf, i32)>,
     asked: hashbrown::HashSet<PathBuf>,
     done: Vec<(PathBuf, Option<Clip>)>,
+    /// the file the thread is reading now
+    reading: Option<PathBuf>,
     quit: bool,
 }
 
@@ -2605,6 +2654,7 @@ impl Loader {
                         return;
                     }
                     if let Some(j) = g.urgent.pop_front().or_else(|| g.bulk.pop_front()) {
+                        g.reading = Some(j.0.clone());
                         break j;
                     }
                     let Ok(n) = cv.wait(g) else { return };
@@ -2616,8 +2666,10 @@ impl Loader {
                 c
             });
             if let Ok(mut g) = w.0.lock() {
+                g.reading = None;
                 g.done.push((job.0, c));
             }
+            w.1.notify_all();
         });
         if let Err(e) = spawned {
             log::warn!("audio: no wave loader thread ({e}): waves are read when they play");
@@ -2643,15 +2695,29 @@ impl Loader {
         } else {
             g.bulk.push_back((file.to_path_buf(), loop_start));
         }
-        self.q.1.notify_one();
+        self.q.1.notify_all();
     }
 
-    /// A file read on the game thread after all: out of the queue (it may be in flight already).
-    fn cancel(&self, file: &Path) {
-        let Ok(mut g) = self.q.0.lock() else { return };
-        if g.asked.remove(file) {
-            g.bulk.retain(|j| j.0 != file);
-            g.urgent.retain(|j| j.0 != file);
+    /// A file the game thread needs now: out of the queue and `None` (read it there), or, when the thread is reading
+    /// it or has read it, that read waited for and taken (D59: not read twice).
+    fn claim(&self, file: &Path) -> Option<Option<Clip>> {
+        let Ok(mut g) = self.q.0.lock() else { return None };
+        if !g.asked.contains(file) {
+            return None;
+        }
+        g.bulk.retain(|j| j.0 != file);
+        g.urgent.retain(|j| j.0 != file);
+        loop {
+            if let Some(i) = g.done.iter().position(|d| d.0 == file) {
+                g.asked.remove(file);
+                return Some(g.done.swap_remove(i).1);
+            }
+            if g.reading.as_deref() != Some(file) {
+                g.asked.remove(file);
+                return None;
+            }
+            let Ok(n) = self.q.1.wait(g) else { return None };
+            g = n;
         }
     }
 
@@ -4661,6 +4727,60 @@ mod tests {
         }
         lib.trim_clips();
         assert!(lib.resident.iter().all(|f| lib.clips.get(f).is_some_and(|c| c.0.is_some())), "a resident wave was dropped or unread");
+    }
+
+    /// D59: a car's engine waves queued on the loader when its engine is made give the same clips as reading them at
+    /// the first play - played at once (the reads in flight waited for, the queued ones read on the spot) and played
+    /// after the loader is done.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn engine_prefetch_gives_the_same_clips() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        // (the audio generator is shared by every library of the thread: each starts from the same state, so the
+        // randomized children pick the same)
+        let s0 = audio_rng_state();
+        let play_all = |lib: &mut SoundLib, sounds: &[u32]| {
+            set_audio_rng_state(s0);
+            for &s in sounds {
+                lib.play_hash(s, Req::at(Vec3::new(5.0, 0.0, 0.0)));
+            }
+        };
+        // (file, loop start, rate, channels, samples' hash)
+        let clips = |lib: &SoundLib| -> Vec<(PathBuf, usize, u32, usize, u64)> {
+            let mut v: Vec<_> = lib.clips.iter().filter_map(|(p, c)| c.0.as_ref().map(|c| (p.clone(), c.loop_start, c.rate, c.channels, c.data.iter().fold(c.data.len() as u64, |h, x| h.wrapping_mul(0x100000001b3) ^ x.to_bits() as u64)))).collect();
+            v.sort_by(|x, y| x.0.cmp(&y.0));
+            v
+        };
+        for car in ["vp_chv_camaro_06", "vp_nsn_350z_06"] {
+            let mut old = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
+            let sounds = crate::engaudio::EngineSound::new_opponent(&old, car, false).expect("engine").sounds();
+            play_all(&mut old, &sounds);
+            let want = clips(&old);
+            assert!(want.len() >= 6, "{car}: {} waves", want.len());
+            // played at once after the prefetch
+            let mut now = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
+            now.prefetch(&sounds);
+            play_all(&mut now, &sounds);
+            let only = |v: Vec<(PathBuf, usize, u32, usize, u64)>| -> Vec<_> { v.into_iter().filter(|c| want.iter().any(|w| w.0 == c.0)).collect() };
+            let diff = |got: Vec<(PathBuf, usize, u32, usize, u64)>| -> Vec<String> {
+                let mut d: Vec<String> = want.iter().filter(|w| !got.contains(w)).map(|w| format!("want {w:?} got {:?}", got.iter().find(|g| g.0 == w.0))).collect();
+                d.extend(got.iter().filter(|g| !want.iter().any(|w| w.0 == g.0)).map(|g| format!("extra {g:?}")));
+                d
+            };
+            assert_eq!(diff(only(clips(&now))), Vec::<String>::new(), "{car}: played at once");
+            // played after the loader is done: nothing read on the game thread
+            let mut late = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
+            late.prefetch(&sounds);
+            let t = std::time::Instant::now();
+            while want.iter().any(|w| !late.clips.contains_key(&w.0)) {
+                assert!(t.elapsed().as_secs() < 60, "{car}: the prefetch never ended");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                late.take_loaded();
+            }
+            play_all(&mut late, &sounds);
+            assert_eq!(diff(only(clips(&late))), Vec::<String>::new(), "{car}: played after the load");
+        }
     }
 
     /// A career speech line as the original plays it (work/slipstream/audio4/cap/n2.txt): PLAYER_NITROUS through the player
