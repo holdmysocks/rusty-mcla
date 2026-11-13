@@ -722,7 +722,7 @@ impl Speech {
                 }
                 Step::Clip { name, player, voice } => {
                     let Some(key) = self.clip_in(&name, player, voice.as_deref()) else { continue };
-                    let dur = a.clip(&key).map_or(0.0, |c| c.data.len() as f32 / c.rate.max(1) as f32);
+                    let dur = a.clip_secs(&key);
                     if dur > 0.0 {
                         log::info!("speech: taunt line {} ({}) -> {} ({:.1} s)", name, if player { "player" } else { "hookman" }, key, dur);
                         // (the career speech plays through its Speech sound: category SPEECH_CAREER)
@@ -736,7 +736,7 @@ impl Speech {
                 }
                 Step::Play { asset, player, voice, rec, force, post, attach } => {
                     let Some(key) = self.resolve(&asset, player, voice.as_deref(), rec, force) else { continue };
-                    let dur = a.clip(&key).map_or(0.0, |c| c.data.len() as f32 / c.rate.max(1) as f32);
+                    let dur = a.clip_secs(&key);
                     if dur > 0.0 {
                         log::debug!("speech: {} -> {} ({:.1} s)", asset, key, dur);
                         // the player's line through his voice's sound object "CAREER_SPEECH_<voice>_<SoundPostFix>" (F-70477;

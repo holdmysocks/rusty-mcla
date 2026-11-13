@@ -75,6 +75,38 @@ pub fn load_wav_clip(p: &Path) -> Option<Clip> {
     load_wav(p)
 }
 
+/// `load_wav`'s sample count and rate from the chunk headers alone (the data chunk's bytes, cut at the file's end, in
+/// whole frames of 16-bit samples).
+pub fn wav_samples(p: &Path) -> Option<(usize, u32)> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(p).ok()?;
+    let len = f.metadata().ok()?.len() as usize;
+    let mut head = [0u8; 12];
+    f.read_exact(&mut head).ok()?;
+    if len < 44 || &head[0..4] != b"RIFF" {
+        return None;
+    }
+    let (mut o, mut rate, mut ch) = (12usize, RATE, 1usize);
+    while o + 8 <= len {
+        let mut h = [0u8; 8];
+        f.seek(SeekFrom::Start(o as u64)).ok()?;
+        f.read_exact(&mut h).ok()?;
+        let n = u32::from_le_bytes(h[4..8].try_into().ok()?) as usize;
+        let body = o + 8;
+        if &h[0..4] == b"fmt " && body + 16 <= len {
+            let mut fm = [0u8; 8];
+            f.read_exact(&mut fm).ok()?;
+            ch = u16::from_le_bytes([fm[2], fm[3]]).max(1) as usize;
+            rate = u32::from_le_bytes(fm[4..8].try_into().ok()?);
+        } else if &h[0..4] == b"data" {
+            let end = (body + n).min(len);
+            return Some(((end - body) / (2 * ch), rate));
+        }
+        o = body + n + (n & 1);
+    }
+    None
+}
+
 fn load_wav(p: &Path) -> Option<Clip> {
     let d = std::fs::read(p).ok()?;
     if d.len() < 44 || &d[0..4] != b"RIFF" {
@@ -138,6 +170,14 @@ impl Sends {
     fn from(m: &Mix) -> Sends {
         Sends { rev: m.rev, revc: m.rev, chain: m.chain, send: m.send, sendc: m.send }
     }
+}
+
+/// A per-voice call of the game thread, queued for the tick's one lock (`Audio::flush`).
+enum MixCmd {
+    Drive { id: u64, clip: Arc<Clip>, mix: Mix, speed: f32, looping: bool, start: f64, filt: (u16, u16) },
+    LoopClip { id: u64, clip: Arc<Clip>, gains: (f32, f32), speed: f32 },
+    Chain(u32, ChainParams),
+    Hold(u64),
 }
 
 /// What the sound objects ask of one voice each update (F-88152's matrices, BUS_GRAPH_RULE.md 2.2): dry gains per ear
@@ -695,6 +735,11 @@ pub struct Audio {
     /// the original's audio metadata (`audio/X360/config` of the extracted data: sounds.dat, curves.dat ...)
     pub cfg: PathBuf,
     clips: HashMap<String, Option<Arc<Clip>>>,
+    /// converted waves' lengths in seconds from their headers (`clip_secs`)
+    clip_secs: HashMap<String, f32>,
+    /// the per-voice calls of this tick (drive, hold, a loop's clip, a chain's settings), applied in order under the
+    /// mixer's one lock a tick (`flush`, D59: was a lock per call, ~77 a tick)
+    pending: Vec<MixCmd>,
     engines: HashMap<String, Option<Arc<EngineBank>>>,
     /// wave names per bank folder (from `_index.tsv`)
     index: HashMap<String, Arc<Vec<String>>>,
@@ -875,6 +920,8 @@ impl Audio {
             root,
             cfg: Path::new(data_dir).join("audio").join("X360").join("config"),
             clips: HashMap::new(),
+            clip_secs: HashMap::new(),
+            pending: Vec::new(),
             engines: HashMap::new(),
             index: HashMap::new(),
             music: None,
@@ -912,6 +959,7 @@ impl Audio {
 
     /// Offline mode: advance the mix by `dt` seconds.
     pub fn render(&mut self, dt: f32) {
+        self.flush();
         if let Some((src, out)) = self.offline.as_mut() {
             let n = (dt * RATE as f32).round() as usize * 2;
             for _ in 0..n {
@@ -1072,7 +1120,8 @@ impl Audio {
     }
 
     /// Number of voices currently mixing (debug).
-    pub fn voices(&self) -> usize {
+    pub fn voices(&mut self) -> usize {
+        self.flush();
         self.lock_mixer().map(|m| m.voices.len()).unwrap_or(0)
     }
 
@@ -1088,6 +1137,28 @@ impl Audio {
     }
 
     /// `bank/wave` (lower case, as written by the converter).
+    /// A converted wave's length in seconds - what `clip` would give as samples / rate, read from the file's
+    /// chunk headers alone (D59: the speech times its lines by it; the samples are read by the line's own play).
+    pub fn clip_secs(&mut self, key: &str) -> f32 {
+        if let Some(Some(c)) = self.clips.get(key) {
+            return c.data.len() as f32 / c.rate.max(1) as f32;
+        }
+        if let Some(&s) = self.clip_secs.get(key) {
+            return s;
+        }
+        let s = match wav_samples(&self.root.join(format!("{key}.wav"))) {
+            Some((n, rate)) => n as f32 / rate.max(1) as f32,
+            None => {
+                if self.available {
+                    log::warn!("audio: missing clip {}", key);
+                }
+                0.0
+            }
+        };
+        self.clip_secs.insert(key.to_string(), s);
+        s
+    }
+
     pub fn clip(&mut self, key: &str) -> Option<Arc<Clip>> {
         if let Some(c) = self.clips.get(key) {
             return c.clone();
@@ -1121,6 +1192,7 @@ impl Audio {
 
     /// A voice that is not one of the 96 game voices (the offline stream).
     fn push_any(&mut self, v: Voice) {
+        self.flush();
         if let Ok(mut m) = self.lock_mixer() {
             m.voices.push(v);
         }
@@ -1176,6 +1248,7 @@ impl Audio {
     }
 
     fn push(&mut self, v: Voice) {
+        self.flush();
         if let Ok(mut m) = self.lock_mixer() {
             if m.voices.len() < 96 {
                 m.voices.push(v);
@@ -1212,7 +1285,10 @@ impl Audio {
     }
 
     fn set_loop_clip(&mut self, id: u64, clip: Arc<Clip>, gains: (f32, f32), speed: f32) {
-        let Ok(mut m) = self.lock_mixer() else { return };
+        self.pending.push(MixCmd::LoopClip { id, clip, gains, speed });
+    }
+
+    fn apply_loop_clip(m: &mut Mixer, id: u64, clip: Arc<Clip>, gains: (f32, f32), speed: f32) {
         if let Some(v) = m.voices.iter_mut().find(|v| v.id == id) {
             v.tl = gains.0;
             v.tr = gains.1;
@@ -1231,8 +1307,11 @@ impl Audio {
     /// Create or update a voice that lives while it is driven every frame (the sound objects' waves): `start` is the
     /// frame a new voice starts at; a one-shot voice ends at its last frame.
     pub fn drive(&mut self, id: u64, clip: &Arc<Clip>, mix: Mix, speed: f32, looping: bool, start: f64, filt: (u16, u16)) {
+        self.pending.push(MixCmd::Drive { id, clip: clip.clone(), mix, speed, looping, start, filt });
+    }
+
+    fn apply_drive(m: &mut Mixer, id: u64, clip: &Arc<Clip>, mix: Mix, speed: f32, looping: bool, start: f64, filt: (u16, u16)) {
         let gains = mix.gains;
-        let Ok(mut m) = self.lock_mixer() else { return };
         if let Some(out) = mix.pans_chain {
             if let Some(c) = m.chains.iter_mut().find(|c| c.id == mix.chain) {
                 c.out = out;
@@ -1271,7 +1350,10 @@ impl Audio {
     }
 
     pub fn set_chain(&mut self, id: u32, p: &ChainParams) {
-        let Ok(mut m) = self.lock_mixer() else { return };
+        self.pending.push(MixCmd::Chain(id, p.clone()));
+    }
+
+    fn apply_chain(m: &mut Mixer, id: u32, p: &ChainParams) {
         if let Some(c) = m.chains.iter_mut().find(|c| c.id == id) {
             c.set(p);
         } else if m.chains.len() < 16 {
@@ -1285,7 +1367,36 @@ impl Audio {
     /// Hold a driven voice where it is, silent, for this frame (its sound is on a paused audio timer: F-89113 skips the
     /// sound and the type's pause method stops its voice); the next `drive` goes on from there.
     pub fn hold(&mut self, id: u64) {
-        let Ok(mut m) = self.lock_mixer() else { return };
+        self.pending.push(MixCmd::Hold(id));
+    }
+
+    /// This tick's per-voice calls into the mixer, in their order, under one lock.
+    fn apply_pending(&mut self, m: &mut Mixer) {
+        for c in self.pending.drain(..) {
+            match c {
+                MixCmd::Drive { id, clip, mix, speed, looping, start, filt } => Self::apply_drive(m, id, &clip, mix, speed, looping, start, filt),
+                MixCmd::LoopClip { id, clip, gains, speed } => Self::apply_loop_clip(m, id, clip, gains, speed),
+                MixCmd::Chain(id, p) => Self::apply_chain(m, id, &p),
+                MixCmd::Hold(id) => Self::apply_hold(m, id),
+            }
+        }
+    }
+
+    /// The queued calls applied now (before anything else reads or changes the voices).
+    pub fn flush(&mut self) {
+        if self.pending.is_empty() {
+            return;
+        }
+        let mixer = self.mixer.clone();
+        let t = Instant::now();
+        let Ok(mut m) = mixer.lock() else { return };
+        if crate::ticktimes::counting() {
+            crate::ticktimes::lock_wait(t.elapsed().as_secs_f64() * 1000.0);
+        }
+        self.apply_pending(&mut m);
+    }
+
+    fn apply_hold(m: &mut Mixer, id: u64) {
         if let Some(v) = m.voices.iter_mut().find(|v| v.id == id) {
             v.held = true;
             v.fresh = true;
@@ -1424,7 +1535,13 @@ impl Audio {
 
     pub fn end_frame(&mut self) {
         self.watch_output();
-        if let Ok(mut m) = self.lock_mixer() {
+        let mixer = self.mixer.clone();
+        let t = Instant::now();
+        if let Ok(mut m) = mixer.lock() {
+            if crate::ticktimes::counting() {
+                crate::ticktimes::lock_wait(t.elapsed().as_secs_f64() * 1000.0);
+            }
+            self.apply_pending(&mut m);
             for v in m.voices.iter_mut().filter(|v| v.id != 0 && v.id != STREAM_VOICE) {
                 if !v.fresh {
                     v.held = false;
@@ -1433,7 +1550,7 @@ impl Audio {
                 }
                 v.fresh = false;
             }
-        }
+        };
     }
 
     fn engine_bank(&mut self, car: &str) -> Option<Arc<EngineBank>> {
@@ -1553,6 +1670,7 @@ impl Audio {
 
     /// The same from `at` seconds into the stream.
     pub fn play_stream_at(&mut self, rel: Option<&str>, volume: f32, at: f32) {
+        self.flush();
         if let Some(s) = self.voice.take() {
             s.stop();
         }
@@ -2276,6 +2394,59 @@ impl MusicMgr {
 
 #[cfg(test)]
 mod tests {
+    /// D59: the per-voice calls queued and applied under one lock a tick give the mix the calls applied one by one did
+    /// (each call flushed at once): the same rendered samples over a tick sequence of starts, moves, holds and drops.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR (data dir)"]
+    fn one_lock_a_tick_mixes_the_same() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let clip = Arc::new(Clip::mono((0..48000).map(|i| ((i as f32) * 0.031).sin() * 0.5).collect(), RATE));
+        let run = |each: bool| -> Vec<f32> {
+            let mut a = Audio::new_offline(&dir).expect("audio");
+            for tick in 0..120u32 {
+                for v in 0..6u64 {
+                    if (tick + v as u32) % 17 == 5 {
+                        a.hold(100 + v);
+                    } else if !(v == 3 && tick > 60) {
+                        let g = 0.1 + 0.05 * v as f32 + 0.002 * tick as f32;
+                        let mix = Mix { gains: (g, g * 0.7), ..Default::default() };
+                        a.drive(100 + v, &clip, mix, 1.0 + 0.01 * v as f32, v % 2 == 0, 0.0, (23900, 0));
+                    }
+                    if each {
+                        a.flush();
+                    }
+                }
+                a.end_frame();
+                a.render(1.0 / 60.0);
+            }
+            a.captured().to_vec()
+        };
+        let (one, each) = (run(false), run(true));
+        assert!(one.iter().any(|s| s.abs() > 0.01), "silent");
+        assert_eq!(one, each);
+    }
+
+    /// D59: `wav_samples` (the chunk headers alone) gives `load_wav`'s sample count and rate for every speech take and
+    /// people's shout of the converted audio (MCLA_AUDIO_DIR).
+    #[test]
+    #[ignore = "requires MCLA_AUDIO_DIR (converted audio root)"]
+    fn header_lengths_equal_the_read_ones() {
+        let root = std::path::PathBuf::from(std::env::var("MCLA_AUDIO_DIR").expect("MCLA_AUDIO_DIR"));
+        let mut n = 0;
+        for top in ["career_speech", "0x051b41b9"] {
+            for d in std::fs::read_dir(root.join(top)).expect("folder").flatten() {
+                let mut files: Vec<_> = std::fs::read_dir(d.path()).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "wav")).collect();
+                files.sort();
+                for f in files.iter().step_by(3) {
+                    let c = load_wav(f).map(|c| (c.data.len(), c.rate));
+                    assert_eq!(wav_samples(f), c, "{}", f.display());
+                    n += 1;
+                }
+            }
+        }
+        assert!(n > 1000, "{n} files");
+    }
+
     /// verify_audio_b1.md batch 19: the music manager's Play (F-33831), the race scene's suspend (F-64824) and
     /// PlaySilently (F-60016), with the song start F-62155, reset F-14624 and change F-17609 they reach, run offline
     /// (tools/music_play_reference.py) on 1,500 random manager states: every call with its arguments in order and every

@@ -875,7 +875,8 @@ impl PedVoices {
         if self.busy(lib, key) {
             return None;
         }
-        let h = lib.play_hash(hash, Req { occluder: occ, ..Req::at(pos) })?;
+        // (F-39461 plays it through the wave slot play F-21756: it waits for its wave)
+        let h = lib.play_hash(hash, Req { occluder: occ, ..Req::at(pos) }.slot())?;
         self.playing.push((key, h, pos, occ));
         Some(h)
     }
@@ -1805,7 +1806,17 @@ impl SoundLib {
 
     pub fn play_clip(&mut self, key: &str, category: &str, req: Req) -> Option<Handle> {
         let file = self.root.join(format!("{key}.wav"));
-        let clip = self.clip_of(&file, -1)?;
+        // a slot play (`Req::slot`: the speech lines, F-70477 loads the take into its wave slot first) waits unstarted
+        // for its wave from the loader's thread; the others read it here
+        // (only with the wave's index entry: its length sets the voice's while the clip is not in yet)
+        let indexed = self.wave_at(&file).is_some_and(|w| w.dur_ms.is_some());
+        self.take_loaded();
+        self.make_wait = (req.wait_load && indexed).then(Vec::new);
+        let clip = self.clip_of(&file, -1);
+        let loading = self.make_wait.take().unwrap_or_default();
+        if clip.is_none() && loading.is_empty() {
+            return None;
+        }
         // the take's wave info as the Speech sound's F-29703 sets it on the voice (headroom +216, length +212, loop bit), as a
         // Simple sound's Prepare does
         let wave = self.wave_at(&file);
@@ -1821,10 +1832,10 @@ impl SoundLib {
             None => audcfg::parse_header(&o),
         };
         let (vol, pitch) = (h.volume as f32 * 0.01, h.pitch as i32);
-        let dur_ms = wave.as_ref().and_then(|w| w.dur_ms).unwrap_or(clip.frames() as f32 * 1000.0 / clip.rate as f32);
+        let dur_ms = wave.as_ref().and_then(|w| w.dur_ms).or_else(|| clip.as_ref().map(|c| c.frames() as f32 * 1000.0 / c.rate as f32)).unwrap_or(0.0);
         let voice = self.voice_id();
         let looping = wave.as_ref().is_some_and(|w| w.loop_start >= 0);
-        let root = Node { h, vol, pitch, pan: -1, predelay_ms: 0.0, start_ms: 0.0, st: St::Waiting, t: 0.0, play_t: 0.0, clock: Clock::default(), env0: 0.0, tot: (0, 0), ty_ms: 0, kind: Kind::Wave { wave, clip: Some(clip), voice, pos_ms: 0.0, dur_ms, looping } };
+        let root = Node { h, vol, pitch, pan: -1, predelay_ms: 0.0, start_ms: 0.0, st: St::Waiting, t: 0.0, play_t: 0.0, clock: Clock::default(), env0: 0.0, tot: (0, 0), ty_ms: 0, kind: Kind::Wave { wave, clip, voice, pos_ms: 0.0, dur_ms, looping } };
         let id = self.next;
         self.next += 1;
         let timer = Some(self.timer_of(&root.h));
@@ -1832,7 +1843,7 @@ impl SoundLib {
         if std::env::var_os("MCLA_SOUND_STARTS").is_some() {
             log::info!("sound start: clip {key} ({category})");
         }
-        self.insts.push(Instance { loading: Vec::new(), id, hash: 0, root, req, prev_pos: None, frame_pos: None, doppler: 1.0, stop: false, kill: false, stop_ms: -1, timer });
+        self.insts.push(Instance { loading, id, hash: 0, root, req, prev_pos: None, frame_pos: None, doppler: 1.0, stop: false, kill: false, stop_ms: -1, timer });
         Some(Handle(id))
     }
 
@@ -4727,6 +4738,36 @@ mod tests {
         }
         lib.trim_clips();
         assert!(lib.resident.iter().all(|f| lib.clips.get(f).is_some_and(|c| c.0.is_some())), "a resident wave was dropped or unread");
+    }
+
+    /// A speech take played as a slot play (`Req::slot`, F-70477 loads it into its wave slot first) waits unstarted for
+    /// its wave from the loader and then holds the same samples and length as the take read on the spot.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn a_speech_line_waits_for_its_wave() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let mut a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let key = "career_speech/0x5756288a/45e21379";
+        let wave_of = |lib: &SoundLib, h: Handle| -> Option<(Vec<f32>, f32)> {
+            let i = lib.insts.iter().find(|i| i.id == h.0)?;
+            match &i.root.kind {
+                Kind::Wave { clip: Some(c), dur_ms, .. } => Some((c.data.clone(), *dur_ms)),
+                _ => None,
+            }
+        };
+        let mut old = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
+        let h = old.play_clip(key, "SPEECH_CAREER", Req::default()).expect("line");
+        let want = wave_of(&old, h).expect("read on the spot");
+        let mut lib = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
+        let h = lib.play_clip(key, "SPEECH_CAREER", Req::default().slot()).expect("slot line");
+        assert!(!lib.insts.iter().find(|i| i.id == h.0).unwrap().loading.is_empty(), "the take is not read on the game thread");
+        let t = std::time::Instant::now();
+        while lib.insts.iter().find(|i| i.id == h.0).is_some_and(|i| !i.loading.is_empty()) {
+            assert!(t.elapsed().as_secs() < 10, "the load never came");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            lib.update(0.0, &mut a);
+        }
+        assert_eq!(wave_of(&lib, h), Some(want));
     }
 
     /// D59: a car's engine waves queued on the loader when its engine is made give the same clips as reading them at

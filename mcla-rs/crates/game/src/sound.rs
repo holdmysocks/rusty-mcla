@@ -921,7 +921,7 @@ impl Sound {
                     crate::audio::ObjCmd::Line { key, object, player } => {
                         // a speech line's request (F-70477): the defaults of F-35212 - audio timer 0, so it holds in a pause
                         let pos = if player { vehicles.player().map(|c| c.state.pos) } else { None };
-                        if let Some(h) = lib.play_clip(&key, &object, crate::sndobj::Req { pos, ..Default::default() }) {
+                        if let Some(h) = lib.play_clip(&key, &object, crate::sndobj::Req { pos, ..Default::default() }.slot()) {
                             lib.set_timer(h, 0);
                             self.line_h = Some(h);
                             if pos.is_some() {
