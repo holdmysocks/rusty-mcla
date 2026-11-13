@@ -264,7 +264,10 @@ impl Write for Tee {
 }
 
 fn init_logging() {
-    let env = env_logger::Env::default().default_filter_or("info,wgpu_core=warn,wgpu_hal=warn,naga=warn");
+    // (egui::context=error: its one warning is `tessellate` asked for 1 pixel per point - the self movies' 960 x 640
+    // pictures - on a display scaled otherwise; it then takes the only font atlas there is, the same picture. It was a
+    // log line a frame per movie while the phone, the pause menu or the map was up: 1,025 lines in one user log.)
+    let env = env_logger::Env::default().default_filter_or("info,wgpu_core=warn,wgpu_hal=warn,naga=warn,egui::context=error");
     let mut b = env_logger::Builder::from_env(env);
     // (MCLA_LOG_MS=1: milliseconds in the log's time stamps, for timing checks)
     if std::env::var_os("MCLA_LOG_MS").is_some() {

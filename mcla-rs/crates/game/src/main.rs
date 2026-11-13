@@ -7323,6 +7323,20 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.game.tip = None;
                     self.game.phone_prompt.clear();
                 }
+                // (and its sidekickClean, F-57948 with r4 = 1: a call not yet announced whose +24 is set goes. +24 is
+                // Sidekick_AppendData's eleventh argument (F-45785 -> the queue insert F-40628 -> F-33914): 1 in the reminders - the one
+                // after RACE_GH_06's scene and Career::reminder_tick's -, 0 in the missions' calls. So a race started
+                // before the reminder came up takes it away; the port had kept it, and after the race it took the place
+                // of RACE_GH_02's call - no MISSION LOG box, its lesson nor the MINI MAP box (v0.21.0 play-test). Not
+                // while RACE_GH_06's scene holds the cruise: the original appends that reminder after the scene)
+                if !cruising && self.pending_log.is_none() {
+                    if let Some((_, text)) = self.pending_call.take() {
+                        log::info!("phone: the reminder {:?} dropped as the cruise ends (sidekickClean)", text);
+                    }
+                    if let Some((_, rem, _)) = self.reminder_wait.take() {
+                        log::info!("phone: the reminder {} dropped as the cruise ends (sidekickClean)", rem);
+                    }
+                }
             }
             if let Some(t) = self.phone_resume.as_mut() {
                 *t -= dt;
@@ -7422,7 +7436,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             self.news_timer = (self.news_timer - dt).max(-30.0);
             // (a splash line is no call: only the calls wait for the phone)
-            if career_up && self.news_timer <= 0.0 && matches!(self.game.mode, Mode::FreeRoam) && self.news.front().map_or(false, |n| n.1.is_none() || !phone_held) {
+            if career_up && self.news_timer <= 0.0 && matches!(self.game.mode, Mode::FreeRoam) && self.news.front().map_or(false, |n| n.1.is_none() || (!phone_held && self.pending_call.is_none())) {
                 if let Some((m, call)) = self.news.pop_front() {
                     log::info!("news: {:?} call {:?}", m, call);
                     // (a mission's call is on the phone alone - no line across the top:
@@ -7469,11 +7483,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 self.pending_call = Some((who, text));
                             }
                         }
+                        let own_reminder = scene.is_some() && self.pending_call.is_some();
                         match scene.filter(|_| std::env::var("MCLA_NO_CUTS").is_err() && (self.opt.shot.is_none() || std::env::var("MCLA_CUTS").is_ok())) {
                             // (the film plays only in CarSelection, before VEHICLE SELECT; RACE_GH_06's
                             // READY_TO_START_ON_ENTER plays its scene alone)
                             Some(i) => self.cuts.queue(i),
-                            None if self.pending_call.is_some() => {}
+                            // (no scene shown: the reminder this call just set is its phone call)
+                            None if own_reminder => {}
                             None => {
                                 // (the line the mission's script appends: `Career::call_line`)
                                 let line = career::Career::call_line(&c).to_string();

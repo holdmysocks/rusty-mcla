@@ -1173,7 +1173,8 @@ pub fn build(tune: &Tune, assets: &mut Assets, f: &Frame, elements: &[Element], 
     let mut q = Queue::default();
     q.frustum = Some(crate::render::Frustum::from_view_proj(f.view_proj));
     let named = ["caricon", "checkpoint_sphere", "icon_flag", "icon_gasStation", "icon_ring_hangout", "icon_ring_car", "icon_series", "icon_payback"];
-    for name in named.into_iter().chain((0..19).map(ingame)) {
+    // (icon_ingame1 .. 8: the disc has no other; a missing mesh gave no sphere, only a warning each)
+    for name in named.into_iter().chain((1..9).map(ingame)) {
         if let Some(m) = assets.mesh(name) {
             q.spheres.insert(name, m.sphere);
         }
