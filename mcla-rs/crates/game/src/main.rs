@@ -427,6 +427,8 @@ struct App {
     /// vinyl shapes (loaded when a livery is first painted) and the cars' zone layouts
     shape_lib: Option<vinyl::ShapeLib>,
     car_zones: hashbrown::HashMap<String, Option<Arc<vinyl::CarZones>>>,
+    /// The livery the player's car shows while a new one is drawn and compressed (`LiveryPace`).
+    livery_pace: livery_bc3::LiveryPace,
     cuts: cutscene::Cutscenes,
     cine: cine::Cine,
     /// a scene is waiting for its surroundings to load: (dialogue stream, frames waited)
@@ -1549,6 +1551,7 @@ impl App {
             dust_lights: Vec::new(),
             shape_lib: None,
             car_zones: Default::default(),
+            livery_pace: livery_bc3::LiveryPace::default(),
             cuts: Default::default(),
             cine: Default::default(),
             cine_hold: None,
@@ -7677,8 +7680,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // (half size while the editor is open: it is painted again at every change)
                     let size: usize = if self.game.vinyl_edit.is_some() { 512 } else { 1024 };
                     let key = if want == "custom" { format!("custom@{}#{}x{}", pcar, self.game.livery_rev, size) } else { format!("{}@{}", want, pcar) };
-                    if !self.vehicles.has_vinyl(&key) {
-                        self.vehicles.drop_vinyls(&format!("custom@{}#", pcar), &key);
+                    let painted = !self.vehicles.has_vinyl(&key);
+                    let mut layers = None;
+                    if painted {
                         let s19a_file = want.strip_prefix("setup:").and_then(|c| render::car_lamps::setup_file(std::path::Path::new(&self.opt.data_dir), c)).and_then(|f| std::fs::read(f).ok());
                         let livery = match (s19a_file, want.strip_prefix("preset:")) {
                             (Some(d), _) => vinyl::Livery::from_xcc(&d),
@@ -7693,6 +7697,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 let t = Instant::now();
                                 let px = vinyl::compose(&z, &livery, lib, size);
                                 log::info!("vinyls: painted {} ({} layers) in {:.0} ms", key, livery.layer_count(), t.elapsed().as_secs_f32() * 1000.0);
+                                layers = Some(livery.layer_count());
                                 self.vehicles.add_vinyl_texture(&mut gpu, &key, size as u32, size as u32, &px);
                             }
                             None => {
@@ -7701,7 +7706,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             }
                         }
                     }
-                    want = key;
+                    // (shown when the original's generator, compression job and apply would have it there - `LiveryPace`)
+                    let editing = self.game.vinyl_edit.is_some();
+                    want = self.livery_pace.show(&pcar, &key, self.tick_no / 2, if painted { Some(layers.unwrap_or(0)) } else { None }, editing);
+                    if want == key {
+                        self.vehicles.drop_vinyls(&format!("custom@{}#", pcar), &key);
+                    }
+                } else {
+                    self.livery_pace.shown_now(&pcar, &want);
                 }
                 if let Some(c) = self.vehicles.player_mut() {
                     c.set_vinyl(&want);

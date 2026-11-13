@@ -623,8 +623,88 @@ pub fn mip_chain(rgba: &[u8], w: usize, h: usize) -> Vec<(Vec<u8>, usize, usize)
     out
 }
 
+/// When a new livery shows on the player's car. The original's vinyl driver F-93469 (once a frame): `+604` starts the
+/// generator (F-41503, busy byte +248); the generator's step F-71094 draws ONE layer a frame (each call: the layer,
+/// then the next; a layer whose shape is still streaming waits) and stamps +1712 with the frame counter; the call after
+/// the last layer clears +248 and stamps again; `+605` then starts the compression job F-80492, which refuses until the
+/// counter is at least +1712 + 6; `+607` waits for the job and the driver then puts the texture on the car. Until then
+/// the car shows the livery it had. So a livery of L drawn layers shows L + 8 frames after the change: L layers, the
+/// finishing call, the 6 frames' wait, the job and the apply. *(approx.)* The shapes are taken as resident (the original
+/// waits for their streaming), the job as done within its frame, and the order of the driver and the step inside a frame
+/// (+-1 frame) is not read. A car that has just come (no livery shown yet for it) takes its first one at once (the
+/// original draws it while the car is set up); the vinyl editor's redraw (F-61384, the zone at once) is not paced here.
+#[derive(Default)]
+pub struct LiveryPace {
+    car: String,
+    shown: String,
+    pending: Option<(String, u64)>,
+    layers: std::collections::HashMap<String, usize>,
+}
+
+impl LiveryPace {
+    /// A livery that is not painted from layers (none, a baked one) is shown at once *(approx.: whether the original runs
+    /// the generator for it is not read)*.
+    pub fn shown_now(&mut self, car: &str, key: &str) {
+        self.car = car.to_string();
+        self.shown = key.to_string();
+        self.pending = None;
+    }
+
+    /// The livery `car` shows at game frame `frame` when `key` is wanted (`painted`: its layer count when it was painted
+    /// this frame).
+    pub fn show(&mut self, car: &str, key: &str, frame: u64, painted: Option<usize>, editing: bool) -> String {
+        if let Some(n) = painted {
+            self.layers.insert(key.to_string(), n);
+        }
+        if self.car != car {
+            self.car = car.to_string();
+            self.shown = key.to_string();
+            self.pending = None;
+        }
+        if editing || self.shown == key {
+            self.shown = key.to_string();
+            self.pending = None;
+            return key.to_string();
+        }
+        match &self.pending {
+            Some((k, t)) if k == key => {
+                if frame >= *t {
+                    self.shown = key.to_string();
+                    self.pending = None;
+                }
+            }
+            _ => {
+                let n = self.layers.get(key).copied().unwrap_or(0) as u64;
+                self.pending = Some((key.to_string(), frame + n + 8));
+            }
+        }
+        self.shown.clone()
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    /// The pace: a car's first livery at once; a change shows L + 8 frames later, the old one until then; the editor at once.
+    #[test]
+    fn livery_pace() {
+        use super::LiveryPace;
+        let mut p = LiveryPace::default();
+        assert_eq!(p.show("r8", "a", 100, Some(3), false), "a");
+        assert_eq!(p.show("r8", "b", 200, Some(5), false), "a");
+        for f in 201..213 {
+            assert_eq!(p.show("r8", "b", f, None, false), "a", "frame {f}");
+        }
+        assert_eq!(p.show("r8", "b", 213, None, false), "b");
+        // back to a (painted before, 3 layers): 11 frames
+        assert_eq!(p.show("r8", "a", 300, None, false), "b");
+        assert_eq!(p.show("r8", "a", 310, None, false), "b");
+        assert_eq!(p.show("r8", "a", 311, None, false), "a");
+        assert_eq!(p.show("r8", "c", 400, Some(9), true), "c");
+    }
+}
+
+#[cfg(test)]
+mod tests_bc3 {
     use super::*;
 
     /// tools/livery_bc3_reference.py: the original's surface copy F-60873 run offline on 15 images of 32 x 32 (noise,
