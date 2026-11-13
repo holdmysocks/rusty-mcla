@@ -72,9 +72,10 @@ impl BoomTune {
         // consumes the character that ends it, so when the value is the last thing on its line the skip takes the whole next
         // line: 12 shipped files lose their ShiftZOffsetZ after `AsYfocusY 0` that way (test boom_files_read_as_the_original).
         // (the header `type: a` and the class's name with its `{` come first: the members start after the brace)
-        let (mut skip, mut open) = (false, false);
+        // (a text with no brace - the tests' - starts its members after the class's name)
+        let (mut skip, mut open, brace) = (false, false, text.contains('{'));
         for l in text.split('\n') {
-            if l.contains('{') {
+            if if brace { l.contains('{') } else { !open && l.contains("camBoomCS") } {
                 open = true;
                 continue;
             }
