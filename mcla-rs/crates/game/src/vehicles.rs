@@ -3,7 +3,7 @@
 
 use crate::ai::AiDriver;
 use crate::physics::{CarInput, CarParams, CarState};
-use crate::render::{Gpu, GpuTexture, MatMode, ObjectBinding, ObjectUniform, Vertex};
+use crate::render::{Gpu, GpuTexture, MatMode, ObjPart, ObjectBinding, ObjectUniform, Vertex};
 use crate::vehicle_model::{self, CarAsset, CarConfig, Slot};
 use crate::world::{GpuBatch, World};
 use anyhow::Result;
@@ -159,7 +159,7 @@ pub struct CarModel {
     pub fx_anchors: Vec<(Mat4, bool)>,
     pub fx_anchor_rear: bool,
     /// its part meshes' rest rotations as the uniform takes them (`rest_index`, `rest_table`)
-    pub rest_rot: [[f32; 4]; 27],
+    pub rest_rot: [[f32; 4]; 72],
     /// a traffic model's own wheels (tyre, rim, disc in its body fragment, on its wheel
     /// bones `wheel_0` .. `wheel_5` - `CarPart::mesh_wheel`): their hubs; drawn as batch groups 7 - 12 turned about these -
     /// no rim set of `resources/rims` is put on
@@ -1968,8 +1968,11 @@ struct MeshPrep {
     geo_alt: Option<MeshGeo>,
 }
 
-/// The most rest rotations a set-up car's table holds (`ObjectUniform::rest_rot`; the 49 vp_ cars have at most 12).
-pub const REST_ROTS: usize = 12;
+/// The most rest rotations a set-up car's table holds (`ObjectUniform::rest_rot`, 72 vec4). 12 was the stock parts'
+/// most; with the garage's parts fitted, nine vp_ cars needed more (a user's log, 2026-11-13: SL65, Vantage, Gallardo ...),
+/// whose meshes past 12 kept an unturned dent. Every car with every part of every slot and list fitted, one at a time:
+/// `rest_rotations_of_all_parts`.
+pub const REST_ROTS: usize = 32;
 
 #[cfg(test)]
 thread_local! {
@@ -2000,7 +2003,11 @@ pub fn rest_index(tab: &mut Vec<Mat3>, r: Mat3) -> u32 {
         return k as u32 + 1;
     }
     if tab.len() >= REST_ROTS {
-        log::warn!("vehicles: more than {} rest rotations, a mesh's dent is not turned", REST_ROTS);
+        // (once: a car past the table logs it for each such mesh at every build - 390 lines in a user's 3-hour log)
+        static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            log::warn!("vehicles: more than {} rest rotations, a mesh's dent is not turned (logged once)", REST_ROTS);
+        }
         return 0;
     }
     tab.push(r);
@@ -2021,12 +2028,12 @@ pub fn rest_mark(nrm: Vec3, k: u32) -> Vec3 {
 }
 
 /// The table as the uniform takes it: nine floats a rotation (its columns), packed.
-pub fn rest_table(tab: &[Mat3]) -> [[f32; 4]; 27] {
-    let mut f = [0.0f32; 108];
+pub fn rest_table(tab: &[Mat3]) -> [[f32; 4]; 72] {
+    let mut f = [0.0f32; 288];
     for (k, r) in tab.iter().take(REST_ROTS).enumerate() {
         f[9 * k..9 * k + 9].copy_from_slice(&r.to_cols_array());
     }
-    let mut out = [[0.0; 4]; 27];
+    let mut out = [[0.0; 4]; 72];
     for (i, v) in out.iter_mut().enumerate() {
         v.copy_from_slice(&f[4 * i..4 * i + 4]);
     }
@@ -4009,18 +4016,20 @@ impl Vehicles {
     }
 
     pub fn spawn(&mut self, gpu: &Gpu, model: Arc<CarModel>, pos: Vec3, yaw: f32, color: [f32; 4], is_player: bool) -> usize {
-        // (the parts' uniforms in shared buffers, written once a frame by `upload_uniforms` - render::ObjPool)
+        // (the parts' uniforms in shared buffers, written once a frame by `upload_uniforms` - render::ObjPool. D59: the body
+        // owns the car's car block (render::CarUniform), its windows and parts share it; the wheels, rotors and calipers
+        // share the all-default one - their uniforms set none of its rows)
         let binding = gpu.new_pooled_object(&ObjectUniform::default());
-        let wheel_bindings = (0..4).map(|_| gpu.new_pooled_object(&ObjectUniform::default())).collect();
-        let caliper_bindings = (0..4).map(|_| gpu.new_pooled_object(&ObjectUniform::default())).collect();
-        let rotor_bindings = (0..4).map(|_| gpu.new_pooled_object(&ObjectUniform::default())).collect();
-        let window_bindings = if model.windows.iter().any(|w| w.is_some()) { (0..2).map(|_| gpu.new_pooled_object(&ObjectUniform::default())).collect() } else { Vec::new() };
+        let wheel_bindings = (0..4).map(|_| gpu.new_pooled_on_default_car()).collect();
+        let caliper_bindings = (0..4).map(|_| gpu.new_pooled_on_default_car()).collect();
+        let rotor_bindings = (0..4).map(|_| gpu.new_pooled_on_default_car()).collect();
+        let window_bindings = if model.windows.iter().any(|w| w.is_some()) { (0..2).map(|_| gpu.new_pooled_part(&binding)).collect() } else { Vec::new() };
         let part_bindings = match model.batch_window.iter().copied().max().unwrap_or(0) {
-            g if g >= 21 => (0..g as usize - 2).map(|_| gpu.new_pooled_object(&ObjectUniform::default())).collect(),
-            g if g >= 20 => (0..18).map(|_| gpu.new_pooled_object(&ObjectUniform::default())).collect(),
-            g if g >= 13 => (0..17).map(|_| gpu.new_pooled_object(&ObjectUniform::default())).collect(),
-            g if g >= 7 => (0..10).map(|_| gpu.new_pooled_object(&ObjectUniform::default())).collect(),
-            g if g >= 3 => (0..4).map(|_| gpu.new_pooled_object(&ObjectUniform::default())).collect(),
+            g if g >= 21 => (0..g as usize - 2).map(|_| gpu.new_pooled_part(&binding)).collect(),
+            g if g >= 20 => (0..18).map(|_| gpu.new_pooled_part(&binding)).collect(),
+            g if g >= 13 => (0..17).map(|_| gpu.new_pooled_part(&binding)).collect(),
+            g if g >= 7 => (0..10).map(|_| gpu.new_pooled_part(&binding)).collect(),
+            g if g >= 3 => (0..4).map(|_| gpu.new_pooled_part(&binding)).collect(),
             _ => Vec::new(),
         };
         let mut ai = None;
@@ -6509,12 +6518,22 @@ if keep || c.state.pos.distance(center) < 450.0 {
             };
             let body_u = ObjectUniform { model: m.to_cols_array_2d(), color: body_color, params: [lights, c.input.brake, c.state.damage, siren + reversing + 16.0 + 32.0 * s19d_look.0 as f32 + int_glass], dents: body_slots, color2: s19d_look.1, tint: s19d_look.2, interior: s19d_look.3, fade_min: c.model.min.extend(c.pu_mirror).to_array(), fade_size: (c.model.max - c.model.min).max(Vec3::splat(0.01)).extend(c.amb_lamps.tint).to_array(), fill: car_fill, lamp_a: lamp_rows.0, lamp_b: lamp_rows.1, area_a: s19d_look.4, area_b: s19d_look.5, slots: amb_slots, glass_tint: gv.tint, glass_bumped: gv.bumped, rest_rot: c.model.rest_rot, neon_si: neon_si[ci], trim: body_trim, brushed: body_brushed };
             batch.push_object(&c.binding, &body_u);
+            // (D59: the windows and parts write their own rows only, `ObjPart`; the rest is the body's car block, written
+            // just now. MCLA_OBJ_CHECK=1 compares what the GPU gets with the old whole uniforms - render::UniformBatch::expect)
+            let body_p = body_u.part();
+            let check = crate::render::obj_check_on();
+            if check {
+                batch.expect(&c.binding, &body_u);
+            }
             lap.to(5);
             // (the side windows: the body's object moved by the window bone's clip)
             for (k, wb) in c.window_bindings.iter().enumerate() {
                 let Some(clip) = c.model.windows[k].as_ref() else { continue };
                 let wm = m * clip.delta(c.windows[k].clip_time(clip.duration));
-                batch.push_object(wb, &ObjectUniform { model: wm.to_cols_array_2d(), ..body_u });
+                batch.push_part(wb, &ObjPart { model: wm.to_cols_array_2d(), ..body_p });
+                if check {
+                    batch.expect(wb, &ObjectUniform { model: wm.to_cols_array_2d(), ..body_u });
+                }
             }
             // (the moving damage parts: hood, trunk lid, rear and front bumper - damageparts.rs)
             let spoiler_d = c.model.spoiler.as_ref().map(|cl| cl.deltas(c.spoiler.clip_time(cl.duration))).unwrap_or_default();
@@ -6619,7 +6638,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                     // (the fallen piece is drawn where its body is)
                     _ => parts.bumpers[k - 2].as_ref().map_or(m, |b| b.slot_draw(&m, c.model.slot_bones[k - 2].as_ref().unwrap_or(&b.m_rest), b.detached.filter(|_| !(self.hide_player && c.is_player)).map(|l| Mat4::from_rotation_translation(l.rot, l.pos)))),
                 };
-                let mut pu = ObjectUniform { model: pm.to_cols_array_2d(), ..body_u };
+                let mut pu = ObjPart { model: pm.to_cols_array_2d(), ..body_p };
                 pu.dents[2] = dmg_slot(dmg_params(k as u32 + 3, c.model.bike, c.model.part_rig.movement));
                 // (a traffic model's own wheel: its rim's and matte's programs dent it too, the vertex taken in its
                 // wheel bone's frame - every va_ wheel bone is its hub with no turn or scale, so p - hub; the third
@@ -6629,7 +6648,10 @@ if keep || c.state.pos.distance(center) < 450.0 {
                         pu.dents[2] = [h.x, h.y, h.z, 1.0];
                     }
                 }
-                batch.push_object(pb, &pu);
+                batch.push_part(pb, &pu);
+                if check {
+                    batch.expect(pb, &ObjectUniform::join(&pu, &body_u.car()));
+                }
             }
             for (i, b) in c.wheel_bindings.iter().enumerate() {
                 let left = i % 2 == 0;
@@ -6736,7 +6758,13 @@ if keep || c.state.pos.distance(center) < 450.0 {
                         rim_rows[..5].copy_from_slice(&r);
                     }
                 }
-                batch.push_object(b, &ObjectUniform { model: wm.to_cols_array_2d(), color: [0.8, 0.8, 0.8, 1.0], params: [night, use_gradient, 0.0, 0.0], dents: finish, fill: car_fill, trim: rim_rows, ..Default::default() });
+                {
+                    let p = ObjPart { model: wm.to_cols_array_2d(), color: [0.8, 0.8, 0.8, 1.0], params: [night, use_gradient, 0.0, 0.0], dents: finish, fill: car_fill, trim: rim_rows, ..Default::default() };
+                    batch.push_part(b, &p);
+                    if crate::render::obj_check_on() {
+                        batch.expect(b, &ObjectUniform { model: wm.to_cols_array_2d(), color: [0.8, 0.8, 0.8, 1.0], params: [night, use_gradient, 0.0, 0.0], dents: finish, fill: car_fill, trim: rim_rows, ..Default::default() });
+                    }
+                }
                 // the brake (F-43091 -> F-57869, `brake_place`): the rotor in the wheel's turning frame, the caliper in its
                 // hub's, both sized by the axle's rim radius - the set-up's (WheelFit::rim_radius). (approx.) a car without a
                 // set-up: the radius of the rim the port draws, its rim ratio of the tyre
@@ -6754,13 +6782,25 @@ if keep || c.state.pos.distance(center) < 450.0 {
                     rf[4] = [0.0; 4];
                     for (k, m) in [(i, ra), (i + 1, rb)] {
                         if let Some(rbd) = c.rotor_bindings.get(k) {
-                            batch.push_object(rbd, &ObjectUniform { model: m.to_cols_array_2d(), color: [0.8, 0.8, 0.8, 1.0], params: [night, 0.0, 0.0, 0.0], dents: rf, fill: car_fill, ..Default::default() });
+                            {
+                                let p = ObjPart { model: m.to_cols_array_2d(), color: [0.8, 0.8, 0.8, 1.0], params: [night, 0.0, 0.0, 0.0], dents: rf, fill: car_fill, ..Default::default() };
+                                batch.push_part(rbd, &p);
+                                if crate::render::obj_check_on() {
+                                    batch.expect(rbd, &ObjectUniform { model: m.to_cols_array_2d(), color: [0.8, 0.8, 0.8, 1.0], params: [night, 0.0, 0.0, 0.0], dents: rf, fill: car_fill, ..Default::default() });
+                                }
+                            }
                         }
                     }
                     if let Some(cb) = c.caliper_bindings.get(i) {
                         let mut mark = [[0.0; 4]; 6];
                         mark[3] = [0.0, 1.0, 0.0, 0.0];
-                        batch.push_object(cb, &ObjectUniform { model: cal.to_cols_array_2d(), color: [0.8, 0.8, 0.8, 1.0], params: [night, 0.0, 0.0, 0.0], dents: mark, fill: car_fill, ..Default::default() });
+                        {
+                            let p = ObjPart { model: cal.to_cols_array_2d(), color: [0.8, 0.8, 0.8, 1.0], params: [night, 0.0, 0.0, 0.0], dents: mark, fill: car_fill, ..Default::default() };
+                            batch.push_part(cb, &p);
+                            if crate::render::obj_check_on() {
+                                batch.expect(cb, &ObjectUniform { model: cal.to_cols_array_2d(), color: [0.8, 0.8, 0.8, 1.0], params: [night, 0.0, 0.0, 0.0], dents: mark, fill: car_fill, ..Default::default() });
+                            }
+                        }
                     }
                 } else if !c.model.bike && (c.model.brakes.is_some() || c.brake.is_some() || (c.is_player && self.player_brake.is_some())) {
                     let axle = (i >= 2) as usize;
@@ -6770,7 +6810,13 @@ if keep || c.state.pos.distance(center) < 450.0 {
                     rf[3][2] = 0.0;
                     rf[4] = [0.0; 4];
                     if let Some(rb) = c.rotor_bindings.get(i) {
-                        batch.push_object(rb, &ObjectUniform { model: brake_place(frame, rim_r).to_cols_array_2d(), color: [0.8, 0.8, 0.8, 1.0], params: [night, 0.0, 0.0, 0.0], dents: rf, fill: car_fill, ..Default::default() });
+                        {
+                            let p = ObjPart { model: brake_place(frame, rim_r).to_cols_array_2d(), color: [0.8, 0.8, 0.8, 1.0], params: [night, 0.0, 0.0, 0.0], dents: rf, fill: car_fill, ..Default::default() };
+                            batch.push_part(rb, &p);
+                            if crate::render::obj_check_on() {
+                                batch.expect(rb, &ObjectUniform { model: brake_place(frame, rim_r).to_cols_array_2d(), color: [0.8, 0.8, 0.8, 1.0], params: [night, 0.0, 0.0, 0.0], dents: rf, fill: car_fill, ..Default::default() });
+                            }
+                        }
                     }
                     if let Some(cb) = c.caliper_bindings.get(i) {
                         // (a right hub turned over: x and y reversed)
@@ -6782,13 +6828,19 @@ if keep || c.state.pos.distance(center) < 450.0 {
                         // (brakeCaliperTintColor, F-91597, in the object's `brushed` row - a caliper's object draws no
                         // brushed metal; none for a car without a record or set-up, which keeps the old look)
                         let cal_tint = if c.is_player { self.player_caliper } else { c.look.as_ref().map_or([0.0; 4], |l| l.caliper) };
-                        batch.push_object(cb, &ObjectUniform { model: cm.to_cols_array_2d(), color: [0.8, 0.8, 0.8, 1.0], params: [night, 0.0, 0.0, 0.0], dents: mark, fill: car_fill, brushed: cal_tint, ..Default::default() });
+                        {
+                            let p = ObjPart { model: cm.to_cols_array_2d(), color: [0.8, 0.8, 0.8, 1.0], params: [night, 0.0, 0.0, 0.0], dents: mark, fill: car_fill, brushed: cal_tint, ..Default::default() };
+                            batch.push_part(cb, &p);
+                            if crate::render::obj_check_on() {
+                                batch.expect(cb, &ObjectUniform { model: cm.to_cols_array_2d(), color: [0.8, 0.8, 0.8, 1.0], params: [night, 0.0, 0.0, 0.0], dents: mark, fill: car_fill, brushed: cal_tint, ..Default::default() });
+                            }
+                        }
                     }
                 }
             }
         }
         lap.to(7);
-        car_times::objects(self.cars.iter().map(|c| 1 + c.part_bindings.len() + c.window_bindings.len()).sum(), std::mem::size_of::<ObjectUniform>());
+        car_times::objects(self.cars.iter().map(|c| 1 + c.part_bindings.len() + c.window_bindings.len()).sum(), std::mem::size_of::<ObjPart>());
         gpu.flush_uniforms(&mut batch);
         lap.to(6);
         self.uniforms = batch;
@@ -9404,7 +9456,7 @@ mod rest_rot_tests {
     fn rest_table_packs_as_the_shader_reads() {
         let mut tab = Vec::new();
         assert_eq!(rest_index(&mut tab, Mat3::IDENTITY), 0);
-        let rots: Vec<Mat3> = (0..14).map(|i| Mat3::from_rotation_y(0.1 + i as f32 * 0.2)).collect();
+        let rots: Vec<Mat3> = (0..REST_ROTS + 2).map(|i| Mat3::from_rotation_y(0.1 + i as f32 * 0.09)).collect();
         for (i, r) in rots.iter().enumerate() {
             assert_eq!(rest_index(&mut tab, *r), if i < REST_ROTS { i as u32 + 1 } else { 0 });
         }
@@ -9483,6 +9535,58 @@ mod rest_rot_tests {
         }
         println!("{ncars} cars, {meshes} meshes: {same} unchanged, {turned} turned; vertices {vturned} of {vall}; tables {tabs} (max {maxt})");
         assert!(ncars > 80 && maxt <= REST_ROTS);
+    }
+
+    /// Every vp_ car built with each part of each garage slot and each list (`CarConfig::extra`) fitted, one at a time,
+    /// the rest stock: the rest rotations of all of them together (bit for bit), which bounds any combination's table,
+    /// must fit REST_ROTS.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc"]
+    fn rest_rotations_of_all_parts() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let assets = crate::assets::Assets::new(&dir);
+        let root = std::path::Path::new(&dir).join("resources/vehicle");
+        let mut cars: Vec<_> = std::fs::read_dir(&root).unwrap().flatten().map(|e| e.path())
+            .filter(|p| p.is_dir() && p.file_name().map_or(false, |n| n.to_string_lossy().starts_with("vp_"))).collect();
+        cars.sort();
+        let mut worst = (0usize, String::new());
+        for p in cars {
+            let name = p.file_name().unwrap().to_string_lossy().to_string();
+            let Ok(car) = vehicle_model::load_car(&assets, &p) else { continue };
+            let mut cfgs = vec![CarConfig::default()];
+            for slot in vehicle_model::CUSTOM_SLOTS {
+                for (i, v) in car.variants(slot).iter().enumerate() {
+                    if i > 0 && !v.is_empty() {
+                        let mut c = CarConfig::default();
+                        c.set(slot, i);
+                        cfgs.push(c);
+                    }
+                }
+            }
+            for (sec, _) in vehicle_model::EXTRA_PARTS {
+                for n in 1..10 {
+                    let mut c = CarConfig::default();
+                    c.extra.insert(sec.to_string(), n);
+                    cfgs.push(c);
+                }
+            }
+            let (mut all, mut one): (Vec<Mat3>, usize) = (Vec::new(), 0);
+            for c in &cfgs {
+                let prep = Vehicles::prep_car(&car, &p, c);
+                one = one.max(prep.rest_rot.len());
+                for r in &prep.rest_rot {
+                    if !all.iter().any(|q| mat3_bits_eq(q, r)) {
+                        all.push(*r);
+                    }
+                }
+            }
+            println!("{name}: {} builds, most in one {one}, all parts together {}", cfgs.len(), all.len());
+            if all.len() > worst.0 {
+                worst = (all.len(), name);
+            }
+        }
+        println!("most: {} ({})", worst.0, worst.1);
+        assert!(worst.0 < REST_ROTS, "{worst:?}");
     }
 
     /// The original's move against the port's: VS_CarPaint moves the bone-space vertex by d x m (d = normalize(dmgParams

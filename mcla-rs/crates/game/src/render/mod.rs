@@ -1066,7 +1066,7 @@ pub struct ObjectUniform {
     /// a set-up car's part bones' rest rotations (restMtx's 3 x 3, F-14987), up to `vehicles::REST_ROTS`, nine floats
     /// each (three columns), packed: the vertex dent of a mesh whose index k > 0 (in its normal's length,
     /// `vehicles::rest_mark`) is turned by rotation k - 1 (city.wgsl vs_body)
-    pub rest_rot: [[f32; 4]; 27],
+    pub rest_rot: [[f32; 4]; 72],
     /// siColor2 (c59) of a set-up car's draws: its exterior neon's colour x pulse x intensity x 0.3 (`vehicles::ExtNeon::si_color`,
     /// F-96984 / F-56246), screened in by the third byte of the vertex colour; 0 for others
     pub neon_si: [f32; 4],
@@ -1084,7 +1084,100 @@ impl Default for ObjectUniform {
         // (lamps without a table of their own: the Audi R8's, as before the tables were read)
         let (lamp_a, lamp_b) = car_lamps::R8.uniform();
         let g = crate::damagemap::glass_vars([0.0; 4], false, false, true, false, &crate::damagemap::RECORDED_GLASS, [0.0, 1.0, 0.0], [0.0; 3], -1.0, false);
-        ObjectUniform { model: Mat4::IDENTITY.to_cols_array_2d(), color: [1.0, 1.0, 1.0, 0.0], params: [0.0; 4], dents: [[0.0; 4]; 6], color2: [0.0; 4], fade_min: [0.0; 4], fade_size: [1.0; 4], tint: [0.0; 4], interior: [[0.0; 4]; 5], fill: [0.0; 4], lamp_a, lamp_b, area_a: [[0.0; 4]; 5], area_b: [[0.0; 4]; 5], slots: [[0.0; 4]; 5], glass_tint: g.tint, glass_bumped: g.bumped, rest_rot: [[0.0; 4]; 27], neon_si: [0.0; 4], trim: [[0.0; 4]; 12], brushed: [0.0; 4] }
+        ObjectUniform { model: Mat4::IDENTITY.to_cols_array_2d(), color: [1.0, 1.0, 1.0, 0.0], params: [0.0; 4], dents: [[0.0; 4]; 6], color2: [0.0; 4], fade_min: [0.0; 4], fade_size: [1.0; 4], tint: [0.0; 4], interior: [[0.0; 4]; 5], fill: [0.0; 4], lamp_a, lamp_b, area_a: [[0.0; 4]; 5], area_b: [[0.0; 4]; 5], slots: [[0.0; 4]; 5], glass_tint: g.tint, glass_bumped: g.bumped, rest_rot: [[0.0; 4]; 72], neon_si: [0.0; 4], trim: [[0.0; 4]; 12], brushed: [0.0; 4] }
+    }
+}
+
+/// What the GPU reads of an `ObjectUniform` for each object: city.wgsl's `Object` (group 3 binding 0). The rest of it,
+/// equal for every object of one car, is `CarUniform` (binding 2), written once for the car and shared by its
+/// parts and windows (D59: the cars' uniforms 4.9 -> ~1.3 MB a frame with traffic; docs/reference/carparts/
+/// object_uniform_split.md). The fields are the `ObjectUniform`'s, in its order.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable, Debug, PartialEq)]
+pub struct ObjPart {
+    pub model: [[f32; 4]; 4],
+    pub color: [f32; 4],
+    pub params: [f32; 4],
+    pub dents: [[f32; 4]; 6],
+    pub color2: [f32; 4],
+    pub fade_min: [f32; 4],
+    pub fade_size: [f32; 4],
+    pub tint: [f32; 4],
+    pub fill: [f32; 4],
+    pub neon_si: [f32; 4],
+    pub trim: [[f32; 4]; 12],
+    pub brushed: [f32; 4],
+}
+
+/// The part of an `ObjectUniform` that is the car's (city.wgsl's `CarBlock`, group 3 binding 2).
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable, Debug, PartialEq)]
+pub struct CarUniform {
+    pub interior: [[f32; 4]; 5],
+    pub lamp_a: [[f32; 4]; car_lamps::IDS],
+    pub lamp_b: [[f32; 4]; car_lamps::IDS],
+    pub area_a: [[f32; 4]; 5],
+    pub area_b: [[f32; 4]; 5],
+    pub slots: [[f32; 4]; 5],
+    pub glass_tint: [[f32; 4]; 9],
+    pub glass_bumped: [[f32; 4]; 9],
+    pub rest_rot: [[f32; 4]; 72],
+}
+
+impl Default for ObjPart {
+    /// `ObjectUniform::default()`'s own part.
+    fn default() -> Self {
+        ObjPart { model: Mat4::IDENTITY.to_cols_array_2d(), color: [1.0, 1.0, 1.0, 0.0], params: [0.0; 4], dents: [[0.0; 4]; 6], color2: [0.0; 4], fade_min: [0.0; 4], fade_size: [1.0; 4], tint: [0.0; 4], fill: [0.0; 4], neon_si: [0.0; 4], trim: [[0.0; 4]; 12], brushed: [0.0; 4] }
+    }
+}
+
+impl ObjectUniform {
+    /// The object's own part (`ObjPart`).
+    pub fn part(&self) -> ObjPart {
+        ObjPart { model: self.model, color: self.color, params: self.params, dents: self.dents, color2: self.color2, fade_min: self.fade_min, fade_size: self.fade_size, tint: self.tint, fill: self.fill, neon_si: self.neon_si, trim: self.trim, brushed: self.brushed }
+    }
+
+    /// The car's part (`CarUniform`).
+    pub fn car(&self) -> CarUniform {
+        CarUniform { interior: self.interior, lamp_a: self.lamp_a, lamp_b: self.lamp_b, area_a: self.area_a, area_b: self.area_b, slots: self.slots, glass_tint: self.glass_tint, glass_bumped: self.glass_bumped, rest_rot: self.rest_rot }
+    }
+
+    /// The two put back together (the check `MCLA_OBJ_CHECK`: what the shader reads, in the old layout).
+    pub fn join(p: &ObjPart, c: &CarUniform) -> ObjectUniform {
+        ObjectUniform { model: p.model, color: p.color, params: p.params, dents: p.dents, color2: p.color2, fade_min: p.fade_min, fade_size: p.fade_size, tint: p.tint, interior: c.interior, fill: p.fill, lamp_a: c.lamp_a, lamp_b: c.lamp_b, area_a: c.area_a, area_b: c.area_b, slots: c.slots, glass_tint: c.glass_tint, glass_bumped: c.glass_bumped, rest_rot: c.rest_rot, neon_si: p.neon_si, trim: p.trim, brushed: p.brushed }
+    }
+}
+
+/// MCLA_OBJ_CHECK=1: every frame, the objects the cars push are read back out of the pools' mirrors (what the GPU gets)
+/// as their part and the car block they are bound to, put back into the old `ObjectUniform` and compared byte for byte
+/// with what the old code pushed for them (`UniformBatch::expect`); the counts in the log every 120 frames.
+pub fn obj_check_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("MCLA_OBJ_CHECK").is_some())
+}
+
+/// Where an object's car block lies: its own slot, or the one of the object it shares it with (`shared`: its pushes
+/// do not write it - a car's parts and windows the body's, the wheels the all-default block).
+#[derive(Clone)]
+struct CarRef {
+    buf: wgpu::Buffer,
+    off: u64,
+    slot: Option<Arc<CarSlot>>,
+    shared: bool,
+}
+
+/// A car block's slot in `Gpu::car_pool`; given back when the last object bound to it is dropped.
+struct CarSlot {
+    pool: Arc<std::sync::Mutex<ObjPool>>,
+    buf: u32,
+    off: u64,
+}
+
+impl Drop for CarSlot {
+    fn drop(&mut self) {
+        if let Ok(mut p) = self.pool.lock() {
+            p.free.push((self.buf, self.off));
+        }
     }
 }
 
@@ -1095,6 +1188,7 @@ pub struct ObjectBinding {
     /// where in `buf` its uniform lies (0, or its slot in a shared buffer - `Gpu::new_pooled_object`)
     pub off: u64,
     slot: Option<PoolSlot>,
+    car: CarRef,
 }
 
 /// Objects whose uniforms share buffers of `POOL_SLOTS` slots (`Gpu::new_pooled_object`, the cars' parts), each
@@ -1156,6 +1250,9 @@ pub struct UniformBatch {
     /// a pooled object's value was put in its pool's mirror (`push_object`): the pools' changed parts are written at the flush
     pooled: bool,
     arena: Option<wgpu::Buffer>,
+    /// MCLA_OBJ_CHECK: the objects' old values this frame - (object pool slot, car pool slot, the old value)
+    checks: Vec<((u32, u64), (u32, u64), ObjectUniform)>,
+    check_tally: (u64, u64, u64),
 }
 
 impl UniformBatch {
@@ -1168,6 +1265,15 @@ impl UniformBatch {
     }
 
     pub fn push_object(&mut self, b: &ObjectBinding, u: &ObjectUniform) {
+        self.push_part(b, &u.part());
+        if !b.car.shared {
+            self.push_car(b, &u.car());
+        }
+    }
+
+    /// The object's own part only: its car block is the one it shares (`Gpu::new_pooled_part`), written by the object
+    /// that owns it.
+    pub fn push_part(&mut self, b: &ObjectBinding, u: &ObjPart) {
         let v = bytemuck::bytes_of(u);
         match b.slot.as_ref() {
             // (into the mirror at once, not through `bytes`: the buffer is written from the mirror at the flush, as before)
@@ -1184,12 +1290,41 @@ impl UniformBatch {
         }
     }
 
+    fn push_car(&mut self, b: &ObjectBinding, c: &CarUniform) {
+        let v = bytemuck::bytes_of(c);
+        match b.car.slot.as_ref() {
+            Some(s) => {
+                if let Ok(mut p) = s.pool.lock() {
+                    p.put(s.buf, s.off, v);
+                }
+                self.pooled = true;
+            }
+            None => {
+                self.dst.push((b.car.buf.clone(), b.car.off, self.bytes.len() as u64, v.len() as u64));
+                self.bytes.extend_from_slice(v);
+            }
+        }
+    }
+
+    /// MCLA_OBJ_CHECK: what the old code pushed for this pooled object this frame, compared at the flush with what its
+    /// slot and its car block's slot hold then.
+    pub fn expect(&mut self, b: &ObjectBinding, u: &ObjectUniform) {
+        if let (Some(s), Some(c)) = (b.slot.as_ref(), b.car.slot.as_ref()) {
+            self.checks.push(((s.buf, b.off), (c.buf, c.off), *u));
+        }
+    }
+
     fn flush(&mut self, gpu: &Gpu) {
+        if !self.checks.is_empty() {
+            self.check(gpu);
+        }
         if std::mem::take(&mut self.pooled) {
-            if let Ok(mut p) = gpu.obj_pool.lock() {
-                for i in 0..p.bufs.len() {
-                    if let Some((lo, hi)) = p.dirty[i].take() {
-                        gpu.queue.write_buffer(&p.bufs[i], lo as u64, &p.mirror[i][lo..hi]);
+            for pool in [&gpu.obj_pool, &gpu.car_pool] {
+                if let Ok(mut p) = pool.lock() {
+                    for i in 0..p.bufs.len() {
+                        if let Some((lo, hi)) = p.dirty[i].take() {
+                            gpu.queue.write_buffer(&p.bufs[i], lo as u64, &p.mirror[i][lo..hi]);
+                        }
                     }
                 }
             }
@@ -1216,6 +1351,35 @@ impl UniformBatch {
         gpu.queue.submit([enc.finish()]);
         self.bytes.clear();
         self.dst.clear();
+    }
+
+    /// MCLA_OBJ_CHECK: each expected object read back out of the mirrors (its part + its car block) against its old value.
+    fn check(&mut self, gpu: &Gpu) {
+        let (Ok(op), Ok(cp)) = (gpu.obj_pool.lock(), gpu.car_pool.lock()) else { return };
+        let (ps, cs) = (std::mem::size_of::<ObjPart>(), std::mem::size_of::<CarUniform>());
+        let (mut n, mut bad) = (0u64, 0u64);
+        for ((ob, oo), (cb, co), want) in self.checks.drain(..) {
+            let (oo, co) = (oo as usize, co as usize);
+            let part: ObjPart = bytemuck::pod_read_unaligned(&op.mirror[ob as usize][oo..oo + ps]);
+            let car: CarUniform = bytemuck::pod_read_unaligned(&cp.mirror[cb as usize][co..co + cs]);
+            let got = ObjectUniform::join(&part, &car);
+            n += 1;
+            if bytemuck::bytes_of(&got) != bytemuck::bytes_of(&want) {
+                bad += 1;
+                if self.check_tally.1 + bad <= 8 {
+                    let (g, w) = (bytemuck::cast_slice::<_, [f32; 4]>(bytemuck::bytes_of(&got)), bytemuck::cast_slice::<_, [f32; 4]>(bytemuck::bytes_of(&want)));
+                    let rows: Vec<usize> = (0..g.len()).filter(|&i| bytemuck::bytes_of(&g[i]) != bytemuck::bytes_of(&w[i])).collect();
+                    log::warn!("objcheck: an object differs in vec4 rows {rows:?} (first: got {:?} want {:?})", g[rows[0]], w[rows[0]]);
+                }
+            }
+        }
+        let t = &mut self.check_tally;
+        t.0 += 1;
+        t.1 += bad;
+        t.2 += n;
+        if t.0 % 120 == 0 {
+            log::info!("objcheck: {} frames, {} objects compared, {} differ", t.0, t.2, t.1);
+        }
     }
 }
 
@@ -1386,6 +1550,10 @@ pub struct GpuBase {
 pub struct Gpu {
     /// the shared buffers of the pooled objects' uniforms (`new_pooled_object`)
     pub obj_pool: Arc<std::sync::Mutex<ObjPool>>,
+    /// the pooled objects' car blocks (`CarUniform`, `new_pooled_object`)
+    pub car_pool: Arc<std::sync::Mutex<ObjPool>>,
+    /// the all-default car block the wheels share (`new_pooled_on_default_car`)
+    default_car: std::sync::OnceLock<CarRef>,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub surface: Arc<wgpu::Surface<'static>>,
@@ -2466,6 +2634,13 @@ impl Gpu {
                     ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
                     count: None,
                 },
+                // (binding 2: the car block, `CarUniform` - D59, the rows equal for every object of one car)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
             ],
         });
         let blank_dmg = damage_map_texture(&device, 1).create_view(&Default::default());
@@ -3165,6 +3340,8 @@ impl Gpu {
         let depth_ui = depth.clone();
         Gpu {
             obj_pool: Default::default(),
+            car_pool: Default::default(),
+            default_car: Default::default(),
             device,
             queue,
             surface,
@@ -3507,37 +3684,38 @@ impl Gpu {
     }
 
     /// The same with its uniform in a slot of a shared buffer (`ObjPool`): for objects written every frame through a
-    /// `UniformBatch` (the cars' parts).
+    /// `UniformBatch` (the cars' bodies). Its car block (`CarUniform`) is a slot of its own in `car_pool`.
     pub fn new_pooled_object(&self, u: &ObjectUniform) -> ObjectBinding {
-        let size = std::mem::size_of::<ObjectUniform>() as u64;
-        let mut p = self.obj_pool.lock().unwrap_or_else(|e| e.into_inner());
-        if p.stride == 0 {
-            let a = (self.device.limits().min_uniform_buffer_offset_alignment as u64).max(16);
-            p.stride = size.div_ceil(a) * a;
-        }
-        if p.free.is_empty() {
-            let i = p.bufs.len() as u32;
-            let bytes = p.stride * POOL_SLOTS;
-            p.bufs.push(self.device.create_buffer(&wgpu::BufferDescriptor { label: Some("object pool"), size: bytes, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }));
-            p.mirror.push(vec![0u8; bytes as usize]);
-            p.dirty.push(None);
-            let stride = p.stride;
-            p.free.extend((0..POOL_SLOTS).rev().map(|s| (i, s * stride)));
-        }
-        let (bi, off) = p.free.pop().unwrap();
-        let buf = p.bufs[bi as usize].clone();
-        // (its first value, as a buffer of its own is made with it - written now, and kept in the mirror)
-        let o = off as usize;
-        p.mirror[bi as usize][o..o + size as usize].copy_from_slice(bytemuck::bytes_of(u));
-        drop(p);
-        self.queue.write_buffer(&buf, off, bytemuck::bytes_of(u));
-        let bg = object_bind_group(&self.device, &self.obj_layout, &buf, off, &self.blank_dmg);
-        ObjectBinding { buf, bg, off, slot: Some(PoolSlot { pool: self.obj_pool.clone(), buf: bi }) }
+        let (cb, co, cbuf) = pool_slot(&self.device, &self.queue, &self.car_pool, bytemuck::bytes_of(&u.car()), "car block pool");
+        let car = CarRef { buf: cbuf, off: co, slot: Some(Arc::new(CarSlot { pool: self.car_pool.clone(), buf: cb, off: co })), shared: false };
+        self.pooled_with_car(&u.part(), car)
+    }
+
+    /// A pooled object that shares `car_of`'s car block (a car's parts and windows: every row of it equal to the
+    /// body's); its pushes write its own part only (`UniformBatch::push_part`).
+    pub fn new_pooled_part(&self, car_of: &ObjectBinding) -> ObjectBinding {
+        self.pooled_with_car(&ObjPart::default(), CarRef { shared: true, ..car_of.car.clone() })
+    }
+
+    /// A pooled object whose car block is `ObjectUniform::default()`'s, shared by all such (a car's wheels, rotors and
+    /// calipers: their uniforms set none of the car block's rows).
+    pub fn new_pooled_on_default_car(&self) -> ObjectBinding {
+        let car = self.default_car.get_or_init(|| {
+            let (cb, co, cbuf) = pool_slot(&self.device, &self.queue, &self.car_pool, bytemuck::bytes_of(&ObjectUniform::default().car()), "car block pool");
+            CarRef { buf: cbuf, off: co, slot: Some(Arc::new(CarSlot { pool: self.car_pool.clone(), buf: cb, off: co })), shared: true }
+        });
+        self.pooled_with_car(&ObjPart::default(), car.clone())
+    }
+
+    fn pooled_with_car(&self, u: &ObjPart, car: CarRef) -> ObjectBinding {
+        let (bi, off, buf) = pool_slot(&self.device, &self.queue, &self.obj_pool, bytemuck::bytes_of(u), "object pool");
+        let bg = object_bind_group(&self.device, &self.obj_layout, &buf, off, &car, &self.blank_dmg);
+        ObjectBinding { buf, bg, off, slot: Some(PoolSlot { pool: self.obj_pool.clone(), buf: bi }), car }
     }
 
     /// The object drawn with a damage map (`None`: the empty one) - its uniform kept.
     pub fn object_damage_map(&self, b: &mut ObjectBinding, map: Option<&wgpu::TextureView>) {
-        b.bg = object_bind_group(&self.device, &self.obj_layout, &b.buf, b.off, map.unwrap_or(&self.blank_dmg));
+        b.bg = object_bind_group(&self.device, &self.obj_layout, &b.buf, b.off, &b.car, map.unwrap_or(&self.blank_dmg));
     }
 
     /// A car's damage map: 256 x 256 RGBA8, linear (crate::damagemap).
@@ -3568,7 +3746,8 @@ impl Gpu {
     }
 
     pub fn update_object(&self, b: &ObjectBinding, u: &ObjectUniform) {
-        let v = bytemuck::bytes_of(u);
+        let part = u.part();
+        let v = bytemuck::bytes_of(&part);
         // (a pooled object: its value also into the pool's mirror, so a later flush of a changed range around it writes
         // this value; the write itself stays here, at once, as for an object of its own)
         if let Some(s) = b.slot.as_ref() {
@@ -3578,6 +3757,18 @@ impl Gpu {
             }
         }
         self.queue.write_buffer(&b.buf, b.off, v);
+        // (its car block, when it is its own; as the part)
+        if !b.car.shared {
+            let car = u.car();
+            let v = bytemuck::bytes_of(&car);
+            if let Some(s) = b.car.slot.as_ref() {
+                if let Ok(mut p) = s.pool.lock() {
+                    let o = s.off as usize;
+                    p.mirror[s.buf as usize][o..o + v.len()].copy_from_slice(v);
+                }
+            }
+            self.queue.write_buffer(&b.car.buf, b.car.off, v);
+        }
     }
 
     /// Writes a batch's uniforms (`UniformBatch::flush`).
@@ -4546,21 +4737,55 @@ fn vram_ballast(device: &wgpu::Device, queue: &wgpu::Queue) {
 }
 
 fn make_object_binding(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, u: &ObjectUniform, dmg: &wgpu::TextureView) -> ObjectBinding {
-    let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("object"),
-        contents: bytemuck::bytes_of(u),
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-    });
-    let bg = object_bind_group(device, layout, &buf, 0, dmg);
-    ObjectBinding { buf, bg, off: 0, slot: None }
+    // (one buffer: the object's part at 0, its car block after it at the next offset the device allows)
+    let a = (device.limits().min_uniform_buffer_offset_alignment as u64).max(16);
+    let co = (std::mem::size_of::<ObjPart>() as u64).div_ceil(a) * a;
+    let mut bytes = vec![0u8; co as usize + std::mem::size_of::<CarUniform>()];
+    bytes[..std::mem::size_of::<ObjPart>()].copy_from_slice(bytemuck::bytes_of(&u.part()));
+    bytes[co as usize..].copy_from_slice(bytemuck::bytes_of(&u.car()));
+    let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("object"), contents: &bytes, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST });
+    let car = CarRef { buf: buf.clone(), off: co, slot: None, shared: false };
+    let bg = object_bind_group(device, layout, &buf, 0, &car, dmg);
+    ObjectBinding { buf, bg, off: 0, slot: None, car }
 }
 
-fn object_bind_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, buf: &wgpu::Buffer, off: u64, dmg: &wgpu::TextureView) -> wgpu::BindGroup {
-    let size = wgpu::BufferSize::new(std::mem::size_of::<ObjectUniform>() as u64);
+/// A free slot of `pool` (a new buffer of `POOL_SLOTS` when there is none), holding `first` - written now and kept in
+/// the mirror, as a buffer of its own is made with its value: (buffer index, offset, buffer).
+fn pool_slot(device: &wgpu::Device, queue: &wgpu::Queue, pool: &std::sync::Mutex<ObjPool>, first: &[u8], label: &str) -> (u32, u64, wgpu::Buffer) {
+    let mut p = pool.lock().unwrap_or_else(|e| e.into_inner());
+    if p.stride == 0 {
+        let a = (device.limits().min_uniform_buffer_offset_alignment as u64).max(16);
+        p.stride = (first.len() as u64).div_ceil(a) * a;
+    }
+    if p.free.is_empty() {
+        let i = p.bufs.len() as u32;
+        let bytes = p.stride * POOL_SLOTS;
+        p.bufs.push(device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size: bytes, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }));
+        p.mirror.push(vec![0u8; bytes as usize]);
+        p.dirty.push(None);
+        let stride = p.stride;
+        p.free.extend((0..POOL_SLOTS).rev().map(|s| (i, s * stride)));
+    }
+    let (bi, off) = p.free.pop().unwrap();
+    let buf = p.bufs[bi as usize].clone();
+    let o = off as usize;
+    p.mirror[bi as usize][o..o + first.len()].copy_from_slice(first);
+    drop(p);
+    queue.write_buffer(&buf, off, first);
+    (bi, off, buf)
+}
+
+fn object_bind_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, buf: &wgpu::Buffer, off: u64, car: &CarRef, dmg: &wgpu::TextureView) -> wgpu::BindGroup {
+    let size = wgpu::BufferSize::new(std::mem::size_of::<ObjPart>() as u64);
+    let car_size = wgpu::BufferSize::new(std::mem::size_of::<CarUniform>() as u64);
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("object bg"),
         layout,
-        entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: buf, offset: off, size }) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(dmg) }],
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: buf, offset: off, size }) },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(dmg) },
+            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &car.buf, offset: car.off, size: car_size }) },
+        ],
     })
 }
 
@@ -5037,5 +5262,41 @@ mod trim_tests {
         }
         // (group 3: the save's INTERIOR COLOR D, the green 42 / 255, 132 / 255, 0 as stored - no gamma on the way)
         assert_eq!(DL0[7][..3], [(42.0f32 / 255.0).to_bits(), (132.0f32 / 255.0).to_bits(), 0]);
+    }
+}
+
+#[cfg(test)]
+mod object_split_tests {
+    use super::*;
+
+    /// D59 object / car block split: the two blocks hold every row of the old `ObjectUniform` once, `join` puts them back
+    /// byte for byte, and city.wgsl reads the moved rows from `car` only, its structs in the Rust order.
+    #[test]
+    fn split_is_the_old_uniform() {
+        assert_eq!(std::mem::size_of::<ObjPart>(), 31 * 16);
+        assert_eq!(std::mem::size_of::<CarUniform>(), 148 * 16);
+        assert_eq!(std::mem::size_of::<ObjPart>() + std::mem::size_of::<CarUniform>(), std::mem::size_of::<ObjectUniform>());
+        let mut u = ObjectUniform::default();
+        let f: &mut [f32] = bytemuck::cast_slice_mut(bytemuck::bytes_of_mut(&mut u));
+        for (i, x) in f.iter_mut().enumerate() {
+            *x = i as f32 + 0.5;
+        }
+        let back = ObjectUniform::join(&u.part(), &u.car());
+        assert_eq!(bytemuck::bytes_of(&back), bytemuck::bytes_of(&u));
+        assert_eq!(ObjPart::default(), ObjectUniform::default().part());
+
+        let src = include_str!("city.wgsl").replace("\r\n", "\n");
+        let fields = |name: &str| -> Vec<String> {
+            let i = src.find(&format!("struct {name} {{\n")).unwrap();
+            let j = src[i..].find("\n};").unwrap();
+            src[i..i + j].lines().skip(1).filter_map(|l| l.trim().split(':').next().map(str::to_string)).filter(|n| !n.is_empty() && !n.starts_with("//")).collect()
+        };
+        let obj = ["model", "color", "params", "dents", "color2", "fade_min", "fade_size", "tint", "fill", "neon_si", "trim", "brushed"];
+        let car = ["interior", "lamp_a", "lamp_b", "area_a", "area_b", "slots", "glass_tint", "glass_bumped", "rest_rot"];
+        assert_eq!(fields("Object"), obj);
+        assert_eq!(fields("CarBlock"), car);
+        for k in car {
+            assert!(!src.contains(&format!("obj.{k}")), "city.wgsl still reads obj.{k}");
+        }
     }
 }

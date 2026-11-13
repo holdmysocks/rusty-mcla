@@ -430,22 +430,22 @@ fn fast_collector_high(p: vec3<f32>) -> f32 {
 var<private> car_wp: vec3<f32>;
 fn car_kd() -> vec3<f32> {
     if (g.car_key2.w > 1.5) { return normalize(g.car_key2.xyz - car_wp); }
-    if (g.car_key2.w > 0.5 && obj.slots[0].w > 0.5) { return obj.slots[3].xyz; }
+    if (g.car_key2.w > 0.5 && car.slots[0].w > 0.5) { return car.slots[3].xyz; }
     return select(g.key_dir.xyz, g.car_key2.xyz, g.car_key2.w > 0.5);
 }
 fn car_kc() -> vec3<f32> {
     if (g.car_key2.w > 1.5) { return g.car_key2_col.rgb * (clamp(1.0 - distance(g.car_key2.xyz, car_wp) * 0.001, 0.0, 1.0) / 0.9); }
-    if (g.car_key2.w > 0.5 && obj.slots[0].w > 0.5) { return obj.slots[4].rgb; }
+    if (g.car_key2.w > 0.5 && car.slots[0].w > 0.5) { return car.slots[4].rgb; }
     return select(g.key_col.rgb, g.car_key2_col.rgb, g.car_key2.w > 0.5);
 }
 // The cars' other slot (the lamp): the player car's (car_key / car_key_col), or at night a traffic or
-// parked car's own (obj.slots[1] / [2], F-99357; by day both are nothing but the eased black of an empty slot).
+// parked car's own (car.slots[1] / [2], F-99357; by day both are nothing but the eased black of an empty slot).
 fn car_ld() -> vec3<f32> {
-    if (g.car_key2.w > 0.5 && g.car_key2.w < 1.5 && obj.slots[0].w > 0.5) { return obj.slots[1].xyz; }
+    if (g.car_key2.w > 0.5 && g.car_key2.w < 1.5 && car.slots[0].w > 0.5) { return car.slots[1].xyz; }
     return g.car_key.xyz;
 }
 fn car_lc() -> vec3<f32> {
-    if (g.car_key2.w > 0.5 && g.car_key2.w < 1.5 && obj.slots[0].w > 0.5) { return obj.slots[2].rgb; }
+    if (g.car_key2.w > 0.5 && g.car_key2.w < 1.5 && car.slots[0].w > 0.5) { return car.slots[2].rgb; }
     return g.car_key_col.rgb;
 }
 
@@ -548,6 +548,7 @@ struct Material {
 };
 @group(2) @binding(0) var<uniform> mat: Material;
 
+// The object (D59: what differs between the objects of one car; render::ObjPart) ...
 struct Object {
     model: mat4x4<f32>,
     color: vec4<f32>,     // paint colour (rgb), a = metallic amount
@@ -557,8 +558,15 @@ struct Object {
     fade_min: vec4<f32>,  // the body's box: lowest corner
     fade_size: vec4<f32>, // and size
     tint: vec4<f32>,      // window tint: the car's m_vWindowTintColorNew (colour, w = darkness 0.372 stock .. 0.847; 0 = none given)
-    interior: array<vec4<f32>, 5>, // cabin colours A, B, C, gauge colours A, B (w 1 = chosen)
     fill: vec4<f32>,      // added to the ambient: the night fill light at the object's place
+    neon_si: vec4<f32>,                // siColor2 (c59): the car's exterior neon, F-96984 (vehicles.rs ExtNeon::si_color)
+    trim: array<vec4<f32>, 12>,        // the cabin trim's colours: m_vBaseColor[0 .. 9] as stored, gauge colours A / B (F-19629)
+    brushed: vec4<f32>,                // BrushedMetalTintDownload[0]: the record's m_vBrushedMetalColorA as stored, w 1 = given (F-91597)
+};
+// ... and its car block (render::CarUniform, group 3 binding 2): the rows equal for every object of one car, written
+// once for the car; the all-default block for everything else
+struct CarBlock {
+    interior: array<vec4<f32>, 5>, // cabin colours A, B, C, gauge colours A, B (w 1 = chosen)
     lamp_a: array<vec4<f32>, 19>, // a car's lamps by lamp id: bulb colours (row 0 w = 1: a traffic car's table)
     lamp_b: array<vec4<f32>, 19>, // and cover (lens) colours
     area_a: array<vec4<f32>, 5>,  // the player's paint areas after the body (doors, hood, bumpers, skirts): first colour, w 1 = own paint
@@ -566,16 +574,14 @@ struct Object {
     slots: array<vec4<f32>, 5>, // a traffic or parked car's own light slots (F-99357): [0].x = 1 the hour's light second, [0].w = 1 given; [1] / [2] the other slot's direction and colour x strength, [3] / [4] the hour's slot's
     glass_tint: array<vec4<f32>, 9>,   // a car's TintColors by window zone 0 .. 8 (F-50822, damagemap::glass_vars) ...
     glass_bumped: array<vec4<f32>, 9>, // ... and BumpedTintColors, the lamps' lenses'
-    rest_rot: array<vec4<f32>, 27>,    // a set-up car's rest rotations, 9 floats each (vehicles.rs rest_mark)
-    neon_si: vec4<f32>,                // siColor2 (c59): the car's exterior neon, F-96984 (vehicles.rs ExtNeon::si_color)
-    trim: array<vec4<f32>, 12>,        // the cabin trim's colours: m_vBaseColor[0 .. 9] as stored, gauge colours A / B (F-19629)
-    brushed: vec4<f32>,                // BrushedMetalTintDownload[0]: the record's m_vBrushedMetalColorA as stored, w 1 = given (F-91597)
+    rest_rot: array<vec4<f32>, 72>,    // a set-up car's rest rotations, 9 floats each (vehicles.rs rest_mark)
 };
 @group(3) @binding(0) var<uniform> obj: Object;
+@group(3) @binding(2) var<uniform> car: CarBlock;
 // Which of a car's two light slots holds the lamp first (the hour's light second): a traffic or parked
-// car's own (obj.slots, F-99357), else the player's car's (car_key_col.w).
+// car's own (car.slots, F-99357), else the player's car's (car_key_col.w).
 fn car_lamp_first() -> bool {
-    if (obj.slots[0].w > 0.5) { return obj.slots[0].x > 0.5; }
+    if (car.slots[0].w > 0.5) { return car.slots[0].x > 0.5; }
     return g.car_key_col.w > 0.5;
 }
 // a car's vertex damage map (damagemap.rs, the original's DmgTex): r the dents, g / a the layout,
@@ -588,7 +594,7 @@ fn car_lamp_first() -> bool {
 fn paint_area(uv2y: f32) -> u32 {
     let k = i32(round(uv2y)) - 8;
     if (k >= 1 && k <= 5) {
-        if (obj.area_a[k - 1].w > 0.5) { return u32(k); }
+        if (car.area_a[k - 1].w > 0.5) { return u32(k); }
     }
     return 0u;
 }
@@ -603,7 +609,7 @@ fn paint_area(uv2y: f32) -> u32 {
 fn paint_fade_s(pos: vec3<f32>, uv2y: f32) -> f32 {
     var fade = u32(round(max(obj.color2.w, 0.0)));
     let area = paint_area(uv2y);
-    if (area > 0u) { fade = u32(round(obj.area_b[area - 1u].w)) / 8u; }
+    if (area > 0u) { fade = u32(round(car.area_b[area - 1u].w)) / 8u; }
     if (fade < 2u || fade > 4u) { return 0.0; }
     let rel = (pos - obj.fade_min.xyz) / obj.fade_size.xyz;
     var t = rel.z;
@@ -1290,7 +1296,7 @@ fn vs_body(in: VsIn) -> VsOut {
     // whatever a; o6.w = a for the paint's scrape. The glass is drawn at p but lit at p' with n'. (Each program
     // run on numbers against this, work/lighting2/dmg/allvs.py, nrm.py: 1e-16.) The tangent rides in color1.rgb;
     // 0 0 0 there is a tyre (VSAmbientTire: no dent). A wheel's vertex is taken in its bone's frame (dents[2]).
-    let amb_obj = obj.params.w > 15.5 && obj.lamp_a[0].w > 0.5;
+    let amb_obj = obj.params.w > 15.5 && car.lamp_a[0].w > 0.5;
     var amb_lp = in.pos;
     var amb_n = normalize(in.normal);
     var amb_a = 0.0;
@@ -1331,13 +1337,13 @@ fn vs_body(in: VsIn) -> VsOut {
         let to = dp.xyz - in.pos;
         if (dot(to, to) > 1e-12) {
             // (VS_CarPaint adds the move to the bone-space position before skinning (instruction 49), so in the
-            // car's rest space it is turned by restMtx's 3 x 3: the mesh's rest rotation rest_k of obj.rest_rot
+            // car's rest space it is turned by restMtx's 3 x 3: the mesh's rest rotation rest_k of car.rest_rot
             // (0: none) - vehicles.rs `rest_index`)
             var dir = normalize(to);
-            if (rest_k > 0u && rest_k <= 12u) {
+            if (rest_k > 0u && rest_k <= 32u) {
                 let b = (rest_k - 1u) * 9u;
                 var rf: array<f32, 9>;
-                for (var j = 0u; j < 9u; j = j + 1u) { rf[j] = obj.rest_rot[(b + j) / 4u][(b + j) % 4u]; }
+                for (var j = 0u; j < 9u; j = j + 1u) { rf[j] = car.rest_rot[(b + j) / 4u][(b + j) % 4u]; }
                 dir = mat3x3<f32>(vec3<f32>(rf[0], rf[1], rf[2]), vec3<f32>(rf[3], rf[4], rf[5]), vec3<f32>(rf[6], rf[7], rf[8])) * dir;
             }
             lp = lp + dir * (t.r * t.g * dp.w);
@@ -1374,10 +1380,10 @@ fn vs_body(in: VsIn) -> VsOut {
     // "noon dials"). MCLA_DEBUG_VIEW=889: turned once, as before)
     if (obj.params.w > 15.5 && !amb_obj && in.uv2.y > 0.5 && in.uv1.y < -0.5 && in.uv2.x < -0.5 && !(g.params.w > 888.5 && g.params.w < 889.5)) {
         var rr = mat3x3<f32>(vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(0.0, 0.0, 1.0));
-        if (rest_k > 0u && rest_k <= 12u) {
+        if (rest_k > 0u && rest_k <= 32u) {
             let b = (rest_k - 1u) * 9u;
             var rf: array<f32, 9>;
-            for (var j = 0u; j < 9u; j = j + 1u) { rf[j] = obj.rest_rot[(b + j) / 4u][(b + j) % 4u]; }
+            for (var j = 0u; j < 9u; j = j + 1u) { rf[j] = car.rest_rot[(b + j) / 4u][(b + j) % 4u]; }
             rr = mat3x3<f32>(vec3<f32>(rf[0], rf[1], rf[2]), vec3<f32>(rf[3], rf[4], rf[5]), vec3<f32>(rf[6], rf[7], rf[8]));
         }
         let mr = mat3x3<f32>(obj.model[0].xyz, obj.model[1].xyz, obj.model[2].xyz);
@@ -1399,8 +1405,8 @@ fn vs_body(in: VsIn) -> VsOut {
     // (the story characters' programs - skin.rs: the skinned tangent, octahedral in uv1.x / uv2.y
     // with its sign as + 4 (none: + 8) on uv1.x, handed on in `fill` and the two cleared; for a Ped
     // program its light term gLightColor x sat(N . L) per vertex, as VSPedDay has it)
-    if (obj.params.w < 15.5 && obj.interior[4].x > 0.5 && in.uv1.y > 76.5 && in.uv1.y < 77.5) {
-        if (obj.interior[4].x > 9.5) {
+    if (obj.params.w < 15.5 && car.interior[4].x > 0.5 && in.uv1.y > 76.5 && in.uv1.y < 77.5) {
+        if (car.interior[4].x > 9.5) {
             o.fill = vec4<f32>(g.sun_color.rgb * clamp(dot(o.normal, g.sun_dir.xyz), 0.0, 1.0), 0.0);
         } else {
             var ox = in.uv1.x;
@@ -1409,15 +1415,15 @@ fn vs_body(in: VsIn) -> VsOut {
             o.fill = vec4<f32>(oct_dec(vec2<f32>(ox, in.uv2.y)), sg);
             // (the programs' o3 / o5 / o7: the floor term h and the car lights at the vertex, with the skinned normal
             // normalised - character_programs_rule.md section 3)
-            let fl = obj.area_b[3];
-            o.cvl = vec4<f32>(ch_vlights(o.wpos, o.normal, obj.interior[4].x > 8.5), ch_floor(o.wpos, fl));
+            let fl = car.area_b[3];
+            o.cvl = vec4<f32>(ch_vlights(o.wpos, o.normal, car.interior[4].x > 8.5), ch_floor(o.wpos, fl));
         }
         o.uv1.x = 0.0;
         o.uv2.y = 0.0;
     }
     // (the cockpit view model's depth offset, render state 12 = 0.275 - skin.rs `COCKPIT_DEPTH_OFFSET`; 0 for other figures)
     if (obj.params.w < 15.5 && in.uv1.y > 76.5 && in.uv1.y < 77.5) {
-        o.clip.z = o.clip.z + obj.lamp_b[18].x * o.clip.w;
+        o.clip.z = o.clip.z + car.lamp_b[18].x * o.clip.w;
     }
     // (the in-car view's car: params.w bit 512, render state 12 = G+5700 = 0.275 around the body and each part - vehicles.rs.
     // The device adds the polygon offset after clipping and clamps the depth to 1: the near plane cuts at its own 0.2 m, a point
@@ -1455,7 +1461,7 @@ fn vs_body(in: VsIn) -> VsOut {
     // amb_glass.txt 68 - 86). Here in `fill` (ray, fresnel) and `neon_hl` (n.v + 4: the signs'
     // branches read it as >= -0.5, the props' gamma test as < -0.5). The programs' ray is V - 2 (n.v) N;
     // the port's maps take the opposite, reflect(-V, N). Glass vertices: uv2.x = 1 (vehicles.rs).
-    if (obj.params.w > 15.5 && obj.lamp_a[0].w > 0.5) {
+    if (obj.params.w > 15.5 && car.lamp_a[0].w > 0.5) {
         let vv = normalize(g.cam_pos.xyz - wp.xyz);
         let nv = dot(o.normal, vv);
         let ray = 2.0 * nv * o.normal - vv;
@@ -1957,12 +1963,12 @@ fn fresnel(n: vec3<f32>, v: vec3<f32>, f0: f32) -> f32 {
 // car meshes carry them in the first colour. Traffic (their own programs) and cabin parts (whose
 // two colours are the gauge colours, not passed here; marked 32 in the colour's alpha) get none.
 fn car_own_lamps(wts: vec4<f32>) -> vec3<f32> {
-    if (obj.lamp_a[0].w > 0.5 || (u32(round(wts.a * 255.0)) & 32u) != 0u || wts.a > 0.5) { return vec3<f32>(0.0); }
+    if (car.lamp_a[0].w > 0.5 || (u32(round(wts.a * 255.0)) & 32u) != 0u || wts.a > 0.5) { return vec3<f32>(0.0); }
     // (the states: sub_823523C0's car + 2676 = (1.5 x table entry 0)^2.2, + 2672 = the head state -
     // vehicles.rs `setup_lamps`, handed in lamp_a[1].w / lamp_a[2].w)
-    let st0 = obj.lamp_a[1].w;
-    let s0 = obj.lamp_a[3].rgb * obj.lamp_b[3].rgb * (obj.lamp_a[2].w * wts.r);
-    let s1 = obj.lamp_a[0].rgb * obj.lamp_b[0].rgb * (2.44 * pow(st0, 2.2) * wts.g);
+    let st0 = car.lamp_a[1].w;
+    let s0 = car.lamp_a[3].rgb * car.lamp_b[3].rgb * (car.lamp_a[2].w * wts.r);
+    let s1 = car.lamp_a[0].rgb * car.lamp_b[0].rgb * (2.44 * pow(st0, 2.2) * wts.g);
     let s01 = s0 + s1 - clamp(s0 * s1, vec3<f32>(0.0), vec3<f32>(1.0));
     let s2 = obj.neon_si.rgb * wts.b;
     return s01 + s2 - clamp(s01 * s2, vec3<f32>(0.0), vec3<f32>(1.0));
@@ -1983,11 +1989,11 @@ fn ch_screen(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {
 
 // One of the three lights at Pw: (L, att x I) - att = sat(1 - min(d / range, 1)), I = -colour.w.
 fn ch_light(k: i32, pw: vec3<f32>) -> vec4<f32> {
-    let p = obj.area_a[k];
+    let p = car.area_a[k];
     var l = p.xyz - pw;
     let d = length(l);
     l = l / max(d, 1e-6);
-    return vec4<f32>(l, clamp(1.0 - min(d / p.w, 1.0), 0.0, 1.0) * -obj.area_b[k].w);
+    return vec4<f32>(l, clamp(1.0 - min(d / p.w, 1.0), 0.0, 1.0) * -car.area_b[k].w);
 }
 
 // The vertex programs' two car lights (character_programs_rule.md section 3; the driver's car: skin.rs puts them in
@@ -1996,20 +2002,20 @@ fn ch_light(k: i32, pw: vec3<f32>) -> vec4<f32> {
 // programs (VS_Bump / VSSkinned_Bump) 0.9 / 10 / 2. Per vertex, as the programs (vs_body -> VsOut.cvl).
 // MCLA_DEBUG_VIEW=763: none; 764: per pixel (char_shade).
 fn ch_vlights(pw: vec3<f32>, n: vec3<f32>, arm: bool) -> vec3<f32> {
-    if (obj.lamp_a[14].w < 0.5 || (g.params.w > 762.5 && g.params.w < 763.5)) { return vec3<f32>(0.0); }
+    if (car.lamp_a[14].w < 0.5 || (g.params.w > 762.5 && g.params.w < 763.5)) { return vec3<f32>(0.0); }
     let cone = select(0.8, 0.9, arm);
     let gain = select(5.0, 10.0, arm);
-    var lg = obj.lamp_a[14].xyz - pw;
+    var lg = car.lamp_a[14].xyz - pw;
     let dg = length(lg);
     lg = lg / max(dg, 1e-6);
     var fg = 1.0 - clamp(dg * 0.6666667, 0.0, 1.0);
     if (arm) { fg = fg * fg; }
-    let gauge = obj.lamp_a[15].rgb * gain * clamp(dot(lg, obj.lamp_a[16].xyz) - cone, 0.0, 1.0) * clamp(dot(lg, n), 0.0, 1.0) * fg;
-    var ln = obj.lamp_a[17].xyz - pw;
+    let gauge = car.lamp_a[15].rgb * gain * clamp(dot(lg, car.lamp_a[16].xyz) - cone, 0.0, 1.0) * clamp(dot(lg, n), 0.0, 1.0) * fg;
+    var ln = car.lamp_a[17].xyz - pw;
     let dn = length(ln);
     ln = ln / max(dn, 1e-6);
     let fn1 = 1.0 - clamp(dn * 0.6666667, 0.0, 1.0);
-    let neon = obj.lamp_a[18].rgb * clamp(dot(ln, n), 0.0, 1.0) * (fn1 * fn1) * (fn1 * fn1);
+    let neon = car.lamp_a[18].rgb * clamp(dot(ln, n), 0.0, 1.0) * (fn1 * fn1) * (fn1 * fn1);
     return ch_screen(gauge, neon);
 }
 
@@ -2032,12 +2038,12 @@ fn ch_nm(nn: vec3<f32>, t: vec3<f32>, b: vec3<f32>, x: f32, y: f32, m: f32) -> v
 // uv x scale), m4 the fourth map at uv (spec map), m4b at 20 uv (skin_arm's offset map), s the
 // shadow (the full-screen collector), fast the top-down mask's raw value, ff front facing.
 fn char_shade(fx: u32, pw: vec3<f32>, nv: vec3<f32>, tf: vec4<f32>, vcol: vec4<f32>, d: vec4<f32>, nm: vec4<f32>, det: f32, m4: vec4<f32>, m4b: vec4<f32>, s: f32, fast: f32, ff: bool, pedl: vec3<f32>, cvl: vec4<f32>) -> vec3<f32> {
-    let k0 = obj.area_a[4];
-    let k1 = obj.area_b[4];
-    let k2 = obj.interior[0];
-    let k3 = obj.interior[1];
-    let k4 = obj.interior[2];
-    let tint = obj.interior[3];
+    let k0 = car.area_a[4];
+    let k1 = car.area_b[4];
+    let k2 = car.interior[0];
+    let k3 = car.interior[1];
+    let k4 = car.interior[2];
+    let tint = car.interior[3];
     // Ped (VSPedDay + PS): rgb = D (gLightColor sat(N.L) s + sat(gLightAmbient) (0.25 s + 0.75)),
     // the light term per vertex (`pedl`)
     if (fx == 10u) {
@@ -2046,21 +2052,21 @@ fn char_shade(fx: u32, pw: vec3<f32>, nv: vec3<f32>, tf: vec4<f32>, vcol: vec4<f
     }
     var nn = normalize(nv);
     // (double-sided: the face register's sign - which sign a back face gives is not verified)
-    if (obj.interior[4].z > 0.5 && !ff) { nn = -nn; }
+    if (car.interior[4].z > 0.5 && !ff) { nn = -nn; }
     let t = normalize(tf.xyz);
     let b = cross(t, nn) * tf.w;
     let v = normalize(g.cam_pos.xyz - pw);
-    let ambp = obj.area_a[3];
+    let ambp = car.area_a[3];
     // (MCLA_DEBUG_VIEW=764: the floor term and the car lights per pixel, as before 2026-11-06)
     let px_old = g.params.w > 763.5 && g.params.w < 764.5;
-    let fl = obj.area_b[3];
+    let fl = car.area_b[3];
     let h = select(cvl.w, ch_floor(pw, fl), px_old);
     let l0 = ch_light(0, pw);
     let l1 = ch_light(1, pw);
     let l2 = ch_light(2, pw);
-    let c0 = obj.area_b[0].rgb;
-    let c1 = obj.area_b[1].rgb;
-    let c2 = obj.area_b[2].rgb;
+    let c0 = car.area_b[0].rgb;
+    let c1 = car.area_b[1].rgb;
+    let c2 = car.area_b[2].rgb;
     let lum = vec3<f32>(0.3, 0.59, 0.11);
     if (fx == 5u || fx == 6u || fx == 7u || fx == 8u) {
         // teeth / visor / plastic: VS o3 = (ambYPos x ambientMod x vertex colour, 1)
@@ -2427,7 +2433,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
     // the BumpSpec family (RB_ALPHA_REF 0x3c808081, recorded cruiser and 240SX), 0 on the badge (240SX at noon), and
     // keeps its alpha to the end (below)
     let setup_b1_badge = mat.mode == 7u && obj.params.w > 15.5 && in.uv2.y > 2.5 && in.uv2.y < 3.5 && in.uv2.x < -0.5;
-    let setup_b1_bs = mat.mode == 9u && in.uv2.y > 0.5 && obj.params.w > 15.5 && obj.lamp_a[0].w < 0.5 && (u32(round(in.color.a * 255.0)) & 128u) != 0u;
+    let setup_b1_bs = mat.mode == 9u && in.uv2.y > 0.5 && obj.params.w > 15.5 && car.lamp_a[0].w < 0.5 && (u32(round(in.color.a * 255.0)) & 128u) != 0u;
     // (the dials' blended program, PS_EmissiveAlpha - marked uv1.y < 0: its alpha is the texture's ^ 1.6, tested so)
     let setup_b1_a = select(albedo.a, pow(max(albedo.a, 0.0), 1.6), in.uv1.y < -0.5);
     if ((setup_b1_badge && 2.0 * albedo.a - 1.0 <= 0.0) || (setup_b1_bs && setup_b1_a <= 4.0 / 255.0)) {
@@ -2489,14 +2495,14 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
     // (the story characters' maps - `char_shade`; read here, where the control flow is uniform: the
     // diffuse as stored, the detail map decoded the console's way at uv x its scales, the fourth map
     // at uv and at 20 uv; the normal map is `second`)
-    let ch_obj = mat.mode == 9u && obj.params.w < 15.5 && obj.interior[4].x > 0.5;
+    let ch_obj = mat.mode == 9u && obj.params.w < 15.5 && car.interior[4].x > 0.5;
     var ch_d = vec4<f32>(0.0);
     var ch_det = 1.0;
     var ch_m4 = vec4<f32>(0.0);
     var ch_m4b = vec4<f32>(0.0);
     if (ch_obj) {
         ch_d = textureSample(t_diffuse, s_diffuse, in.uv0);
-        ch_det = pwl_decode(textureSample(t_third, s_diffuse, in.uv0 * obj.area_a[4].yz).rgb).x;
+        ch_det = pwl_decode(textureSample(t_third, s_diffuse, in.uv0 * car.area_a[4].yz).rgb).x;
         ch_m4 = textureSample(t_fourth, s_diffuse, in.uv0);
         ch_m4b = textureSample(t_fourth, s_diffuse, in.uv0 * 20.0);
     }
@@ -2884,7 +2890,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
         // (an unpainted area - a part the quick fix put on, area_a.w 2 - takes the all-zero blank_dmg in the
         // vinyl's place, F-13513)
         let v_area = paint_area(in.uv2.y);
-        if (v_area > 0u && obj.area_a[v_area - 1u].w > 1.5) { vinyl = vec4<f32>(0.0); }
+        if (v_area > 0u && car.area_a[v_area - 1u].w > 1.5) { vinyl = vec4<f32>(0.0); }
         scraped = clamp(k6 - vinyl.a, 0.0, 1.0);
         // (the flakes: x sat(1 - 2 m))
         let scraped6 = 1.0 - clamp(1.0 - 2.0 * scraped, 0.0, 1.0);
@@ -2900,9 +2906,9 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
         var pti = min((u32(round(obj.params.w)) / 32u) % 8u, 5u);
         let p_area = paint_area(in.uv2.y);
         if (p_area > 0u) {
-            let pk = u32(round(obj.area_b[p_area - 1u].w));
-            pc_a = obj.area_a[p_area - 1u].rgb;
-            pc_b = obj.area_b[p_area - 1u].rgb;
+            let pk = u32(round(car.area_b[p_area - 1u].w));
+            pc_a = car.area_a[p_area - 1u].rgb;
+            pc_b = car.area_b[p_area - 1u].rgb;
             fade = pk / 8u;
             pti = min(pk % 8u, 5u);
         }
@@ -3178,7 +3184,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
         var slot = i32(round(in.uv2.y)) - 100;
         if (slot > 4) { slot = -1; }
         if (slot >= 0) {
-            let cabin = obj.interior[slot];
+            let cabin = car.interior[slot];
             if (cabin.w > 0.5) {
                 // (approx., by eye as before - now by the zone's kind of surface, which is what the
                 // original's surface values go by: carpet 0..2 dim, the plain zones 6..8, the rest)
@@ -4052,7 +4058,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             base = vec3<f32>(0.0);
             emissive = vec3<f32>(0.0);
             spec_k = 0.0;
-        } else if (mat.mode == 9u && abs(in.color.a * 255.0 - 128.0) < 0.5 && in.uv2.y < -0.5 && obj.lamp_a[0].w > 0.5 && obj.params.w > 15.5 && !(g.params.w > 772.5 && g.params.w < 773.5)) {
+        } else if (mat.mode == 9u && abs(in.color.a * 255.0 - 128.0) < 0.5 && in.uv2.y < -0.5 && car.lamp_a[0].w > 0.5 && obj.params.w > 15.5 && !(g.params.w > 772.5 && g.params.w < 773.5)) {
             // Traffic and parked cars' tyres: PSAmbientTire of cars/0xed26c1fb (work/traffic-detail/fix/ps_tire.txt, read
             // line by line; VSAmbientTire vs_tire.txt):
             //   N'    = normalize(T x m.x + B x m.y + N x m.z), m = 2 x normal map - 1, B = cross(T, N) x w
@@ -4106,7 +4112,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             base = vec3<f32>(0.0);
             emissive = vec3<f32>(0.0);
             spec_k = 0.0;
-        } else if (mat.mode == 9u && in.uv2.y < -0.5 && obj.lamp_a[0].w > 0.5 && obj.params.w > 15.5 && !(g.params.w > 770.5 && g.params.w < 771.5)) {
+        } else if (mat.mode == 9u && in.uv2.y < -0.5 && car.lamp_a[0].w > 0.5 && obj.params.w > 15.5 && !(g.params.w > 770.5 && g.params.w < 771.5)) {
             // Traffic and parked cars' bumpers, trim, decals, plate, rims: PSAmbientBumpSpec of cars/0x2a82f172
             // (work/traffic-detail/fix/ps_bs.txt, read line by line; VSAmbientBumpSpec vs_bs.txt):
             //   A     = baseColor x texture^1.6                          (the texture as stored)
@@ -4171,7 +4177,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             base = vec3<f32>(0.0);
             emissive = vec3<f32>(0.0);
             spec_k = 0.0;
-        } else if (mat.mode == 10u && ((obj.lamp_a[0].w > 0.5 && obj.params.w > 15.5 && !(g.params.w > 771.5 && g.params.w < 772.5)) || (in.uv2.x > 3.5 && in.uv2.x < 4.5))) {
+        } else if (mat.mode == 10u && ((car.lamp_a[0].w > 0.5 && obj.params.w > 15.5 && !(g.params.w > 771.5 && g.params.w < 772.5)) || (in.uv2.x > 3.5 && in.uv2.x < 4.5))) {
             // Traffic and parked cars' grilles and black parts: PSAmbientBlackMatte of cars/0x9202d72d is one
             // instruction, o0.w = gLightAmbient.w - the export's x, y, z are in neither write mask: black.
             // (MCLA_DEBUG_VIEW 772: as before, the rubber branch)
@@ -4315,7 +4321,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             if (g.params.w > 72.5 && g.params.w < 73.5) { own_e = vec3<f32>(0.0); }
             lt_e = lt_e + own_e - clamp(lt_e * own_e, vec3<f32>(0.0), vec3<f32>(1.0));
             let ri_e = clamp(i32(trunc(in.uv1.x)), 0, 2);
-            let f_e = select(obj.lamp_a[2].w, 1.0, s600_e);
+            let f_e = select(car.lamp_a[2].w, 1.0, s600_e);
             var row_e = vec3<f32>(f_e);
             if (ri_e == 0) { row_e = obj.trim[10].rgb; } else if (ri_e == 1) { row_e = obj.trim[11].rgb; }
             lt_e = lt_e + a16_e * row_e;
@@ -4484,7 +4490,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             var ti = min(select(3u, (u32(round(obj.params.w)) / 32u) % 8u, obj.params.w > 15.5), 5u);
             // (a paint area with its own entry has its own paint type)
             let ti_area = paint_area(in.uv2.y);
-            if (ti_area > 0u) { ti = min(u32(round(obj.area_b[ti_area - 1u].w)) % 8u, 5u); }
+            if (ti_area > 0u) { ti = min(u32(round(car.area_b[ti_area - 1u].w)) % 8u, 5u); }
             let ta = paint_row(PAINT_A, ti);
             let tb = paint_row(PAINT_B, ti);
             let tc = paint_row(PAINT_C, ti);
@@ -4527,7 +4533,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
                 // VSAmbientCarPaint / PSAmbientCarPaint of cars/0xdacfb063 instead: the lights take the
                 // occlusion byte as it is, no 0.125 + 0.875 of it; the rest of their rule below.
                 // MCLA_DEBUG_VIEW 698: traffic through the player's CarPaint rule, with the same paint value)
-                let amb6 = obj.lamp_a[0].w > 0.5 && obj.params.w > 15.5 && !(g.params.w > 697.5 && g.params.w < 698.5);
+                let amb6 = car.lamp_a[0].w > 0.5 && obj.params.w > 15.5 && !(g.params.w > 697.5 && g.params.w < 698.5);
                 let aok = select(0.125 + 0.875 * ao_v, ao_v, amb6);
                 // The car's two lights: the hour's light (the sun; from dusk to dawn what the
                 // light track holds - the last of the sun, then a faint grey from below) and the
@@ -4737,9 +4743,9 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             let lst = i32(round(obj.params.w)) % 16;
             let brk = clamp(obj.params.y * 4.0, 0.0, 1.0);
             let lrow = clamp(lid, 0, 18);
-            var la = obj.lamp_a[lrow].rgb;
-            var lb = obj.lamp_b[lrow].rgb;
-            let amb8 = obj.lamp_a[0].w > 0.5;
+            var la = car.lamp_a[lrow].rgb;
+            var lb = car.lamp_b[lrow].rgb;
+            let amb8 = car.lamp_a[0].w > 0.5;
             var l_on = 0.0;
             if (lid == 0) { l_on = max(0.25 * obj.params.x, brk); }
             else if (lid == 1) { l_on = 0.25 * obj.params.x; }
@@ -4753,10 +4759,10 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             else if (lid == 14) { l_on = f32(lst % 4 == 2); }
             // (every car's entry state now: traffic sub_82792FD8's, set-up cars sub_823523C0's - vehicles.rs
             // `setup_lamps`; the police lamps 13 / 14 the siren state +308, lit steadily)
-            l_on = obj.lamp_b[lrow].w;
+            l_on = car.lamp_b[lrow].w;
             // (a set-up car's 20th entry, the shift light: bulb 1, cover (0.5, 0.125, 0) - sub_823523C0's fixed row -
             // its state in lamp_a[4].w)
-            if (lid == 19 && !amb8) { la = vec3<f32>(1.0); lb = vec3<f32>(0.5, 0.125, 0.0); l_on = obj.lamp_a[4].w; }
+            if (lid == 19 && !amb8) { la = vec3<f32>(1.0); lb = vec3<f32>(0.5, 0.125, 0.0); l_on = car.lamp_a[4].w; }
             // (the lamp's normal map m, NormalSampler s2, as stored: PS_Light reads the illumination map at
             // uv + (2 m.rg - 1) x lightRefract (c69, recorded 0.15) and takes |2 m.r - 1|^5 for the spot term -
             // listing lines 9 .. 15, 20 .. 21, 39; vehicles.rs binds it in the second slot, MCLA_LAMP_FLAT a flat one)
@@ -4808,7 +4814,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             //   alpha = sat(tint.a + m)          (the program's alpha x 16: gInvColorExpBias)
             // windows 0.125 .. 0.85 by ^4.5, lenses 0.125 .. 0.875 by ^5; blended source alpha.
             // The tint is a row of TintColors (the windows) / BumpedTintColors (the lenses) - c209 + the
-            // zone of the second UV set -, as F-50822 hands them on (obj.glass_tint / glass_bumped,
+            // zone of the second UV set -, as F-50822 hands them on (car.glass_tint / glass_bumped,
             // damagemap::glass_vars): zones 4, 5 the record's taillight glass, 6, 7 its headlight glass,
             // 1 - 3 the window tint, 0 (the windscreen) and 8 the stock glass (0, 0.0035, 0.005, 0.372) on
             // a car whatever the tint, the tint on a motorcycle. Both faces alike.
@@ -4818,7 +4824,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             let lensg = in.uv2.y > 0.5;
             let zone = i32(round(in.uv1.x));
             var tint4 = vec4<f32>(0.0, 0.0035, 0.005, 0.372);
-            if (zone >= 0 && zone <= 8) { tint4 = select(obj.glass_tint[zone], obj.glass_bumped[zone], lensg); }
+            if (zone >= 0 && zone <= 8) { tint4 = select(car.glass_tint[zone], car.glass_bumped[zone], lensg); }
             if (g.params.w > 60.5 && g.params.w < 61.5) { return vec4<f32>(to_scene(vec3<f32>(f32(zone % 3) * 0.5, f32((zone / 3) % 3) * 0.5, f32(zone / 9) * 0.5 + select(0.0, 0.25, lensg)) + vec3<f32>(0.05)), 1.0); }
             let nv12 = clamp(abs(dot(n, v)), 0.0, 1.0);
             let fr12 = select(0.125 + 0.725 * pow(1.0 - nv12, 4.5), 0.125 + 0.75 * pow(1.0 - nv12, 5.0), lensg);
@@ -5498,19 +5504,19 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
     // MCLA_DEBUG_VIEW=760: the generic look.
     if (ch_obj && in.uv1.y > 76.5 && in.uv1.y < 77.5 && !(g.params.w > 759.5 && g.params.w < 760.5)) {
         let ch_fast = fast_collector(in.wpos);
-        let ch_s = select(clamp((ch_fast - 0.25) * 1.3333333, 0.0, 1.0), sun_shadow(in.wpos, ng), obj.interior[4].y > 0.5);
+        let ch_s = select(clamp((ch_fast - 0.25) * 1.3333333, 0.0, 1.0), sun_shadow(in.wpos, ng), car.interior[4].y > 0.5);
         let ch_dd = vec4<f32>(select(ch_d.rgb, xenos_gamma(ch_d.rgb), xenos_gamma_on()), ch_d.a);
-        lit = char_shade(u32(round(obj.interior[4].x)), in.wpos, in.normal, in.fill, in.color, ch_dd, second, ch_det, ch_m4, ch_m4b, ch_s, ch_fast, ff, in.fill.xyz, in.cvl);
+        lit = char_shade(u32(round(car.interior[4].x)), in.wpos, in.normal, in.fill, in.color, ch_dd, second, ch_det, ch_m4, ch_m4b, ch_s, ch_fast, ff, in.fill.xyz, in.cvl);
         // (761: the shadow term; 762: sat(n.L) of the first light x its colour)
         if (g.params.w > 760.5 && g.params.w < 761.5) { lit = vec3<f32>(ch_s); }
-        if (g.params.w > 761.5 && g.params.w < 762.5) { lit = obj.area_b[0].rgb * clamp(dot(normalize(in.normal), ch_light(0, in.wpos).xyz), 0.0, 1.0) * ch_light(0, in.wpos).w; }
+        if (g.params.w > 761.5 && g.params.w < 762.5) { lit = car.area_b[0].rgb * clamp(dot(normalize(in.normal), ch_light(0, in.wpos).xyz), 0.0, 1.0) * ch_light(0, in.wpos).w; }
     }
-    if (mat.mode == 9u && in.uv1.y > 76.5 && in.uv1.y < 77.5 && obj.lamp_b[0].w > 1.5 && !(g.params.w > 749.5 && g.params.w < 750.5)) {
+    if (mat.mode == 9u && in.uv1.y > 76.5 && in.uv1.y < 77.5 && car.lamp_b[0].w > 1.5 && !(g.params.w > 749.5 && g.params.w < 750.5)) {
         var fl = vec3<f32>(0.0);
         for (var k = 0; k < 4; k = k + 1) {
-            let lp = obj.lamp_a[3 * k];
-            let lc = obj.lamp_a[3 * k + 1];
-            let la = obj.lamp_a[3 * k + 2];
+            let lp = car.lamp_a[3 * k];
+            let lc = car.lamp_a[3 * k + 1];
+            let la = car.lamp_a[3 * k + 2];
             let d = lp.xyz - in.wpos;
             let r = inverseSqrt(max(dot(d, d), 1e-12));
             let dn = d * r;

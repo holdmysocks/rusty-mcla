@@ -3136,18 +3136,18 @@ mod cabin_tests {
             src[i..i + j + 2].to_string()
         };
         let wgsl = format!(
-            "struct Obj {{ lamp_a: array<vec4<f32>, 19>, }}\nstruct G {{ params: vec4<f32>, }}\nvar<private> obj: Obj;\nvar<private> g: G;\n\
+            "struct Obj {{ lamp_a: array<vec4<f32>, 19>, }}\nstruct G {{ params: vec4<f32>, }}\nvar<private> car: Obj;\nvar<private> g: G;\n\
              {}\n{}\n{}\n\
              @group(0) @binding(0) var<storage, read> cases: array<vec4<f32>>;\n\
              @group(0) @binding(1) var<storage, read_write> outv: array<vec4<f32>>;\n\
              @compute @workgroup_size(64) fn main(@builtin(global_invocation_id) id: vec3<u32>) {{\n\
                let i = id.x; if (i >= arrayLength(&outv)) {{ return; }}\n\
                let b = i * 8u;\n\
-               obj.lamp_a[14] = vec4<f32>(cases[b].xyz, 1.0);\n\
-               obj.lamp_a[15] = vec4<f32>(cases[b + 1u].xyz, 1.0);\n\
-               obj.lamp_a[16] = vec4<f32>(cases[b + 2u].xyz, 0.0);\n\
-               obj.lamp_a[17] = vec4<f32>(cases[b + 3u].xyz, 1.0);\n\
-               obj.lamp_a[18] = vec4<f32>(cases[b + 4u].xyz, 1.0);\n\
+               car.lamp_a[14] = vec4<f32>(cases[b].xyz, 1.0);\n\
+               car.lamp_a[15] = vec4<f32>(cases[b + 1u].xyz, 1.0);\n\
+               car.lamp_a[16] = vec4<f32>(cases[b + 2u].xyz, 0.0);\n\
+               car.lamp_a[17] = vec4<f32>(cases[b + 3u].xyz, 1.0);\n\
+               car.lamp_a[18] = vec4<f32>(cases[b + 4u].xyz, 1.0);\n\
                g.params = vec4<f32>(0.0);\n\
                let pw = cases[b + 6u].xyz;\n\
                outv[i] = vec4<f32>(ch_vlights(pw, cases[b + 7u].xyz, cases[b + 6u].w > 0.5), ch_floor(pw, cases[b + 5u]));\n\
