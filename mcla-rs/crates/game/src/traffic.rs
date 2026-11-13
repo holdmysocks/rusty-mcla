@@ -4179,50 +4179,17 @@ mod drive_rule_tests {
             let w: Vec<u32> = input.split(' ').map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
             let (mut st, ev) = (w[0] as u8, w[1] != 0);
             let mut g = Log { a: &w[5..14], bt: f32::from_bits(w[4]), nrec: 0, out: Vec::new() };
-            let ended = g.a[0] != 0;
-            match st {
-                1..=3 => ["follow", "search", "lane", "speed"].iter().for_each(|k| g.l(k)),
-                4 => {
-                    assert!(switch_clears_tracker(4, ev, false));
-                    g.l("clear_tracker");
-                    g.l("clear_recovery");
+            let (ended, backed) = (g.a[0] != 0, g.a[3] != 0);
+            st = frame_switch(st, ev, ended, backed, &mut |k| {
+                if k == "recovery" {
+                    g.rec()
+                } else {
+                    g.l(k);
+                    false
                 }
-                5 if !ev => {
-                    g.l("speed");
-                    if g.rec() {
-                        st = 6;
-                    }
-                }
-                6 if !ev => {
-                    ["follow", "search", "speed"].iter().for_each(|k| g.l(k));
-                    if switch_clears_tracker(6, ev, ended) {
-                        g.l("clear_tracker");
-                        g.l("clear_recovery");
-                        st = 1;
-                    } else {
-                        g.rec();
-                    }
-                }
-                7 => {
-                    ["follow", "search", "speed"].iter().for_each(|k| g.l(k));
-                    if switch_clears_tracker(7, ev, ended) {
-                        g.l("clear_tracker");
-                        g.l("clear_recovery");
-                        st = 6;
-                    }
-                }
-                8 if !ev => {
-                    g.l("follow");
-                    g.l("speed");
-                    g.l("back_step");
-                    if g.a[3] != 0 {
-                        g.l("zero_stuck");
-                        g.l("unload");
-                        st = 6;
-                    }
-                }
-                _ => {}
-            }
+            });
+            // (the tracker's clear as `switch_clears_tracker` has it)
+            assert_eq!(g.out.contains(&5), switch_clears_tracker(w[0] as u8, ev, ended), "{line}");
             cleared += g.out.contains(&5) as usize;
             let (near, block) = (w[2], w[3]);
             if let Some(s) = frame_tail(ev, near, block, &mut g) {
@@ -4446,6 +4413,53 @@ pub(crate) fn frame_tail(event: bool, near: u32, block: u32, h: &mut dyn TailSte
     None
 }
 
+/// F-87488's switch on the state +272 (tools/rider_frame_reference.py, test `rider_frame_matches_the_original`): each
+/// call in order through `step` (its answer is used for "recovery", the try F-15490); `ended` the follower's step (the
+/// rail's end), `backed` the back step F-82779. Returns the state after. 1 - 3: follow, search, lane, speed; 4: the
+/// tracker and the recovery's standing time (+472) cleared; 5: speed, a recovery taken -> 6; 6: follow, search, speed,
+/// ended -> both cleared and 1, else the recovery try; 7: follow, search, speed, ended -> both cleared and 6; 8: follow,
+/// speed, back step, backed -> the stuck tracker zeroed, the rail unloaded and 6; 5, 6 and 8 nothing in a race event
+/// (the world byte +0x64251); 0, 9, 10 nothing.
+pub(crate) fn frame_switch(state: u8, event: bool, ended: bool, backed: bool, step: &mut dyn FnMut(&'static str) -> bool) -> u8 {
+    let mut run = |ks: &[&'static str]| ks.iter().for_each(|k| {
+        step(k);
+    });
+    match state {
+        1..=3 => run(&["follow", "search", "lane", "speed"]),
+        4 => run(&["clear_tracker", "clear_recovery"]),
+        5 if !event => {
+            run(&["speed"]);
+            if step("recovery") {
+                return 6;
+            }
+        }
+        6 if !event => {
+            run(&["follow", "search", "speed"]);
+            if ended {
+                run(&["clear_tracker", "clear_recovery"]);
+                return 1;
+            }
+            step("recovery");
+        }
+        7 => {
+            run(&["follow", "search", "speed"]);
+            if ended {
+                run(&["clear_tracker", "clear_recovery"]);
+                return 6;
+            }
+        }
+        8 if !event => {
+            run(&["follow", "speed", "back_step"]);
+            if backed {
+                run(&["zero_stuck", "unload"]);
+                return 6;
+            }
+        }
+        _ => {}
+    }
+    state
+}
+
 /// F-87488's switch where it clears the pass tracker (F-73744's +480; tools/rider_frame_reference.py): state 4 every
 /// frame; states 6 and 7 when the follower's step reaches the rail's end (state 6's case is skipped whole in a race
 /// event).
@@ -4658,13 +4672,30 @@ pub fn step_path(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, half
 fn step_path_switch(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, half_len: f32, upright: bool, dt: f32) -> Option<(Vec3, Vec3)> {
     let hw = r.ty.width.max(1.6) * 0.5;
     let semi = r.ty.trailer || r.ty.cab;
-    // state 6: re-planned every frame (on a rail or standing with none)
-    if r.state == 6 && !env.event {
-        try_recovery(r, env, me, pos, fwd, upright, dt);
+    // (F-87488: states 6 and 8 do nothing in a race event)
+    let mut runs = false;
+    frame_switch(r.state, env.event, false, false, &mut |_| {
+        runs = true;
+        false
+    });
+    if !runs {
+        return Some((pos, fwd));
     }
     let Some(path) = r.path.as_ref() else {
-        // standing, waiting for a rail
+        // standing, waiting for a rail; then (state 6, not ended) the recovery try
         r.v = 0.0;
+        if r.state == 6 {
+            let mut took = false;
+            frame_switch(6, env.event, false, false, &mut |k| {
+                if k == "recovery" {
+                    took = try_recovery(r, env, me, pos, fwd, upright, dt);
+                }
+                false
+            });
+            if took {
+                return Some(r.path.as_mut().map_or((pos, fwd), |q| q.pose()));
+            }
+        }
         return Some((pos, fwd));
     };
     let (q, d) = path.at(path.t);
@@ -4714,7 +4745,35 @@ fn step_path_switch(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, h
         }
         return Some((p, f));
     }
-    let Some(rest) = over else { return Some((p, f)) };
+    let Some(rest) = over else {
+        // (state 6 not at its rail's end: the recovery try after the follow, search and speed - F-87488's order; a rail
+        // taken is ridden from its start)
+        if r.state == 6 {
+            let mut took = false;
+            frame_switch(6, env.event, false, false, &mut |k| {
+                if k == "recovery" {
+                    took = try_recovery(r, env, me, pos, fwd, upright, dt);
+                }
+                false
+            });
+            if took {
+                return Some(r.path.as_mut().map_or((p, f), |q| q.pose()));
+            }
+        }
+        return Some((p, f));
+    };
+    // (at the rail's end in states 6 and 7: the tracker and the recovery's standing time cleared)
+    if matches!(r.state, 6 | 7) {
+        let st = r.state;
+        frame_switch(st, env.event, true, false, &mut |k| {
+            match k {
+                "clear_tracker" => clear_tracker(r),
+                "clear_recovery" => r.stand = 0.0,
+                _ => {}
+            }
+            false
+        });
+    }
     if r.state == 7 {
         // on to the rail back onto the lane, at its start and the rest on
         match r.then.take() {
@@ -4730,12 +4789,7 @@ fn step_path_switch(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, h
                 r.state = 6;
             }
         }
-        clear_tracker(r);
         return Some(r.path.as_mut().map_or((p, f), |q| q.pose()));
-    }
-    // (state 6 at its rail's end: the tracker cleared - F-87488's switch)
-    if switch_clears_tracker(r.state, env.event, true) {
-        clear_tracker(r);
     }
     if let Some((lane, t)) = r.path.as_ref().and_then(|p| p.end) {
         r.path = None;
