@@ -5410,9 +5410,11 @@ fn probe_due(r: &Rider, frame: u32, dist2: f32) -> bool {
 fn seat_car(r: &mut Rider, col: &WorldCollider, p: Vec3, f: Vec3, car: (Vec3, Vec3, Vec3), due: bool) -> (Vec3, Quat) {
     let trailer = r.ty.trailer;
     let s = r.seat.get_or_insert_with(|| Seat::new(car.0, car.1, car.2));
-    // (slot 4: row 3 y = car +2324, the stored pose's row 3 y)
+    // (a rider's target is its pose out, slot 4 F-74063: row 3 y = car +2324, the stored pose's row 3 y; a trailer's is
+    // the tow F-16044's matrix, which the car update F-50624 hands the seat whole: its row 3 is the trailer's place moved
+    // so that its hitch meets the cab's, y included - so a trailer is seated and probed round its towed hitch height)
     let t2 = [-f.x, -f.y, -f.z, 0.0];
-    let t3 = [p.x, s.raw[3][1], p.z, 0.0];
+    let t3 = [p.x, if trailer { p.y } else { s.raw[3][1] }, p.z, 0.0];
     let hit = s.pending.take().and_then(|at| probe_ground(col, at)).and_then(|(q, n)| {
         let h = Hits { count: 1, owner: true, points: [[q.x, q.y, q.z, 0.0]; 4], normal: [n.x, n.y, n.z, 0.0] };
         hit_pose(t2, &h, false)
