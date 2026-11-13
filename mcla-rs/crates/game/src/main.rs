@@ -34,6 +34,7 @@ mod radio;
 mod offroad;
 mod occluder;
 mod racescript;
+mod raceleave;
 mod checkpoints;
 mod powerups;
 mod pu_draw;
@@ -3170,6 +3171,23 @@ impl App {
             self.game.cine_warp = false;
         }
         self.scene_was = scene;
+        // (the opponents a race left on the road: deleted once evicted - Opponent_ToggleDeleteOnEviction, `raceleave`)
+        raceleave::evict(&mut self.vehicles, &mut self.game.race_kept);
+        // (test hook MCLA_RACE_LEAVE=<seconds>: RETURN TO CRUISE that long after the race's end; the kept opponents logged
+        // once a second after it)
+        if let (Ok(v), Some(t)) = (std::env::var("MCLA_RACE_LEAVE"), self.game.race_end_t) {
+            if t > v.parse().unwrap_or(4.0) && self.game.race.is_some() && self.pending_action == MenuAction::None {
+                log::info!("test: RETURN TO CRUISE picked");
+                self.pending_action = MenuAction::StartFreeRoam;
+            }
+        }
+        if std::env::var("MCLA_RACE_LEAVE").is_ok() && self.tick_no % 60 == 0 {
+            for &uid in &self.game.race_kept {
+                if let Some(c) = self.vehicles.cars.iter().find(|c| c.uid == uid) {
+                    log::info!("race leave: kept {} at ({:.1}, {:.1}, {:.1}) {:.1} m/s, cruiser {}", uid, c.state.pos.x, c.state.pos.y, c.state.pos.z, c.state.speed(), crate::cruisedrive::is_cruiser(c));
+                }
+            }
+        }
         // --- input / simulation -------------------------------------------------
         if self.input.rmb {
             self.cam.yaw += self.input.mouse_dx * 0.0025;
@@ -7367,6 +7385,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         self.game.current_race = Some(race);
                         // only a race against the hookman himself counts for his mission
                         self.game.hookman_race = self.roam.won_against_rival;
+                        // (the race is the man's core's: his story core's own, or generic_local_hookman's - `Game::race_owner`)
+                        self.game.race_man = Some((race, self.game.man_mission.clone().unwrap_or_default()));
                         if let Some(s) = self.roam.series_of.take() {
                             self.game.story_series_start(&s, race);
                         }
@@ -8016,6 +8036,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // raceOverTrigger 1: back to the cruise as RETURN TO CRUISE does)
                 if std::mem::take(&mut self.police.arrest_over) && self.game.race.is_some() {
                     log::info!("police: arrested during the race - back to the cruise");
+                    self.game.race_arrested = true;
                     self.pending_action = MenuAction::StartFreeRoam;
                 }
                 // (step 19d: the payback's chase - the pursuers are the client's friends, their
@@ -8203,6 +8224,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         // A borrowed car's hand-back is left to the after-scene path)
                         if !goons && self.game.race.is_some() && !self.game.borrowed {
                             log::info!("police: arrested during the race - back to the cruise (success frame)");
+                            self.game.race_arrested = true;
                             self.pending_action = MenuAction::StartFreeRoam;
                             self.cruise_keep_police = true;
                         }
@@ -13899,6 +13921,29 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.game.mc4_drive_flush();
                     self.cam_reset_pending = true;
                 }
+                // (the race's leave for the cruise - `raceleave`: the opponents within 500 m of the player stay as cruising
+                // racers unless he was arrested, the others go; the post-race taunts of the cores that have them, said by
+                // record 1's racer)
+                let leave = self.game.race.as_ref().map(|r| {
+                    let pi = r.participants.first().copied();
+                    let pt = pi.and_then(|i| r.finish_time.get(i).copied().flatten());
+                    // (the player's record +164 == 1: finished, and nobody before him)
+                    let first = pt.is_some_and(|t| r.participants.iter().skip(1).all(|&k| r.finish_time.get(k).copied().flatten().map_or(true, |o| o >= t)));
+                    let opps: Vec<raceleave::Opp> = r.participants.iter().enumerate().skip(1).filter_map(|(s, &k)| self.vehicles.cars.get(k).map(|c| raceleave::Opp { slot: s, uid: c.uid, pos: c.state.pos })).collect();
+                    let player = pi.and_then(|i| self.vehicles.cars.get(i)).map(|c| c.state.pos);
+                    let owner = self.game.race_owner();
+                    let plan = raceleave::plan(&owner, action == MenuAction::StartFreeRoam, self.game.race_arrested, first, player, &opps);
+                    let voice = r.participants.get(1).and_then(|k| self.drivers.set_of.get(k)).map(|set| prerace::voice_of(&self.opt.data_dir, set).unwrap_or_default()).unwrap_or_default();
+                    log::info!("race leave: {:?}, arrested {}, first {}: kept {:?}, taunts {:?}", owner, self.game.race_arrested, first, plan.keep, plan.taunts);
+                    (plan, voice)
+                });
+                self.game.race_arrested = false;
+                self.game.race_man = None;
+                if let Some((plan, voice)) = &leave {
+                    for t in &plan.taunts {
+                        self.speech.request_as(t, voice);
+                    }
+                }
                 // (the race object goes: its destructor's Race_Reset, F-83102 - kMRS, xRRT)
                 if self.game.race.is_some() && !self.game.goal_attack {
                     self.game.mc4_race_reset();
@@ -13961,11 +14006,17 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 } else {
                     self.police.reset(&mut self.vehicles);
                     // (the man of a won story series keeps his car: his core drives him away, `Roamers::drive_away`)
-                    let leave = self.roam.leave_after.take();
-                    let keep = leave.as_ref().and_then(|(_, cfg)| self.vehicles.cars.iter().find(|c| !c.is_player && c.pinned && c.vinyl_name == *cfg).map(|c| c.uid));
-                    self.vehicles.cars.retain(|c| c.is_player || Some(c.uid) == keep);
-                    if let (Some((m, _)), Some(uid)) = (leave, keep) {
+                    let story_leave = self.roam.leave_after.take();
+                    let keep = story_leave.as_ref().and_then(|(_, cfg)| self.vehicles.cars.iter().find(|c| !c.is_player && c.pinned && c.vinyl_name == *cfg).map(|c| c.uid));
+                    let kept: Vec<(u32, usize)> = leave.as_ref().map(|(p, _)| p.keep.clone()).unwrap_or_default();
+                    self.vehicles.cars.retain(|c| c.is_player || Some(c.uid) == keep || kept.iter().any(|k| k.0 == c.uid && Some(c.uid) != keep));
+                    if let (Some((m, _)), Some(uid)) = (story_leave, keep) {
                         self.roam.drive_away(&m, uid, &mut self.vehicles, &world.collider);
+                    }
+                    for (uid, route) in kept.into_iter().filter(|k| Some(k.0) != keep) {
+                        let ok = raceleave::release(&mut self.vehicles, &world.collider, uid, route);
+                        log::info!("race leave: opponent {} stays, cruising on route {} (brain {})", uid, route, ok);
+                        self.game.race_kept.push(uid);
                     }
                 }
                 self.vehicles.traffic_target = self.opt.traffic.max(10);

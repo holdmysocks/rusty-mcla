@@ -1104,6 +1104,13 @@ pub struct Game {
     pub no_save: bool,
     /// the running race was started by challenging a roaming racer
     pub hookman_race: bool,
+    /// the man whose core runs the race of `current_race` (that race, his mission; "" for a cruising hookman's
+    /// generic_local_hookman): set when a roaming man's race starts (`raceleave`, `race_owner`)
+    pub race_man: Option<(usize, String)>,
+    /// Race_HasBeenArrested: the cops' arrest in the race under way (race +3775, F-22530)
+    pub race_arrested: bool,
+    /// the opponents a race left for the cruise kept on the road, deleted on eviction (`raceleave::evict`)
+    pub race_kept: Vec<u32>,
     /// the hookman met on the road for the race being set up: his character and the mod value
     /// he was given when he appeared (mcHookman +168, F-92355 - his race script applies it
     /// with mcHookman_GetModValue); -1 = his set-up's own stages
@@ -1744,6 +1751,9 @@ impl Game {
             career: Default::default(),
             no_save: false,
             hookman_race: false,
+            race_man: None,
+            race_arrested: false,
+            race_kept: Vec::new(),
             rivals: Default::default(),
             samples: Default::default(),
             race_diff: 1,
@@ -4277,6 +4287,7 @@ impl Game {
         // (a new race object: +3773 / +3774 clear, the ctor F-61221)
         self.race_dmg_out = false;
         self.race_wreck_over = false;
+        self.race_arrested = false;
         self.race = Some(Race {
             path: Some(path.clone()),
             route,
@@ -4420,6 +4431,7 @@ impl Game {
         let lap_len = checkpoints.len();
         self.race_dmg_out = false;
         self.race_wreck_over = false;
+        self.race_arrested = false;
         self.race = Some(Race { path: None, route, checkpoints, next: vec![0; n], finish_time: vec![None; n], time: 0.0, countdown: 3.5, total_len: total, participants, lap_len, laps: 1, name: "Street race".into(), goal_time: 0.0, kind: RaceKind::Race, time_limit: 0.0, target: None, failed: None, cp_radius: Vec::new(), cp_gate: Vec::new(), prev_pos: Vec::new(), shortcuts: Vec::new(), cop_zones: Vec::new(), shortcut_lines: Default::default(), rivals_checkpoints: None, cp_specs: Vec::new(), cp_state: Default::default(), gps_cp: None });
         vehicles.fragile = None;
         self.mode = Mode::Race;
@@ -16372,6 +16384,42 @@ impl Game {
     pub fn rgh06_race(&self) -> bool {
         let id = self.current_race.and_then(|i| self.race_defs.get(i)).map(|d| d.id.to_ascii_lowercase()).unwrap_or_default();
         self.hookman_race && self.career.hookman_mission() == Some("RACE_GH_06") && id.ends_with("hw_ordered_jp_11")
+    }
+
+    /// The script the race under way runs under, for its leave to the cruise (`raceleave`): no release in a red light,
+    /// freeway, time trial, delivery, payback, flag game or race editor race; TelephoneChallenge; a roaming man's race
+    /// his story core's when it runs its own race (`raceleave::STORY_RELEASE` / `STORY_NO_RELEASE`); a series
+    /// (OrderedSeriesCore), a tournament, a wager or pink slip (the hangout's core); a cruising hookman's
+    /// generic_local_hookman; else RaceWrapper.
+    pub fn race_owner(&self) -> crate::raceleave::Owner {
+        use crate::raceleave::{Owner, STORY_NO_RELEASE, STORY_RELEASE};
+        let Some(r) = self.race.as_ref() else { return Owner::Other };
+        let id = self.current_race.and_then(|i| self.race_defs.get(i)).map(|d| d.id.clone()).unwrap_or_default();
+        if r.kind != RaceKind::Race || crate::althk::is_alt_race(&id) || id.starts_with("user/") || self.flag.is_some() || self.career.is_time_trial(&id) || self.mc4_tt_of(&id).is_some() {
+            return Owner::Other;
+        }
+        if self.phone_race {
+            return Owner::TelephoneChallenge;
+        }
+        let man = self.race_man.as_ref().filter(|(i, _)| Some(*i) == self.current_race).map(|m| m.1.as_str());
+        if let Some(m) = man.filter(|m| STORY_RELEASE.contains(m) || STORY_NO_RELEASE.contains(m)) {
+            return Owner::Story(m.to_string());
+        }
+        if self.series.is_some() {
+            return Owner::Series;
+        }
+        if self.career.tournament_of(&id).is_some() {
+            return Owner::Tournament;
+        }
+        if self.wager.is_some() || self.career.is_pink_slip_race(&id) || self.mc4_pink_on() {
+            return Owner::Hangout;
+        }
+        match man {
+            Some("") => Owner::LocalHookman,
+            // (another story core - its race goes to a series or a tournament above, or it has none)
+            Some(_) => Owner::Other,
+            None => Owner::Wrapper,
+        }
     }
 
     /// A story race whose script puts no opponent on the map: the man's element (SetVehicleElement
