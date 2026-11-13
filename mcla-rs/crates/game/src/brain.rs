@@ -1339,7 +1339,6 @@ fn frame_inputs(v: &crate::vehicles::Vehicles, i: usize, brain: &Brain, to_go: O
 /// itself, as before - so the cars' inputs are the same bit for bit. `cars`: the racers whose brain the tick may run, in
 /// any order. MCLA_AIV_AHEAD=0: off.
 pub fn ahead(v: &mut crate::vehicles::Vehicles, cars: &[usize], to_go: Option<f32>, dt: f32) {
-    use rayon::prelude::*;
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     if dt <= 0.0 || crate::offroad::mesh().is_none() || !*ON.get_or_init(|| std::env::var("MCLA_AIV_AHEAD").map_or(true, |x| x != "0")) {
         return;
@@ -1362,15 +1361,34 @@ pub fn ahead(v: &mut crate::vehicles::Vehicles, cars: &[usize], to_go: Option<f3
     // up to 12 long jobs at a time) and the tick waited for them - 20 - 27 ms a tick in a 7-opponent race while
     // sectors streamed in; the inputs (`frame_inputs`, read only) are gathered inside the jobs too - D59)
     let vr: &crate::vehicles::Vehicles = v;
-    let done: Vec<(usize, crate::aiv::AivAhead)> = aiv_pool().install(|| {
-        due.par_iter()
-            .map(|&i| {
-                let b = vr.cars[i].ai.as_ref().and_then(|ai| ai.brain.0.as_deref()).expect("a racer's brain");
-                let (car, obstacles) = frame_inputs(vr, i, b, to_go);
-                (i, b.aiv.ahead(&obstacles, &b.aiv_car(&car), b.activate_due, FRAME))
-            })
-            .collect()
+    let job = |i: usize| -> (usize, crate::aiv::AivAhead) {
+        let b = vr.cars[i].ai.as_ref().and_then(|ai| ai.brain.0.as_deref()).expect("a racer's brain");
+        let (car, obstacles) = frame_inputs(vr, i, b, to_go);
+        (i, b.aiv.ahead(&obstacles, &b.aiv_car(&car), b.activate_due, FRAME))
+    };
+    // (the pool's threads take the jobs from one counter; with more jobs than threads this one takes them too instead of
+    // waiting - 3 workers on a 4-core machine, a field of 7 in 3 rounds rather than 4: 1.60 -> 1.22 ms a tick, medians
+    // of 11 x 600 ticks, hw_circuit_mb_04a, MCLA_AIV_THREADS=2. With a thread a job it only waits: 0.59 there, 0.65 when
+    // it also worked)
+    let pool = aiv_pool();
+    let main_works = due.len() > pool.current_num_threads();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let out = std::sync::Mutex::new(Vec::with_capacity(due.len()));
+    let work = || loop {
+        let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let Some(&i) = due.get(k) else { break };
+        let r = job(i);
+        out.lock().unwrap().push(r);
+    };
+    pool.in_place_scope(|sc| {
+        for _ in 0..pool.current_num_threads().min(due.len()) {
+            sc.spawn(|_| work());
+        }
+        if main_works {
+            work();
+        }
     });
+    let done = out.into_inner().unwrap();
     for (i, a) in done {
         if let Some(b) = v.cars[i].ai.as_mut().and_then(|ai| ai.brain.0.as_deref_mut()) {
             b.ahead = Some(Box::new(a));
@@ -1384,6 +1402,8 @@ fn aiv_pool() -> &'static rayon::ThreadPool {
     static P: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
     P.get_or_init(|| {
         let n = std::thread::available_parallelism().map_or(2, |n| n.get());
+        // (MCLA_AIV_THREADS=<n>: the pool's size, to measure a smaller machine)
+        let n = std::env::var("MCLA_AIV_THREADS").ok().and_then(|x| x.parse::<usize>().ok()).map_or(n, |t| t * 2);
         rayon::ThreadPoolBuilder::new().num_threads((n / 2).clamp(1, 8)).thread_name(|i| format!("aiv-{i}")).build().expect("aiv threads")
     })
 }
