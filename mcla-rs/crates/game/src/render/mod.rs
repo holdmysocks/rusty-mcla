@@ -4276,6 +4276,32 @@ impl Gpu {
         }
     }
 
+    /// Level 0 of a 2D colour texture as raw bytes, rows packed (D59 checks).
+    pub fn read_texture_bytes(&self, tex: &wgpu::Texture) -> Vec<u8> {
+        let (w, h) = (tex.width(), tex.height());
+        let bpp = tex.format().block_copy_size(None).unwrap_or(4);
+        let bpr = (w * bpp + 255) / 256 * 256;
+        let buf = self.device.create_buffer(&wgpu::BufferDescriptor { label: Some("texture check"), size: (bpr * h) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        enc.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo { texture: tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyBufferInfo { buffer: &buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(bpr), rows_per_image: Some(h) } },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        self.queue.submit([enc.finish()]);
+        let slice = buf.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        self.device.poll(wgpu::Maintain::Wait);
+        let data = slice.get_mapped_range();
+        let mut out = Vec::with_capacity((w * h * bpp) as usize);
+        for y in 0..h {
+            out.extend_from_slice(&data[(y * bpr) as usize..(y * bpr + w * bpp) as usize]);
+        }
+        drop(data);
+        buf.unmap();
+        out
+    }
+
     /// The cars' environment cube's levels 1 .. ENV_MIPS - 1, all six faces, as raw bytes (for the D59 check below).
     fn env_mips_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();

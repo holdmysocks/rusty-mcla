@@ -12989,8 +12989,38 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         passprof::mark("impostors+prepare");
         gpuprof::stamp(&gpu.device, &gpu.queue, &mut enc, "impostors+prepare");
         // (the fast shadow collector and the wet road's planar reflection: recorded with the shadows, above)
-        // (the plants' impostor pictures that are due this frame - props/impostor.rs)
-        self.props.update_impostors(&gpu, &mut enc, &globals);
+        // (the plants' impostor pictures that are due this frame - props/impostor.rs. D59: the plan here, the passes recorded
+        // on a pool thread while this thread prepares the particles, the rain and the drivers; their command buffer goes
+        // where this encoder held them - after what is recorded so far, before the rest - so the GPU gets the same passes
+        // in the same order. The impostors and the prop models are lent to the thread: nothing below reads them until the
+        // join at "main setup" (the rain reads only the lamp list). MCLA_IMPOSTOR_MAIN=1: recorded here, as before.)
+        let mut imp_check: Option<props::ImpostorPlan> = None;
+        let imp_job = if std::env::var_os("MCLA_IMPOSTOR_MAIN").is_some() {
+            self.props.update_impostors(&gpu, &mut enc, &globals);
+            None
+        } else {
+            let plan = self.props.plan_impostors(&globals);
+            // (MCLA_IMPOSTOR_CHECK=1: every 7th frame, this frame's pictures against the same plan recorded again on this thread)
+            if self.frame_no % 7 == 0 && std::env::var_os("MCLA_IMPOSTOR_CHECK").is_some() {
+                imp_check = Some(plan.clone());
+            }
+            if plan.is_empty() {
+                None
+            } else {
+                self.props.lend_impostors().map(|loan| {
+                    early_cbs.push(std::mem::replace(&mut enc, gpu.device.create_command_encoder(&Default::default())).finish());
+                    let (device, queue) = (gpu.device.clone(), gpu.queue.clone());
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    mcla_flash::raster::pool().spawn(move || {
+                        let mut e = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("impostor tiles") });
+                        loan.record(&device, &queue, &mut e, &plan);
+                        let _ = tx.send((loan, e.finish()));
+                    });
+                    rx
+                })
+            }
+        };
+        passprof::mark("imp: fx");
         // (the particles' fog: RMPTFX_FogMinColor = sm_KeyMinFogColor x the light factor the
         // fog pass's colour takes, RMPTFX_FogParams.x = sm_KeyFogHeight - recorded c81 / c79)
         self.fx.fog_min = self.sky_now().tod.map_or([0.0, 0.0, 0.0, 0.0, 1000.0], |d| {
@@ -13002,10 +13032,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             self.fx.fog_min = sv.2.map(|v| v * k);
         }
         self.fx.prepare(&gpu, self.cam.pos, if std::env::var_os("MCLA_DRAW_HELD").is_some() { 1.0 } else { self.vehicles.render_alpha });
+        passprof::mark("imp: rain");
         // (the rain and the lamps' cones in it, as the original draws them - rain.rs)
         rain::prepare(&gpu, &rain::Frame { cam_pos: globals.cam_pos, inv_view_proj: globals.inv_view_proj, rain: self.rain_amount(), light: self.sky_now().tod.map(|t| (t.light + t.ambient, t.nfl)), car: self.vehicles.player().filter(|_| self.drive).map(|c| c.render_pose(self.vehicles.render_alpha).pos), lamps: &self.props.prop_lamps, weather: match self.weather { sky::Weather::Cloudy => 1, sky::Weather::Stormy => 2, sky::Weather::Foggy => 3, _ => 0 }, next: self.sky_next.as_ref().map(|(_, w, f)| (match w { sky::Weather::Cloudy => 1, sky::Weather::Stormy => 2, sky::Weather::Foggy => 3, _ => 0 }, *f)), hour: self.time_of_day, collider: Some((&world.collider, &world.set_collider)) });
         // (the drivers and riders are mcCharacterPlus instances: path A as the scenes' cast, by day and at night -
         // F-21528, recorded on the player's rider; MCLA_DRV_LIGHT_OLD=1: the city's object look as before)
+        passprof::mark("imp: seats");
         self.drivers.set_light(std::env::var("MCLA_DRV_LIGHT_OLD").is_err().then(|| skin::CharLight { night_path: true, dynamic: self.peds.night_lights.as_ref().map(|d| d.0), ..char_light }));
         {
             // drivers of the player's car, the racers and the police (traffic models have their own)
@@ -13098,7 +13130,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             if self.drivers.draw_log.is_none() && self.peds.draw_log.is_some() {
                 self.drivers.draw_log = Some(Vec::new());
             }
+            passprof::mark("imp: drivers.prepare");
             self.drivers.prepare(&mut gpu, &seats, self.cam.pos, &frustum, dt);
+            passprof::mark("imp: encode_skin");
             // (the drivers' GPU skinning - D59: in the frame's encoder, which goes ahead of every pass that draws them)
             self.drivers.encode_skin(&gpu, &mut enc);
             drop(seats);
@@ -13112,6 +13146,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     c.state.visible_hit = false;
                 }
             }
+        }
+        if let Some(rx) = imp_job {
+            let (loan, cb) = rx.recv().expect("the impostor pictures' thread");
+            self.props.return_impostors(loan);
+            early_cbs.push(cb);
         }
         passprof::mark("main setup");
         // --- main pass ----------------------------------------------------------
@@ -14147,6 +14186,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         gpuprof::end(&gpu.device, &gpu.queue, &mut enc);
         let t_enc = now.elapsed().as_secs_f32() * 1000.0;
         gpu.queue.submit(early_cbs.into_iter().chain([enc.finish()]));
+        if let Some(plan) = imp_check.filter(|p| !p.is_empty()) {
+            let (d, n) = self.props.check_impostors(&gpu, &plan);
+            log::info!("impostor check: frame {}: {} of {} bytes differ", self.frame_no, d, n);
+        }
         gpuprof::after_submit();
         window.pre_present_notify();
         frame.present();

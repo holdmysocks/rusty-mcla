@@ -466,12 +466,20 @@ impl Impostors {
     /// this frame's bits (0 and 2 on even frames, 1 and 3 on odd ones), or whose picture is of
     /// the other half of the day, or was never drawn.
     pub(super) fn update(&mut self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder, g: &Globals, models: &[PropModel]) {
+        let plan = self.plan(g, models);
+        self.record(&gpu.device, &gpu.queue, enc, &plan, models);
+    }
+
+    /// This frame's pictures: which types are due (F-65228 with F-27437, rules.rs `frame_plan`) and each one's tile
+    /// uniform. Marks them drawn (valid, the night they were drawn in) as the draw did; `record` then only records the
+    /// passes, so it can run on another thread (D59, main.rs).
+    pub(super) fn plan(&mut self, g: &Globals, models: &[PropModel]) -> ImpostorPlan {
         let frame = self.frame;
         self.frame += 1;
         // the main camera's back vector: minus the direction clip w grows along
         let fwd = Vec3::new(g.view_proj[0][3], g.view_proj[1][3], g.view_proj[2][3]);
         if !fwd.is_finite() || fwd.length_squared() < 1e-12 {
-            return;
+            return ImpostorPlan::default();
         }
         let c = -fwd.normalize();
         let night = g.tone[3] > 0.5;
@@ -483,10 +491,12 @@ impl Impostors {
             .map(|t| SlotState { has_drawable: true, has_pictures: true, low: false, max_rots: 1, sched: t.sched, last_night: t.last_night, twin: None, stamp: t.stamp.load(Ordering::Relaxed) as u32 })
             .collect();
         let plan = frame_plan(&mut state, frame as u32, false, night_byte);
-        let mut drawn = 0u32;
+        let mut tiles = Vec::new();
         for (tix, _tiles) in plan {
             let ty = &mut self.types[tix];
-            let Some(model) = models.get(ty.model) else { continue };
+            if models.get(ty.model).is_none() {
+                continue;
+            }
             let u = TileUniform {
                 // (pix_center 0, as the recorded PSGenerateImposter draws: half a texel of the picture - render::half_pixel)
                 view_proj: crate::render::half_pixel(Self::tile_camera(c, ty.width, ty.height, ty.centre_y), TILE as f32, TILE as f32).to_cols_array_2d(),
@@ -498,7 +508,36 @@ impl Impostors {
                 wind: wind_vector(g.lod[3]),
                 eye: crate::render::casc_eye3().extend(1.0).to_array(),
             };
-            gpu.queue.write_buffer(&ty.buf, 0, bytemuck::bytes_of(&u));
+            ty.valid = true;
+            ty.last_night = night_byte;
+            tiles.push((tix, u));
+        }
+        let drawn = tiles.len() as u32;
+        self.total += drawn as u64;
+        if self.log_every > 0 && frame % self.log_every == 0 {
+            let live = self.types.iter().filter(|t| t.stamp.load(Ordering::Relaxed) + 1 >= frame).count();
+            log::info!("impostors: frame {} drew {} pictures ({} types in view, {} pictures so far), back vector {:.3} {:.3} {:.3}", frame, drawn, live, self.total, c.x, c.y, c.z);
+        }
+        ImpostorPlan { tiles }
+    }
+
+    /// D59 check: the planned types' pictures (colour, then normal) as raw bytes.
+    pub(super) fn read_pictures(&self, gpu: &Gpu, plan: &ImpostorPlan) -> Vec<u8> {
+        let mut out = Vec::new();
+        for (tix, _) in &plan.tiles {
+            let ty = &self.types[*tix];
+            out.extend_from_slice(&gpu.read_texture_bytes(&ty.color.texture));
+            out.extend_from_slice(&gpu.read_texture_bytes(&ty.normal.texture));
+        }
+        out
+    }
+
+    /// The planned pictures' passes, in the plan's order (reads only: the types' targets, uniforms and the models).
+    pub(super) fn record(&self, _device: &wgpu::Device, queue: &wgpu::Queue, enc: &mut wgpu::CommandEncoder, plan: &ImpostorPlan, models: &[PropModel]) {
+        for (tix, u) in &plan.tiles {
+            let ty = &self.types[*tix];
+            let Some(model) = models.get(ty.model) else { continue };
+            queue.write_buffer(&ty.buf, 0, bytemuck::bytes_of(u));
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("impostor tile"),
                 color_attachments: &[
@@ -520,16 +559,19 @@ impl Impostors {
                 pass.set_index_buffer(b.ib.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..b.count, 0, 0..1);
             }
-            drop(pass);
-            ty.valid = true;
-            ty.last_night = night_byte;
-            drawn += 1;
         }
-        self.total += drawn as u64;
-        if self.log_every > 0 && frame % self.log_every == 0 {
-            let live = self.types.iter().filter(|t| t.stamp.load(Ordering::Relaxed) + 1 >= frame).count();
-            log::info!("impostors: frame {} drew {} pictures ({} types in view, {} pictures so far), back vector {:.3} {:.3} {:.3}", frame, drawn, live, self.total, c.x, c.y, c.z);
-        }
+    }
+}
+
+/// The pictures one frame draws (`Impostors::plan`), recorded by `Impostors::record`.
+#[derive(Default, Clone)]
+pub struct ImpostorPlan {
+    tiles: Vec<(usize, TileUniform)>,
+}
+
+impl ImpostorPlan {
+    pub fn is_empty(&self) -> bool {
+        self.tiles.is_empty()
     }
 }
 

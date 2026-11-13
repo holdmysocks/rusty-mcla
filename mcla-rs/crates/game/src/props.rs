@@ -16,6 +16,19 @@ use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
 mod impostor;
+pub use impostor::ImpostorPlan;
+
+/// The plants' impostors and the prop models, lent to a thread that records the due pictures (`Props::lend_impostors`).
+pub struct ImpostorLoan {
+    imp: impostor::Impostors,
+    models: Vec<PropModel>,
+}
+
+impl ImpostorLoan {
+    pub fn record(&self, device: &wgpu::Device, queue: &wgpu::Queue, enc: &mut wgpu::CommandEncoder, plan: &ImpostorPlan) {
+        self.imp.record(device, queue, enc, plan, &self.models);
+    }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, Debug)]
@@ -1918,6 +1931,38 @@ impl Props {
         if let Some(imp) = self.impostors.as_mut() {
             imp.update(gpu, enc, globals, &self.models);
         }
+    }
+
+    /// `update_impostors` in two halves (D59): the plan here, on the frame's thread ...
+    pub fn plan_impostors(&mut self, globals: &crate::render::Globals) -> ImpostorPlan {
+        match self.impostors.as_mut() {
+            Some(imp) => imp.plan(globals, &self.models),
+            None => ImpostorPlan::default(),
+        }
+    }
+
+    /// ... and its passes, which only read, so they can be recorded on another thread: the impostors and the models are
+    /// lent out by value (`ImpostorLoan::record`) and given back with `return_impostors` before anything draws a prop.
+    pub fn lend_impostors(&mut self) -> Option<ImpostorLoan> {
+        let imp = self.impostors.take()?;
+        Some(ImpostorLoan { imp, models: std::mem::take(&mut self.models) })
+    }
+
+    /// D59 check (MCLA_IMPOSTOR_CHECK=1, after the frame's submit): the pictures the frame drew for `plan` against the same
+    /// plan recorded again here on the frame's thread and submitted alone. Returns (differing bytes, bytes).
+    pub fn check_impostors(&self, gpu: &Gpu, plan: &ImpostorPlan) -> (usize, usize) {
+        let Some(imp) = self.impostors.as_ref() else { return (0, 0) };
+        let a = imp.read_pictures(gpu, plan);
+        let mut enc = gpu.device.create_command_encoder(&Default::default());
+        imp.record(&gpu.device, &gpu.queue, &mut enc, plan, &self.models);
+        gpu.queue.submit([enc.finish()]);
+        let b = imp.read_pictures(gpu, plan);
+        (a.iter().zip(&b).filter(|(x, y)| x != y).count() + a.len().abs_diff(b.len()), a.len())
+    }
+
+    pub fn return_impostors(&mut self, loan: ImpostorLoan) {
+        self.impostors = Some(loan.imp);
+        self.models = loan.models;
     }
 
     #[allow(clippy::too_many_arguments)]
