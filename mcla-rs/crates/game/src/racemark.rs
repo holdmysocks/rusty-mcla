@@ -196,6 +196,8 @@ pub struct Racer {
     pub pos: Vec3,
     pub height: f32,
     pub icon: u8,
+    /// The car is under Stealth / MegaStealth (F-54047, the effect's type alone): F-50704 queues no marker for it.
+    pub stealth: bool,
 }
 
 /// How far below its tyre's crown the lowest wheel reaches in the car's composite bound as the
@@ -393,6 +395,9 @@ pub fn marks(t: &MarkTune, cam: Vec3, cam_z: Vec3, racers: &[Racer]) -> Vec<Mark
     let mut out: Vec<Mark> = racers
         .iter()
         .filter_map(|r| {
+            if r.stealth {
+                return None;
+            }
             let d = distance(cam, r.pos);
             let mut colour = t.colour(r.icon);
             colour[3] = t.fade(r.icon, d, colour[3])?;
@@ -485,6 +490,27 @@ mod tests {
     /// F-50704 / F-52921 / F-34178 run offline (tools/race_marker_reference.py, 4,000 cases):
     /// queued or not, the matrix (row 3's w aside), the colour, the depth flag and the distance,
     /// every word equal.
+    /// F-50704 with the Stealth getter F-54047 as generated (tools/race_marker_stealth_reference.py): over the racer object's
+    /// car / holder / effect present or null and the effect types -1 .. 30, for icons 0, 10 and 18, a shown marker is queued
+    /// unless the type is Stealth / MegaStealth (6 of 768 hidden); `marks` with `stealth_on` of the same state equal on every one.
+    #[test]
+    fn stealth_hides_the_marker_as_the_original() {
+        let text = include_str!("testdata/race_marker_stealth_ref.txt");
+        let (mut n, mut hidden) = (0, 0);
+        for line in text.lines() {
+            let (a, b) = line.split_once(" -> ").unwrap();
+            let w: Vec<i32> = a.split(' ').map(|x| x.parse().unwrap()).collect();
+            let effect = (w[0] != 0 && w[1] != 0 && w[2] != 0).then_some(w[3] as u8);
+            let stealth = crate::powerups::stealth_on(effect);
+            let t = MarkTune::default();
+            let got = marks(&t, Vec3::ZERO, Vec3::new(0.0, 0.0, -1.0), &[Racer { pos: Vec3::new(0.0, 0.0, 100.0), height: 2.0, icon: w[4] as u8, stealth }]);
+            assert_eq!(got.len().to_string(), b, "{line}");
+            hidden += (b == "0") as usize;
+            n += 1;
+        }
+        assert_eq!((n, hidden), (768, 6));
+    }
+
     #[test]
     fn markers_match_the_original() {
         let text = include_str!("testdata/race_marker_ref.txt");
@@ -510,7 +536,7 @@ mod tests {
             };
             let icon = w[34] as u8;
             let o: Vec<u32> = b.split(' ').map(|x| x.parse().unwrap()).collect();
-            let got = marks(&t, cam, cam_z, &[Racer { pos, height, icon }]);
+            let got = marks(&t, cam, cam_z, &[Racer { pos, height, icon, stealth: false }]);
             assert_eq!(got.len() as u32, o[0], "{line}");
             if let Some(m) = got.first() {
                 let mut words: Vec<u32> = m.m.to_cols_array().iter().map(|x| x.to_bits()).collect();

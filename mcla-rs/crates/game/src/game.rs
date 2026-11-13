@@ -11925,7 +11925,7 @@ impl Game {
                 0
             };
             let height = crate::racemark::bound_height(c);
-            racers.push(crate::racemark::Racer { pos: c.render_pose(alpha).pos, height, icon });
+            racers.push(crate::racemark::Racer { pos: c.render_pose(alpha).pos, height, icon, stealth: c.pu_stealth_on });
         }
         if std::env::var("MCLA_MARK_LOG").is_ok() {
             if let Some(p) = vehicles.player() {
