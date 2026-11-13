@@ -1290,8 +1290,9 @@ fn frame_inputs(v: &crate::vehicles::Vehicles, i: usize, brain: &Brain, to_go: O
         rpm: vs.map_or(0.0, |s| s.engine_w * 9.549_296_6),
         engine,
         drift_ratio,
-        // (approx.: 2 x the tuning's box - the original takes its collision bound's half extents)
-        size: c.params().body_half * 2.0,
+        // (F-92836: 2.0 x the composite bound's +16, its box max (F-98453), splatted vmulfp; the box as `racemark::bound_box`
+        // has it - approx. in x, see there)
+        size: crate::racemark::bound_box(c).0 * 2.0,
         gravity: -9.8 * gravity_factor,
         nitro_tune,
         nitro_t: vs.map_or(0.0, |s| s.nitro_level * nitro_tune[2]),

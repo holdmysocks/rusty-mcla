@@ -487,9 +487,6 @@ mod tests {
         }
     }
 
-    /// F-50704 / F-52921 / F-34178 run offline (tools/race_marker_reference.py, 4,000 cases):
-    /// queued or not, the matrix (row 3's w aside), the colour, the depth flag and the distance,
-    /// every word equal.
     /// F-50704 with the Stealth getter F-54047 as generated (tools/race_marker_stealth_reference.py): over the racer object's
     /// car / holder / effect present or null and the effect types -1 .. 30, for icons 0, 10 and 18, a shown marker is queued
     /// unless the type is Stealth / MegaStealth (6 of 768 hidden); `marks` with `stealth_on` of the same state equal on every one.
@@ -511,6 +508,9 @@ mod tests {
         assert_eq!((n, hidden), (768, 6));
     }
 
+    /// F-50704 / F-52921 / F-34178 run offline (tools/race_marker_reference.py, 4,000 cases):
+    /// queued or not, the matrix (row 3's w aside), the colour, the depth flag and the distance,
+    /// every word equal.
     #[test]
     fn markers_match_the_original() {
         let text = include_str!("testdata/race_marker_ref.txt");
