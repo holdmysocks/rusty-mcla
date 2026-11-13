@@ -26,14 +26,81 @@ pub mod island;
 // ---------------------------------------------------------------------------------------------
 // The vector unit
 
+/// D59.v4-sse: the lane ops on the x86-64 vector unit, four lanes in one instruction with the flush done by masks. SSE's
+/// single-precision add / subtract / multiply round as the scalar ones do (the same IEEE operation per lane, the control
+/// word left at its default: no hardware flush), so every lane is the bits of [`V4::map2`]'s scalar path
+/// (test `sse_lanes_are_the_scalar_ones`). The scalar path was ~100 ns a 4 x 4 product; this is a few.
+#[cfg(target_arch = "x86_64")]
+mod sse {
+    use super::V4;
+    use std::arch::x86_64::*;
+
+    /// A lane whose exponent field is zero (a subnormal or a zero) keeps only its sign: [`super::ftz`] on four lanes.
+    #[inline(always)]
+    fn fz(v: __m128) -> __m128 {
+        // (SSE2 is part of x86-64: always present)
+        unsafe {
+            let e = _mm_and_si128(_mm_castps_si128(v), _mm_set1_epi32(0x7f80_0000));
+            let z = _mm_castsi128_ps(_mm_cmpeq_epi32(e, _mm_setzero_si128()));
+            let sign = _mm_and_ps(v, _mm_castsi128_ps(_mm_set1_epi32(i32::MIN)));
+            _mm_or_ps(_mm_andnot_ps(z, v), _mm_and_ps(z, sign))
+        }
+    }
+    /// A NaN in the first operand is the result, quieted (the vector unit's rule: A's NaN before B's). SSE gives the
+    /// first source's NaN too, but the compiler may swap the operands of an add or a multiply, so it is put here.
+    #[inline(always)]
+    fn first_nan(a: __m128, r: __m128) -> __m128 {
+        unsafe {
+            let n = _mm_cmpunord_ps(a, a);
+            let aq = _mm_or_ps(a, _mm_castsi128_ps(_mm_set1_epi32(0x0040_0000)));
+            _mm_or_ps(_mm_andnot_ps(n, r), _mm_and_ps(n, aq))
+        }
+    }
+    #[inline(always)]
+    fn ld(v: V4) -> __m128 {
+        unsafe { fz(_mm_loadu_ps(v.0.as_ptr())) }
+    }
+    #[inline(always)]
+    fn st(v: __m128) -> V4 {
+        let mut o = [0f32; 4];
+        unsafe { _mm_storeu_ps(o.as_mut_ptr(), fz(v)) };
+        V4(o)
+    }
+    #[inline(always)]
+    pub fn add(a: V4, b: V4) -> V4 {
+        let (a, b) = (ld(a), ld(b));
+        st(first_nan(a, unsafe { _mm_add_ps(a, b) }))
+    }
+    #[inline(always)]
+    pub fn sub(a: V4, b: V4) -> V4 {
+        let (a, b) = (ld(a), ld(b));
+        st(first_nan(a, unsafe { _mm_sub_ps(a, b) }))
+    }
+    #[inline(always)]
+    pub fn mul(a: V4, b: V4) -> V4 {
+        let (a, b) = (ld(a), ld(b));
+        st(first_nan(a, unsafe { _mm_mul_ps(a, b) }))
+    }
+}
+
 /// One vector register, lanes x y z w as the guest holds them.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct V4(pub [f32; 4]);
 
+/// `a + b` with a NaN `a` the result (quieted), as the lane ops: the order of a commutative add is otherwise the
+/// compiler's, and with two NaNs it picks the result.
+#[inline]
+fn add_a(a: f32, b: f32) -> f32 {
+    if a.is_nan() { f32::from_bits(a.to_bits() | 0x0040_0000) } else { a + b }
+}
+
 /// Denormals in and out of the vector unit are zero (flush mode on for every vector float op).
 #[inline]
 fn ftz(x: f32) -> f32 {
-    if x != 0.0 && x.is_subnormal() { if x.is_sign_negative() { -0.0 } else { 0.0 } } else { x }
+    // (branch-free, so the lane loops vectorise: a zero exponent field keeps only the sign - a subnormal becomes the
+    // zero of its sign and a zero stays itself; the same bits as testing is_subnormal, D59.ftz)
+    let b = x.to_bits();
+    f32::from_bits(if b & 0x7f80_0000 == 0 { b & 0x8000_0000 } else { b })
 }
 
 impl V4 {
@@ -49,18 +116,29 @@ impl V4 {
     #[inline]
     fn map2(self, b: V4, f: impl Fn(f32, f32) -> f32) -> V4 {
         let (a, b) = (self.0, b.0);
-        V4([0, 1, 2, 3].map(|i| ftz(f(ftz(a[i]), ftz(b[i])))))
+        // (a NaN in the first operand is the result, quieted: the vector unit's rule, kept whatever order the compiler
+        // gives the operands of a commutative op)
+        V4([0, 1, 2, 3].map(|i| if a[i].is_nan() { f32::from_bits(a[i].to_bits() | 0x0040_0000) } else { ftz(f(ftz(a[i]), ftz(b[i]))) }))
     }
     #[inline]
     pub fn add(self, b: V4) -> V4 {
+        #[cfg(target_arch = "x86_64")]
+        return sse::add(self, b);
+        #[allow(unreachable_code)]
         self.map2(b, |x, y| x + y)
     }
     #[inline]
     pub fn sub(self, b: V4) -> V4 {
+        #[cfg(target_arch = "x86_64")]
+        return sse::sub(self, b);
+        #[allow(unreachable_code)]
         self.map2(b, |x, y| x - y)
     }
     #[inline]
     pub fn mul(self, b: V4) -> V4 {
+        #[cfg(target_arch = "x86_64")]
+        return sse::mul(self, b);
+        #[allow(unreachable_code)]
         self.map2(b, |x, y| x * y)
     }
     /// vmaddfp: self * b + c, two roundings.
@@ -92,13 +170,13 @@ impl V4 {
     #[inline]
     pub fn dot3(self, b: V4) -> V4 {
         let p = self.mul(b).0;
-        V4::splat(ftz(ftz(0.0 + p[2]) + ftz(p[1] + p[0])))
+        V4::splat(ftz(add_a(ftz(add_a(0.0, p[2])), ftz(add_a(p[1], p[0])))))
     }
     /// vmsum4fp
     #[inline]
     pub fn dot4(self, b: V4) -> V4 {
         let p = self.mul(b).0;
-        V4::splat(ftz(ftz(p[3] + p[2]) + ftz(p[1] + p[0])))
+        V4::splat(ftz(add_a(ftz(add_a(p[3], p[2])), ftz(add_a(p[1], p[0])))))
     }
     #[inline]
     pub fn x(self) -> f32 {
@@ -2263,6 +2341,45 @@ impl Articulated {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// D59.ftz: the branch-free flush gives the bits of the subnormal test it replaced, for every one of the 2^32 words.
+    #[test]
+    fn ftz_is_the_subnormal_test() {
+        let old = |x: f32| if x != 0.0 && x.is_subnormal() { if x.is_sign_negative() { -0.0f32 } else { 0.0 } } else { x };
+        let bad = (0..=u32::MAX).filter(|&b| ftz(f32::from_bits(b)).to_bits() != old(f32::from_bits(b)).to_bits()).count();
+        assert_eq!(bad, 0);
+    }
+
+    /// D59.v4-sse: the SSE lanes give the scalar path's bits (NaNs too: A's before B's) for random words, subnormals, zeros,
+    /// infinities and the edges of the normal range, every pair of them.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn sse_lanes_are_the_scalar_ones() {
+        let mut v: Vec<u32> = vec![0, 0x8000_0000, 1, 0x8000_0001, 0x007f_ffff, 0x807f_ffff, 0x0080_0000, 0x8080_0000, 0x0080_0001,
+            0x7f7f_ffff, 0xff7f_ffff, 0x7f80_0000, 0xff80_0000, 0x7fc0_0000, 0x3f80_0000, 0xbf80_0000, 0x1f80_0000, 0x2000_0001, 0x0100_0000];
+        let mut st = 7u64;
+        for _ in 0..3000 {
+            st = st.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let w = (st >> 32) as u32;
+            // (half of them in a narrow exponent band so that products and sums land near the subnormal edge)
+            v.push(if st & 1 == 0 { w } else { (w & 0x807f_ffff) | (((w >> 23) % 40 + 0x30) << 23) });
+        }
+        let same = |a: f32, b: f32| a.to_bits() == b.to_bits();
+        let mut n = 0u64;
+        for c in v.chunks(4).filter(|c| c.len() == 4) {
+            let a = V4([0, 1, 2, 3].map(|i| f32::from_bits(c[i])));
+            for d in v.chunks(4).filter(|d| d.len() == 4).take(400) {
+                let b = V4([0, 1, 2, 3].map(|i| f32::from_bits(d[i])));
+                for (fast, slow) in [(a.add(b), a.map2(b, |x, y| x + y)), (a.sub(b), a.map2(b, |x, y| x - y)), (a.mul(b), a.map2(b, |x, y| x * y))] {
+                    for i in 0..4 {
+                        assert!(same(fast.0[i], slow.0[i]), "{:08x} {:08x} lane {i}: {:08x} vs {:08x}", a.0[i].to_bits(), b.0[i].to_bits(), fast.0[i].to_bits(), slow.0[i].to_bits());
+                        n += 1;
+                    }
+                }
+            }
+        }
+        assert!(n > 1_000_000);
+    }
 
     pub(super) struct State {
         pub(super) collider: Vec<u8>,

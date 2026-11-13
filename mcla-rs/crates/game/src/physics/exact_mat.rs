@@ -114,6 +114,14 @@ fn mat_from_rows(r: [V4; 4]) -> Mat4 {
 /// parent's), the vector unit's unfused multiply-add chain ([`super::artic_pose::mmul`]); in the glam order this is
 /// `parent * local`. Checked against F-97374 run offline (`artic_pose::tests::fk_matches_the_original`).
 pub fn chain(local: &Mat4, parent: &Mat4) -> Mat4 {
+    #[cfg(target_arch = "x86_64")]
+    return sse::chain(local, parent);
+    #[allow(unreachable_code)]
+    chain_ref(local, parent)
+}
+
+/// [`chain`] on [`V4`] lane by lane (the reference the SSE version is tested against).
+pub fn chain_ref(local: &Mat4, parent: &Mat4) -> Mat4 {
     mat_from_rows(mmul(&mat_rows(local), &mat_rows(parent)))
 }
 
@@ -134,12 +142,168 @@ pub fn bind_skin_with(g: &Mat4, m: &Mat4, bind: Vec3) -> Mat4 {
 
 /// [`bind_skin_with`] for a bind pose without rotations (the port's skeletons): the bone matrix is the identity.
 pub fn bind_skin(g: &Mat4, bind: Vec3) -> Mat4 {
+    #[cfg(target_arch = "x86_64")]
+    return sse::bind_skin(g, bind);
+    #[allow(unreachable_code)]
     bind_skin_with(g, &Mat4::IDENTITY, bind)
+}
+
+/// D59.v4-sse: [`chain`] and [`bind_skin`] with the rows in SSE registers, the same operations in the same order as
+/// the [`V4`] path (each product and sum rounded, every result and the inputs flushed as [`V4`]'s ops flush them; a
+/// result already flushed needs no second flush as the next op's input). Tests `sse_chain_is_the_v4_one`,
+/// `sse_bind_skin_is_the_v4_one`; with the walkers' skinning these were ~100 ns each on the V4 path.
+#[cfg(target_arch = "x86_64")]
+mod sse {
+    use glam::{Mat4, Vec3};
+    use std::arch::x86_64::*;
+
+    #[inline(always)]
+    fn fz(v: __m128) -> __m128 {
+        unsafe {
+            let e = _mm_and_si128(_mm_castps_si128(v), _mm_set1_epi32(0x7f80_0000));
+            let z = _mm_castsi128_ps(_mm_cmpeq_epi32(e, _mm_setzero_si128()));
+            let sign = _mm_and_ps(v, _mm_castsi128_ps(_mm_set1_epi32(i32::MIN)));
+            _mm_or_ps(_mm_andnot_ps(z, v), _mm_and_ps(z, sign))
+        }
+    }
+    /// A NaN in the first operand is the result, quieted (the vector unit's rule: A's NaN before B's). SSE gives the
+    /// first source's NaN too, but the compiler may swap the operands of an add or a multiply, so it is put here.
+    #[inline(always)]
+    fn first_nan(a: __m128, r: __m128) -> __m128 {
+        unsafe {
+            let n = _mm_cmpunord_ps(a, a);
+            let aq = _mm_or_ps(a, _mm_castsi128_ps(_mm_set1_epi32(0x0040_0000)));
+            _mm_or_ps(_mm_andnot_ps(n, r), _mm_and_ps(n, aq))
+        }
+    }
+    #[inline(always)]
+    fn rows(m: &Mat4) -> [__m128; 4] {
+        let a = m.to_cols_array();
+        unsafe { [0, 1, 2, 3].map(|i| fz(_mm_loadu_ps(a[4 * i..].as_ptr()))) }
+    }
+    #[inline(always)]
+    fn mat(r: [__m128; 4]) -> Mat4 {
+        let mut a = [0f32; 16];
+        unsafe {
+            for i in 0..4 {
+                _mm_storeu_ps(a[4 * i..].as_mut_ptr(), r[i]);
+            }
+        }
+        Mat4::from_cols_array(&a)
+    }
+    #[inline(always)]
+    fn add(a: __m128, b: __m128) -> __m128 {
+        fz(first_nan(a, unsafe { _mm_add_ps(a, b) }))
+    }
+    #[inline(always)]
+    fn mul(a: __m128, b: __m128) -> __m128 {
+        fz(first_nan(a, unsafe { _mm_mul_ps(a, b) }))
+    }
+    /// Lane `I` of `v` in all four.
+    #[inline(always)]
+    fn lane<const I: i32>(v: __m128) -> __m128 {
+        unsafe { _mm_shuffle_ps::<I>(v, v) }
+    }
+
+    /// `mmul(local, parent)`: row i = ((b0 a_i.x [+ b3 for row 3]) + b1 a_i.y) + b2 a_i.z.
+    #[inline]
+    pub fn chain(local: &Mat4, parent: &Mat4) -> Mat4 {
+        let (a, b) = (rows(local), rows(parent));
+        let row = |r: __m128, last: bool| {
+            let mut t = mul(b[0], lane::<0x00>(r));
+            if last {
+                t = add(t, b[3]);
+            }
+            add(add(t, mul(b[1], lane::<0x55>(r))), mul(b[2], lane::<0xaa>(r)))
+        };
+        mat([row(a[0], false), row(a[1], false), row(a[2], false), row(a[3], true)])
+    }
+
+    /// `bind_skin_with(g, IDENTITY, bind)`: rows 0-2 = (g0 m_i0 + g1 m_i1) + g2 m_i2 with m the identity, then the
+    /// dots of `bind` with their columns (per column c: (0 + b_z r2[c]) + (b_y r1[c] + b_x r0[c])), row 3 = g3 - those;
+    /// the w lanes g's own.
+    #[inline]
+    pub fn bind_skin(g: &Mat4, bind: Vec3) -> Mat4 {
+        let a = g.to_cols_array();
+        unsafe {
+            // (the w lanes are g's as they are, not flushed: the V4 path copies them)
+            let raw = [0, 1, 2, 3].map(|i| _mm_loadu_ps(a[4 * i..].as_ptr()));
+            let gr = raw.map(fz);
+            let (one, zero) = (_mm_set1_ps(1.0), _mm_setzero_ps());
+            let r0 = add(add(mul(gr[0], one), mul(gr[1], zero)), mul(gr[2], zero));
+            let r1 = add(add(mul(gr[0], zero), mul(gr[1], one)), mul(gr[2], zero));
+            let r2 = add(add(mul(gr[0], zero), mul(gr[1], zero)), mul(gr[2], one));
+            let b = fz(_mm_setr_ps(bind.x, bind.y, bind.z, 0.0));
+            let (p0, p1, p2) = (mul(lane::<0x00>(b), r0), mul(lane::<0x55>(b), r1), mul(lane::<0xaa>(b), r2));
+            let d = add(add(zero, p2), add(p1, p0));
+            // (lane w of d is 0 in the V4 path)
+            let wmask = _mm_castsi128_ps(_mm_setr_epi32(0, 0, 0, -1));
+            let d = _mm_andnot_ps(wmask, d);
+            let r3 = fz(first_nan(gr[3], _mm_sub_ps(gr[3], d)));
+            let keep_w = |r: __m128, src: __m128| _mm_or_ps(_mm_andnot_ps(wmask, r), _mm_and_ps(wmask, src));
+            mat([keep_w(r0, raw[0]), keep_w(r1, raw[1]), keep_w(r2, raw[2]), keep_w(r3, raw[3])])
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Words for the SSE-against-V4 tests: random ones, ones in a band near the subnormal edge, and the special values.
+    #[cfg(target_arch = "x86_64")]
+    fn words(n: usize, seed: u64) -> Vec<f32> {
+        let sp = [0u32, 0x8000_0000, 1, 0x8000_0001, 0x007f_ffff, 0x0080_0000, 0x8080_0000, 0x7f7f_ffff, 0x7f80_0000, 0xff80_0000, 0x7fc0_0000, 0x3f80_0000];
+        let mut st = seed;
+        (0..n)
+            .map(|_| {
+                st = st.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                let w = (st >> 32) as u32;
+                f32::from_bits(match st & 7 {
+                    0 => sp[(w % sp.len() as u32) as usize],
+                    1 | 2 => (w & 0x807f_ffff) | (((w >> 23) % 50 + 0x18) << 23),
+                    3 => w,
+                    _ => (w & 0x807f_ffff) | (((w >> 23) % 12 + 0x76) << 23),
+                })
+            })
+            .collect()
+    }
+    #[cfg(target_arch = "x86_64")]
+    fn same_mat(a: &Mat4, b: &Mat4) -> bool {
+        a.to_cols_array().iter().zip(b.to_cols_array().iter()).all(|(x, y)| x.to_bits() == y.to_bits())
+    }
+
+    /// D59.v4-sse: the SSE `chain` gives the V4 path's bits for 200,000 pairs of matrices (random, near-subnormal and
+    /// special words; NaN bits too) and for 200,000 real pose matrices.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn sse_chain_is_the_v4_one() {
+        let w = words(32 * 200_000, 11);
+        for c in w.chunks(32) {
+            let (a, b) = (Mat4::from_cols_slice(&c[..16]), Mat4::from_cols_slice(&c[16..]));
+            assert!(same_mat(&sse::chain(&a, &b), &chain_ref(&a, &b)), "{a:?} {b:?}");
+        }
+        let w = words(14 * 200_000, 12);
+        for c in w.chunks(14) {
+            let q = |o: usize| Quat::from_xyzw(c[o] % 1.0, c[o + 1] % 1.0, c[o + 2] % 1.0, c[o + 3] % 1.0);
+            let a = pose_matrix(q(0), Vec3::new(c[4], c[5], c[6]));
+            let b = pose_matrix(q(7), Vec3::new(c[11], c[12], c[13]));
+            assert!(same_mat(&sse::chain(&a, &b), &chain_ref(&a, &b)), "{a:?} {b:?}");
+        }
+    }
+
+    /// D59.v4-sse: the SSE `bind_skin` gives `bind_skin_with(g, IDENTITY, bind)`'s bits for 400,000 cases.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn sse_bind_skin_is_the_v4_one() {
+        let w = words(19 * 400_000, 13);
+        for c in w.chunks(19) {
+            let g = Mat4::from_cols_slice(&c[..16]);
+            let b = Vec3::new(c[16], c[17], c[18]);
+            { let (x, y) = (sse::bind_skin(&g, b), bind_skin_with(&g, &Mat4::IDENTITY, b)); assert!(same_mat(&x, &y), "g {:08x?} b {:08x?} sse {:08x?} v4 {:08x?}", g.to_cols_array().map(f32::to_bits), [b.x.to_bits(), b.y.to_bits(), b.z.to_bits()], x.to_cols_array().map(f32::to_bits), y.to_cols_array().map(f32::to_bits)); }
+        }
+    }
+
 
     /// F-96265 run offline (tools/skin_matrices_reference.py): 1,500 skeletons of 1 to 8 bones, the bone matrices the
     /// identity or a rotation, bind positions random; the object's flag word has bits 3 and 2 set and no second set
