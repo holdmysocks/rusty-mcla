@@ -1610,8 +1610,14 @@ pub(crate) fn light_lane(nav: &NavSys, lane: usize) -> Option<usize> {
 /// Returns (junction, xz metres from `pos` to the junction lane's first point = the stop line, state 2 green / 1 yellow
 /// / 0 red). (The junction is the lane's, F-41621; one without arms gives none here.)
 fn signal_stop(env: &Env, r: &Rider, pos: Vec3) -> Option<(usize, f32, u8, usize)> {
-    let nav = env.nav;
-    let n = r.next?;
+    let (ji, p0, p1, nj) = stop_fixed(env.nav, env.signals, r.next?)?;
+    let d = stop_distance(p0, pos);
+    Some((ji, d, env.signals.junctions[ji].lane_state(p0 - p1), nj))
+}
+
+/// The part of `signal_stop` fixed by the next link `n` and the junctions (the light lane, its first span and its
+/// junction): (signals junction, the span's first and second point, navsys junction).
+fn stop_fixed_of(nav: &NavSys, signals: &crate::signals::Signals, n: usize) -> Option<(usize, Vec3, Vec3, usize)> {
     let first = match light_lane(nav, nav.links[n].lane)? {
         l if l == nav.links[n].lane => n,
         l => nav.links.partition_point(|k| k.lane < l),
@@ -1622,9 +1628,23 @@ fn signal_stop(env: &Env, r: &Rider, pos: Vec3) -> Option<(usize, f32, u8, usize
         _ => (nav.links[first].a, nav.links[first].b),
     };
     let nj = lane_junction(nav, nav.links[first].lane)?;
-    let ji = signals_junction(env.signals, nav, nj)?;
-    let d = stop_distance(p0, pos);
-    Some((ji, d, env.signals.junctions[ji].lane_state(p0 - p1), nj))
+    let ji = signals_junction(signals, nav, nj)?;
+    Some((ji, p0, p1, nj))
+}
+
+/// `stop_fixed_of` kept per link (D59: the light lane's search and the junction lookup once a link, not every car every
+/// frame; the same answers, test `stop_fixed_kept`), for this navsys and these junctions.
+fn stop_fixed(nav: &NavSys, signals: &crate::signals::Signals, n: usize) -> Option<(usize, Vec3, Vec3, usize)> {
+    type Kept = (usize, usize, usize, Vec<Option<Option<(usize, Vec3, Vec3, usize)>>>);
+    thread_local!(static KEPT: std::cell::RefCell<Kept> = const { std::cell::RefCell::new((0, 0, 0, Vec::new())) });
+    let key = (nav as *const NavSys as usize, signals.junctions.as_ptr() as usize, signals.junctions.len());
+    KEPT.with(|k| {
+        let mut k = k.borrow_mut();
+        if (k.0, k.1, k.2) != key || k.3.len() != nav.links.len() {
+            *k = (key.0, key.1, key.2, vec![None; nav.links.len()]);
+        }
+        *k.3.get_mut(n)?.get_or_insert_with(|| stop_fixed_of(nav, signals, n))
+    })
 }
 
 pub fn rail_speed(nav: &NavSys, link: usize) -> (f32, bool) {
@@ -2403,6 +2423,12 @@ pub(crate) fn pool_take(held: usize) -> bool {
 }
 
 /// Does the rider hold a rail of pool 0 (its backing rail, or a ghost's lane-change rail)?
+/// The pool-0 count with car `k`'s flag brought up to date (`ride_traffic`'s loop, D59).
+pub(crate) fn pool0_recount(held: &mut [bool], n: usize, k: usize, now: bool) -> usize {
+    let was = std::mem::replace(&mut held[k], now);
+    n + now as usize - was as usize
+}
+
 pub(crate) fn holds_pool0(r: &Rider) -> bool {
     r.path.as_ref().is_some_and(|p| p.reverse) || r.ghost.as_ref().is_some_and(|g| g.lc.is_some())
 }
@@ -5621,10 +5647,17 @@ impl Vehicles {
             _ => None,
         };
         let mut waits: Vec<(usize, Vec3)> = Vec::new();
+        // (D59: the pool-0 count kept as the loop goes - a car's update changes only its own rail, so the car before is
+        // the only one to look at again; the same count as counting every other car each time, test `pool0_count_kept`)
+        let mut held: Vec<bool> = self.cars.iter().map(|c| c.rail.as_ref().is_some_and(holds_pool0)).collect();
+        let mut held_n = held.iter().filter(|&&h| h).count();
         for i in 0..self.cars.len() {
             let (half, _) = half_size(&self.cars[i]);
             // (the pool-0 rails the others hold as this car's update starts)
-            pool0.set(ghost_pool0 + self.cars.iter().enumerate().filter(|&(j, c)| j != i && c.rail.as_ref().is_some_and(holds_pool0)).count());
+            if i > 0 {
+                held_n = pool0_recount(&mut held, held_n, i - 1, self.cars[i - 1].rail.as_ref().is_some_and(holds_pool0));
+            }
+            pool0.set(ghost_pool0 + held_n - held[i] as usize);
             let c = &mut self.cars[i];
             let upright = (c.state.rot * Vec3::Y).y >= 0.0;
             let Some(r) = c.rail.as_mut() else { continue };
@@ -6356,6 +6389,56 @@ mod tests {
     /// F-55442 (with F-32663) run offline for every lane of the city as the next lane, on the placed navsys (harness and
     /// recipe: docs reference/map/signal_rule.md "Which lane, checked"): the junction lane chosen (or none) and the lane's
     /// flags equal `light_lane`'s.
+    #[test]
+    /// D59: `signal_stop`'s fixed part kept per link answers as computing it each time, for every link of the city
+    /// (asked twice: the second answer from the kept table), word for word.
+    fn stop_fixed_kept() {
+        let root = std::path::PathBuf::from(std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into()));
+        let Ok(res) = crate::assets::load_resource_file(&root.join("resources/city/sc/0x9960fcd8.r66")) else { return };
+        let nav = NavSys::parse(&res).unwrap();
+        let (signals, _) = crate::signals::Signals::build(&mcla_formats::rage::navsys::parse_junctions(&res), &[]);
+        let bits = |x: Option<(usize, glam::Vec3, glam::Vec3, usize)>| x.map(|(a, p, q, b)| (a, p.to_array().map(f32::to_bits), q.to_array().map(f32::to_bits), b));
+        let mut some = 0;
+        for pass in 0..2 {
+            for n in 0..nav.links.len() {
+                let want = bits(super::stop_fixed_of(&nav, &signals, n));
+                assert_eq!(bits(super::stop_fixed(&nav, &signals, n)), want, "link {n}, pass {pass}");
+                some += want.is_some() as usize;
+            }
+        }
+        assert!(some > 1000, "{some}");
+    }
+
+    /// D59: the pool-0 count kept as `ride_traffic`'s loop goes equals counting every other car each time, over random
+    /// loops where each car's update may change its own flag.
+    #[test]
+    fn pool0_count_kept() {
+        let mut x = 0x1234_5678u32;
+        let mut r = || {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            x
+        };
+        for _ in 0..2000 {
+            let len = (r() % 40) as usize + 1;
+            let mut cars: Vec<bool> = (0..len).map(|_| r() % 3 == 0).collect();
+            let mut held = cars.clone();
+            let mut n = held.iter().filter(|&&h| h).count();
+            for i in 0..len {
+                if i > 0 {
+                    n = super::pool0_recount(&mut held, n, i - 1, cars[i - 1]);
+                }
+                let want = cars.iter().enumerate().filter(|&(j, &h)| j != i && h).count();
+                assert_eq!(n - held[i] as usize, want);
+                // (the car's own update)
+                if r() % 4 == 0 {
+                    cars[i] = !cars[i];
+                }
+            }
+        }
+    }
+
     #[test]
     fn light_lane_matches_the_original() {
         let root = std::path::PathBuf::from(std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into()));
@@ -8899,6 +8982,7 @@ impl Vehicles {
         let occ = crate::occluder::city(&sp.data_dir).map(|c| c.select_around(focus + Vec3::Y * 1.75, OCC_RANGE));
         let total: f32 = sp.list.iter().map(|x| x.1).sum::<f32>() + sp.int_weight;
         let mut made: Vec<(Vec3, Vec3, Vec3)> = Vec::new();
+        let mut room_cars: Option<Vec<RoomCar>> = None;
         for _ in 0..if fe { 1 } else { 60 } {
             if n <= 0 {
                 break;
@@ -9017,15 +9101,17 @@ impl Vehicles {
                 sp.why[5] += 1;
                 continue;
             }
-            let racers: Vec<RoomCar> = self
-                .cars
-                .iter()
-                .map(|c| {
-                    let h = c.params().body_half;
-                    RoomCar { kind: crate::brainturn::ObjectInfo::from_car(0, c).kind, pos: c.state.pos, vel: c.state.vel, extent: crate::physics::exact::fma(h.x, h.x, h.z * h.z).sqrt() }
-                })
-                .collect();
-            if traffic_room_blocked(&CrossGrid::UNBOUNDED, pos, &racers, ty.bound_r, t.spacing) {
+            // (D59: the list made again only after a spawn changed the cars, not every try)
+            let racers = room_cars.get_or_insert_with(|| {
+                self.cars
+                    .iter()
+                    .map(|c| {
+                        let h = c.params().body_half;
+                        RoomCar { kind: crate::brainturn::ObjectInfo::from_car(0, c).kind, pos: c.state.pos, vel: c.state.vel, extent: crate::physics::exact::fma(h.x, h.x, h.z * h.z).sqrt() }
+                    })
+                    .collect::<Vec<RoomCar>>()
+            });
+            if traffic_room_blocked(&CrossGrid::UNBOUNDED, pos, racers, ty.bound_r, t.spacing) {
                 sp.why[5] += 1;
                 continue;
             }
@@ -9056,6 +9142,7 @@ impl Vehicles {
             let color = ty.color(shade).unwrap_or(super::TRAFFIC_PALETTE[shade % super::TRAFFIC_PALETTE.len()]);
             let yaw = (-dir.x).atan2(-dir.z);
             let idx = self.spawn(gpu, model, ground, yaw, color, false);
+            room_cars = None;
             // (the request's seed and the car's init draws, `amb_init`: its life, start delay, the lights' hour offset
             // +3568 and the signal blink's offsets +3576 / +3580 - the blink +3572 starts at 0 -, the bonus, the hitch)
             let init = self.amb_init(idx, &ty, false);
@@ -10503,11 +10590,11 @@ impl Vehicles {
     /// +492, the obstacle's slot 7 F-24749) and the car's own MWC (the obstacle's +16 is its car); all entries dropped
     /// (slot 14 F-11956); or the list left as it is.
     fn update_driver_lanes(&mut self, nav: &NavSys) {
-        let mut live: Vec<u32> = Vec::new();
+        let mut live: hashbrown::HashSet<u32> = hashbrown::HashSet::with_capacity(self.cars.len());
         for i in 0..self.cars.len() {
             let c = &self.cars[i];
             let ambient = c.rail.is_some() || c.parked.is_some();
-            live.push(c.uid);
+            live.insert(c.uid);
             let (r, own) = if ambient {
                 let rail = c.rail.as_ref();
                 let active = self.level.ambient_pose(c.uid).is_some();
@@ -10602,7 +10689,8 @@ impl Vehicles {
                 }
             }
             dl.best_tan = best_tan;
-            if std::env::var_os("MCLA_DRIVER_LANE_LOG").is_some() && best.map(|b| b.0) != dl.best.map(|b| b.0) {
+            static LANE_LOG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            if *LANE_LOG.get_or_init(|| std::env::var_os("MCLA_DRIVER_LANE_LOG").is_some()) && best.map(|b| b.0) != dl.best.map(|b| b.0) {
                 log::info!("driver car {uid}: lane {:?} ({} listed, {} near, w {w:.2})", best.map(|b| (b.0, b.1.sqrt())), dl.list.len(), found.len());
             }
             dl.best_t = best.and_then(|b| dl.list.iter().find(|e| e.0 == b.0)).map_or(0.0, |e| e.1);
