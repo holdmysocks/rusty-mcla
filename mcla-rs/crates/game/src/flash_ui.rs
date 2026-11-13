@@ -532,6 +532,8 @@ pub const ICON_START: i32 = 9;
 /// (7 LT, 8 RT, 11..18 the sticks, 19 the d-pad; from the prompt movie's frames)
 pub const ICON_LT_RT: i32 = 23;
 pub const ICON_LB_RB: i32 = 24;
+/// L3 (prompt 128's VE_Mark_Layer, F-40654's table)
+pub const ICON_L3: i32 = 29;
 pub const ICON_ARROWS: i32 = 25;
 pub const ICON_BACK_BUTTON: i32 = 10;
 
@@ -814,6 +816,8 @@ pub struct MenuPage {
     /// the count
     pub headers: Vec<String>,
     pub cells: Vec<Vec<String>>,
+    /// the vinyl editor's layer marks: per row `menu.elements[i].mark` (F-46555, F-72196)
+    pub marks: Vec<bool>,
 }
 
 /// A menu movie: `pause/pause.swf` (pause menu) or `garage/garage.swf`, which
@@ -1343,6 +1347,10 @@ impl FlashMenu {
                 p.set_path(&format!("menu.elements.{}.ID", i), Value::Int(0));
                 p.set_path(&format!("menu.elements.{}.property1", i), Value::Int(page.row_props.get(i).copied().unwrap_or(r.enabled as i32)));
             }
+        }
+        // (the vinyl layers' marks, after the rows: MarkLayer F-46555 / MarkAllLayers F-72196 set each element's `mark`)
+        for (i, m) in page.marks.iter().enumerate().take(page.rows.len()) {
+            p.set_path(&format!("menu.elements.{i}.mark"), Value::Int(*m as i32));
         }
         // (LAYER OPTIONS: after the rows, which reset every row's own list - the layer's option list)
         if let MenuLayout::VinylOptions { option, .. } = &page.layout {

@@ -2936,6 +2936,7 @@ impl App {
             }
             self.game.nav_x |= p(2);
             self.game.nav_y |= p(3);
+            self.game.nav_l3 |= p(8);
             self.game.nav_select |= p(6);
             self.game.nav_start |= p(7);
             self.game.nav_up |= p(10) || p(14);

@@ -265,6 +265,19 @@ pub fn drop_loops(line: &mut Vec<Vec3>, keep: &dyn Fn(Vec3) -> bool) -> usize {
     removed
 }
 
+/// A layer option on the zone's layers (COPY 0, CUT 1, DELETE 2): the layers after it and what goes to the
+/// clipboard. The marks count only when more than one layer is marked and the cursor's is one of them (COPY
+/// F-31237, CUT / DELETE F-71386: F-82558 > 1 and F-77847 of the cursor's layer): then the marked layers in
+/// order (F-60961) are copied and removed, else the cursor's layer (a free slot: an empty clip, nothing removed).
+pub fn vinyl_option(layers: &[crate::vinyl::Layer], marks: &[bool], at: usize, option: usize) -> (Vec<crate::vinyl::Layer>, Option<Vec<crate::vinyl::Layer>>) {
+    let marked = |i: usize| marks.get(i).copied().unwrap_or(false);
+    let group = (0..layers.len()).filter(|&i| marked(i)).count() > 1 && marked(at);
+    let picked = |i: usize| if group { marked(i) } else { i == at };
+    let clip = matches!(option, 0 | 1).then(|| layers.iter().enumerate().filter(|(i, _)| picked(*i)).map(|(_, l)| l.clone()).collect());
+    let left = if matches!(option, 1 | 2) { layers.iter().enumerate().filter(|(i, _)| !picked(*i)).map(|(_, l)| l.clone()).collect() } else { layers.to_vec() };
+    (left, clip)
+}
+
 /// Where the vinyl editor is: zone, layer and menu row.
 #[derive(Clone, Default, Debug)]
 pub struct VinylEdit {
@@ -281,6 +294,9 @@ pub struct VinylEdit {
     /// was added for the strip and goes again)
     pub undo_shape: Option<u16>,
     pub added: bool,
+    /// the zone's layer marks (the garage's per-zone byte array, `[+4 x (zone + 417)]`: F-31588 sets, F-77847
+    /// reads, F-82558 counts); cleared on entering CHOOSE GROUP (VinylGroupSelect's MarkAllLayers(0))
+    pub marks: Vec<bool>,
     pub zone: usize,
     pub layer: usize,
     pub row: usize,
@@ -754,7 +770,8 @@ pub struct Game {
     pub song_line: Option<(String, f32)>,
     /// the vinyl editor's clipboard (COPY / CUT LAYER) and the zone it was copied from (the original's +380 records,
     /// +1664 zone; F-33351 copies the layer under the cursor)
-    pub vinyl_clip: Option<(usize, crate::vinyl::Layer)>,
+    /// the vinyl clipboard: the zone it was copied from and its layers (+1664, +1660 and the records at +380)
+    pub vinyl_clip: Option<(usize, Vec<crate::vinyl::Layer>)>,
     /// after a race: the RACE RESULTS table is up (over the race-over menu)
     pub results_table: bool,
     /// the ARCADE menu: page (0 race type, 1 race, 2 options), the type, and the cursor of
@@ -795,6 +812,8 @@ pub struct Game {
     /// stick's left / right held (SLOW)
     pub nav_x: bool,
     pub nav_y: bool,
+    /// the pad's L3 (the vinyl editor's `uinput.l3`: MarkLayer)
+    pub nav_l3: bool,
     pub nav_select: bool,
     pub nav_start: bool,
     pub nav_slow: f32,
@@ -1614,6 +1633,7 @@ impl Game {
             replay_rec: Default::default(),
             replay: None,
             nav_x: false,
+            nav_l3: false,
             nav_y: false,
             nav_select: false,
             nav_start: false,
@@ -5232,6 +5252,7 @@ impl Game {
         if (menu_input || self.in_menu() || self.show_map || self.takes_menu_input()) && self.replay.is_none() {
             self.nav_x = false;
             self.nav_y = false;
+            self.nav_l3 = false;
             self.nav_select = false;
             self.nav_start = false;
         }
@@ -5522,6 +5543,8 @@ impl Game {
                         "B" => self.nav_back = true,
                         "X" => self.nav_x = true,
                         "Y" => self.nav_y = true,
+                        // (`3`: the pad's L3)
+                        "3" => self.nav_l3 = true,
                         "K" => self.nav_select = true,
                         "M" => self.nav_map = true,
                         // (`O`: the MAP action - D-pad up, the overhead map)
@@ -6588,6 +6611,7 @@ impl Game {
                         list_max: if self.pause_page == 68 { 15 } else if genres { 0 } else { 6 },
                         headers: Vec::new(),
                         cells: Vec::new(),
+                        marks: Vec::new(),
                     }
                 });
                 // (a message box takes the panel while it is up)
@@ -9303,6 +9327,7 @@ impl Game {
                             list_max: if paint_page { 6 } else { 0 },
                             headers: Vec::new(),
                             cells: Vec::new(),
+                            marks: Vec::new(),
                         };
                         let pictures = std::path::Path::new(&self.data_dir).join("resources/ui/textures/garage/dyntextures");
                         // (the highlighted vehicle's, whether or not its model has arrived yet)
@@ -13859,7 +13884,7 @@ impl Game {
     /// LAYER, Y = LAYER OPTIONS), the shape strip with its groups as tabs, and EDIT
     /// LAYER's tabs POSITION / SCALE / ROTATE / SKEW / MASK / COLOR.
     fn vinyl_front_ui(&mut self, ctx: &egui::Context, keys: [bool; 8]) {
-        use crate::flash_ui::{MenuLayout, MenuPage, MenuRow, ICON_A, ICON_B, ICON_LB_RB, ICON_X, ICON_Y};
+        use crate::flash_ui::{MenuLayout, MenuPage, MenuRow, ICON_A, ICON_B, ICON_L3, ICON_LB_RB, ICON_X, ICON_Y};
         let [left, right, up, down, enter, back, tab_prev, tab_next] = keys;
         let st = |k: &str, d: &str| self.career.strings.get(k).map(|v| v.to_uppercase()).filter(|v| !v.contains('<')).unwrap_or_else(|| d.to_string());
         let mut ed = self.vinyl_edit.clone().unwrap_or_default();
@@ -13874,14 +13899,21 @@ impl Game {
         let cats: Vec<(String, usize)> = self.vinyl_cats.clone();
         let x_key = self.x_hit(ctx);
         let y_key = self.y_hit(ctx);
+        // (L3 - MarkLayer, VinylLayerSelect's `uinput.l3`; on the keyboard L)
+        let l3_key = std::mem::take(&mut self.nav_l3) || ctx.input(|i| i.key_pressed(egui::Key::L));
         let fine = ctx.input(|i| i.modifiers.shift);
+        // (the marks follow the zone's layers: a slot past the layers is never marked)
+        ed.marks.resize(count, false);
         let mut close = false;
         let mut warn = false;
         match ed.page {
             0 => {
+                // (VinylGroupSelect's onenter MarkAllLayers(0, ..): no marks on the group page)
+                ed.marks.iter_mut().for_each(|m| *m = false);
                 if d != 0 {
                     ed.zone = (zone as isize + d).rem_euclid(5) as usize;
                     ed.layer = 0;
+                    ed.marks.clear();
                 }
                 if enter {
                     ed.page = 1;
@@ -13900,6 +13932,10 @@ impl Game {
                     ed.option = (ed.option as isize - dv).rem_euclid(7) as usize;
                 }
                 ed.layer = ed.layer.min(n - 1);
+                // (MarkLayer, F-46555: the cursor's layer marked or not)
+                if l3_key && ed.layer < count {
+                    ed.marks[ed.layer] = !ed.marks[ed.layer];
+                }
                 if enter {
                     // ACCEPT: the shape strip - for a free slot a new layer to try the shapes on
                     if ed.layer >= count {
@@ -14007,28 +14043,34 @@ impl Game {
                     ed.option = (ed.option as isize - dv).rem_euclid(7) as usize;
                 }
                 ed.layer = ed.layer.min(n - 1);
+                if l3_key && ed.layer < count {
+                    ed.marks[ed.layer] = !ed.marks[ed.layer];
+                }
                 if y_key {
                     ed.page = 1;
                 } else if enter {
+                    let marks = std::mem::take(&mut ed.marks);
+                    let (layers, clip) = vinyl_option(&livery.zones[zone], &marks, ed.layer, ed.option);
+                    if let Some(c) = clip {
+                        self.vinyl_clip = Some((zone, c));
+                    }
+                    ed.marks = marks;
                     match ed.option {
-                        // COPY / CUT / DELETE / PASTE / INSERT work on the layer under the cursor
-                        // (the original's marks are not kept - its COPY LAYER(S), F-60961, copies every marked layer: approx.)
-                        0 | 1 => {
-                            self.vinyl_clip = livery.zones[zone].get(ed.layer).cloned().map(|l| (zone, l));
-                            if ed.option == 1 && ed.layer < count {
-                                livery.zones[zone].remove(ed.layer);
-                            }
-                        }
-                        2 if ed.layer < count => {
-                            livery.zones[zone].remove(ed.layer);
+                        1 | 2 => {
+                            livery.zones[zone] = layers;
+                            ed.marks.clear();
                         }
                         3 | 4 => {
-                            // (F-64893: mirrored by the pair of zones, nothing when the zone has no room)
+                            // (F-64893: mirrored by the pair of zones, nothing when the zone has no room; then
+                            // MarkAllLayers(0), as both pastes end: F-92741, F-62994)
                             if let Some((from, l)) = self.vinyl_clip.clone() {
                                 let at = if ed.option == 4 { ed.layer.min(livery.zones[zone].len()) } else { livery.zones[zone].len() };
-                                crate::vinyl::paste(&mut livery.zones[zone], zone, cap, std::slice::from_ref(&l), from, at);
+                                crate::vinyl::paste(&mut livery.zones[zone], zone, cap, &l, from, at);
                             }
+                            ed.marks.clear();
                         }
+                        // MARK ALL / UNMARK ALL (MarkAllLayers(1 / 0), F-72196: every layer of the zone)
+                        5 | 6 => ed.marks = vec![ed.option == 5; livery.zones[zone].len()],
                         _ => {}
                     }
                     ed.page = 1;
@@ -14083,9 +14125,11 @@ impl Game {
                         // (the layers there are and one free slot; the movie fades the slots beyond)
                         rows: (0..(count + 1).min(cap).max(1)).map(|_| row(String::new())).collect(),
                         select: ed.layer,
+                        marks: ed.marks.clone(),
                         ..MenuPage::default()
                     },
-                    vec![(st("VE_Layer_Select", "ACCEPT"), ICON_A), back_p, (st("VE_Layer_Options", "LAYER OPTIONS"), ICON_Y), (st("VE_Layer_Edit", "EDIT LAYER"), ICON_X), (st("VE_Mark_layer", "MARK/UNMARK"), ICON_LB_RB)],
+                    // (prompt 128: VE_Layer_Select A, prompt_back B, VE_Layer_Options Y, VE_Layer_Edit X, VE_Mark_Layer L3)
+                    vec![(st("VE_Layer_Select", "ACCEPT"), ICON_A), back_p, (st("VE_Layer_Options", "LAYER OPTIONS"), ICON_Y), (st("VE_Layer_Edit", "EDIT LAYER"), ICON_X), crate::glyphs::with_key("L", (st("VE_Mark_Layer", "MARK/UNMARK"), ICON_L3))],
                 )
             }
             2 => {
@@ -14158,9 +14202,10 @@ impl Game {
                         title: st("VE_Vinyls", "CHOOSE LAYER"),
                         rows: (0..(count + 1).min(cap).max(1)).map(|_| row(String::new())).collect(),
                         select: ed.layer,
+                        marks: ed.marks.clone(),
                         ..MenuPage::default()
                     },
-                    vec![(st("prompt_accept", "ACCEPT"), ICON_A), (st("VE_Hide_Options", "HIDE OPTIONS"), ICON_B), (st("VE_Mark_layer", "MARK/UNMARK"), ICON_LB_RB)],
+                    vec![(st("prompt_accept", "ACCEPT"), ICON_A), (st("VE_Hide_Options", "HIDE OPTIONS"), ICON_B), crate::glyphs::with_key("L", (st("VE_Mark_Layer", "MARK/UNMARK"), ICON_L3))],
                 )
             }
         };
@@ -16568,6 +16613,28 @@ mod ui_original_tests;
 #[cfg(test)]
 mod tests {
     use super::Game;
+
+    /// The layer options with marks (COPY F-31237 / F-60961, CUT and DELETE F-71386): the marks count only
+    /// when more than one is marked and the cursor's layer is one of them.
+    #[test]
+    fn layer_options_follow_the_marks() {
+        use crate::vinyl::Layer;
+        let ls: Vec<Layer> = (0..4).map(|i| Layer { shape: i, ..Default::default() }).collect();
+        let shapes = |v: &[Layer]| v.iter().map(|l| l.shape).collect::<Vec<_>>();
+        let m = [true, false, true, false];
+        // (two marked, the cursor on one: both copied, both cut)
+        let (left, clip) = super::vinyl_option(&ls, &m, 2, 1);
+        assert_eq!((shapes(&left), shapes(&clip.unwrap())), (vec![1, 3], vec![0, 2]));
+        // (the cursor on an unmarked layer: that one alone)
+        let (left, clip) = super::vinyl_option(&ls, &m, 1, 0);
+        assert_eq!((shapes(&left), shapes(&clip.unwrap())), (vec![0, 1, 2, 3], vec![1]));
+        // (one mark is no group)
+        let (left, clip) = super::vinyl_option(&ls, &[false, false, true, false], 2, 2);
+        assert_eq!((shapes(&left), clip.is_none()), (vec![0, 1, 3], true));
+        // (a free slot: nothing removed, an empty clip)
+        let (left, clip) = super::vinyl_option(&ls, &m, 4, 1);
+        assert_eq!((left.len(), clip.unwrap().len()), (4, 0));
+    }
 
     /// The restriction boxes as the story scripts show them (MessageBox_ShowMessageBox's sentence
     /// and title strings, work/career2/re/dis game|sc__career__Story__*): the 17 distinct pairs of the 18 scripts.
