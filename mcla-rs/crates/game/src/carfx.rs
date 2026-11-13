@@ -74,3 +74,44 @@ pub fn chassis_throttle(st: &crate::physics::CarState, input: &crate::physics::C
         _ => input.throttle,
     }
 }
+
+/// The braking smoke of a traffic car's wheels - its render instance's update F-66358, every frame for each of the
+/// car's wheels: on while the car's brake-lock bit is set (the byte +557 of the render update's index, bit 7: traffic.rs
+/// `Lock::drawn`) or the wheel's collider record +20, the ambient wheel's slide (physics/loose.rs `AmbWheel::slide`, kept
+/// between activations as its compression is), the effect "wheel_s_asphalt_ambient" plays at the wheel bone's world
+/// place (its matrix row 3: the hub raised by the compression, traffic.rs `roll_wheels`' frame) lowered by the y of the
+/// bone's rest place (F-91983 +4, the hub height `roll_wheels` reads too), unturned (F-11877), with no velocity or
+/// evolution; off, the effect is stopped (F-50844: no more particles, those out live on - `Particles::play`'s
+/// rule for a key not asked for). The effect rule's own distances are the only cull.
+/// `cars` with `slide(uid, wheel)`; `alpha` the render blend.
+pub fn traffic_brake_smoke(fx: &mut Particles, cars: &[CarInstance], slide: impl Fn(u32, usize) -> bool, cam: Vec3, alpha: f32) {
+    let smoke = joaat("wheel_s_asphalt_ambient");
+    for (ci, c) in cars.iter().enumerate() {
+        // (the traffic cars' render instances: a riding car, or a parked one held in the pool - no lock bit, so only
+        // a sliding wheel)
+        if c.rail.is_none() && !c.park_held {
+            continue;
+        }
+        let Some(hubs) = c.model.own_wheels else { continue };
+        let locked = c.rail.as_ref().is_some_and(|r| r.lock.drawn());
+        let pose = c.render_pose(alpha);
+        let m = Mat4::from_rotation_translation(pose.rot, pose.pos);
+        let tilted_up = c.rail.as_ref().and_then(|r| r.tilt.quat()).map_or(Vec3::Y, |t| t * Vec3::Y);
+        for i in 0..c.state.wheels.len().min(6) {
+            let Some(h) = hubs[i] else { continue };
+            if !(locked || slide(c.uid, i)) {
+                continue;
+            }
+            let lift = (Vec3::Y * 2.0 - tilted_up) * c.amb_lift[i];
+            let mut p = m.transform_point3(h + lift);
+            p.y -= h.y;
+            let key = 0x5442_524B_0000_0000 | ((ci as u64) << 4) | i as u64;
+            // (MCLA_TRAFFIC_SMOKE_LOG=1: a line when a wheel's smoke starts)
+            static LOG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            if *LOG.get_or_init(|| std::env::var_os("MCLA_TRAFFIC_SMOKE_LOG").is_some()) && !fx.is_alive(key) {
+                log::info!("traffic smoke {} wheel {} at {:.2} {:.2} {:.2} lock {} slide {} v {:.1}", c.model.name, i, p.x, p.y, p.z, locked, slide(c.uid, i), c.state.vel.length());
+            }
+            fx.play_tinted(key, smoke, p, [1.0; 3], [0.0; 3], 1.0, p.distance(cam), &[]);
+        }
+    }
+}

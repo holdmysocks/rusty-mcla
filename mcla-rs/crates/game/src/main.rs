@@ -7981,6 +7981,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     skidmarks::step(&self.vehicles.cars);
                 }
                 carfx::step(&mut self.fx, &self.vehicles.cars, self.cam.pos, self.hide_player);
+                // (the traffic cars' braking smoke, their render instances' update - carfx.rs)
+                let level = &self.vehicles.level;
+                carfx::traffic_brake_smoke(&mut self.fx, &self.vehicles.cars, |uid, i| level.ambient_wheel_slide(uid, i), self.cam.pos, self.vehicles.render_alpha);
                 self.fx.hour = self.time_of_day;
                 self.fx.update(sim_dt);
             }
