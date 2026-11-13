@@ -1318,6 +1318,8 @@ pub struct Game {
     /// the special hookmen for the map (`hudmap.rs`): place, heading, element subtype, icon,
     /// difficulty (time trial: 4 / icon 5, tournament: 4 / icon 7 - the CruisingHookmen scripts)
     pub map_men: Vec<(Vec3, Vec3, u8, u8, usize, bool)>,
+    /// each of `map_men`'s name and car (the GPS map cursor's box, as for the mission's man)
+    pub map_men_names: Vec<(String, String)>,
     /// the idle camera is on: close shots of the car, the HUD away
     pub idle_cam: bool,
     /// the garages' doors (where their marker stands in the world)
@@ -1883,6 +1885,7 @@ impl Game {
             delivery_spots: Vec::new(),
             cruiser_marks: Vec::new(),
             map_men: Vec::new(),
+            map_men_names: Vec::new(),
             idle_cam: false,
             garage_doors: Vec::new(),
             phone_challenge: false,
@@ -13640,11 +13643,36 @@ impl Game {
                 }))
                 .chain(self.hangouts.iter().enumerate().filter(|(n, h)| !early && (h.x.abs() >= 1.0 || h.z.abs() >= 1.0) && self.hangout_names.get(*n).map_or(true, |s| self.mc4_hangout_open(s))).map(|(n, h)| (*h, st(if self.hangout_wager.get(n).copied().unwrap_or(false) { "Navmap_Wager" } else { "Navmap_series" }, "HANGOUT"), String::new())))
                 .chain((if self.hm.is_some() { crate::hudmap::GAS_STATIONS.iter().map(|g| Vec3::from(*g)).collect::<Vec<_>>() } else { self.gas_stations.clone() }).into_iter().map(|g| (g, st("tutorial_gas_station_title", "SERVICE STATION"), String::new())))
+                // (the hookmen the map draws - `hudmap.rs`'s racer elements: the slot, time trial and tournament men,
+                // the cruising marks without them, off the map while the opponents are suspended. The scripts
+                // register them as map targets - mcTargetManager_RegisterRacer, the CruisingHookmen and story
+                // scripts - and the stick's pick F-97746 / CHANGE TARGET F-99017 run over those targets, so each is a
+                // place the cursor takes; the box names him and his car as for the mission's man)
+                .chain({
+                    let man = self.rival_mark.as_ref().map(|m| m.0);
+                    let near_man = |p: &Vec3| man.map_or(false, |m| m.distance(*p) < 60.0);
+                    let car_name = |car: &str| self.career.strings.get(&car.to_ascii_lowercase()).or_else(|| self.career.strings.get(car)).map(|v| v.to_uppercase()).filter(|v| !v.contains('<')).unwrap_or_else(|| pretty_car_name(car).to_uppercase());
+                    let mut men: Vec<(Vec3, String, String)> = Vec::new();
+                    if !self.suspend_all_opponents() {
+                        let have_men = self.map_men.iter().any(|m| m.2 == 3);
+                        men.extend(self.cruiser_marks.iter().filter(|_| !have_men).filter(|c| !near_man(&c.0)).map(|c| (c.0, String::new(), String::new())));
+                        men.extend(self.map_men.iter().enumerate().filter(|(_, m)| !near_man(&m.0)).map(|(i, m)| {
+                            let (name, car) = self.map_men_names.get(i).cloned().unwrap_or_default();
+                            (m.0, name.to_uppercase(), if car.is_empty() { String::new() } else { car_name(&car) })
+                        }));
+                    }
+                    men
+                })
                 .collect()
         } else {
             Vec::new()
         };
         let mut cursor_at: Option<(egui::Pos2, String, String)> = None;
+        if std::env::var("MCLA_NAV_LOG").is_ok() && hidden && self.map_cursor >= places.len() {
+            for (k, p) in places.iter().enumerate() {
+                log::info!("gps: place {k} {:?} {:?} {:?}", p.0, p.1, p.2);
+            }
+        }
         if hidden && !places.is_empty() {
             if self.map_cursor >= places.len() {
                 // (it opens on the place nearest the player)
@@ -13681,7 +13709,11 @@ impl Game {
             // -> `F-97746` with its force flag; none: the cursor stays as it is)
             if let (true, Some(fp)) = (std::mem::take(&mut self.map_free_release), self.map_free.or(self.map_drift)) {
                 let pts: Vec<Vec3> = places.iter().map(|p| p.0).collect();
-                if let Some(i) = crate::hudmap::pick_nearest(fp, self.map_reach, &pts) {
+                let got = crate::hudmap::pick_nearest(fp, self.map_reach, &pts);
+                if std::env::var("MCLA_NAV_LOG").is_ok() {
+                    log::info!("gps: stick let go at {:?} (reach {:.0}): {:?}", fp, self.map_reach, got.map(|i| (&places[i].1, &places[i].2, places[i].0)));
+                }
+                if let Some(i) = got {
                     self.map_cursor = i;
                     self.map_free = None;
                     (self.map_drift, self.map_sel_pos) = (None, None);

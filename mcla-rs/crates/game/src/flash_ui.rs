@@ -1657,18 +1657,30 @@ impl FlashPhone {
             Some((title, text, icon)) => {
                 let state = (title.to_string(), text.to_string(), icon, prompt.to_string());
                 if self.shown.as_ref() != Some(&state) {
+                    if std::env::var("MCLA_PHONE_LOG").is_ok() {
+                        log::info!("phone: shown {:?} (was {})", state, if self.shown.is_some() { "up" } else { "down" });
+                    }
                     p.set_path("message.title", Value::str(title));
                     p.set_path("message.description", Value::str(text));
                     p.set_path("message.prompt", Value::str(prompt));
                     p.set_path("message.IconID", Value::Int(icon));
                     p.set_global("promptisvisible", Value::Int(!prompt.is_empty() as i32));
                     p.set_global("sidekickisvisible", Value::Int(1));
-                    p.set_global("cur_visibility", Value::Int(1));
+                    // (the texts are F-51036's push - title, subtitle, prompt, IconID, promptisvisible,
+                    // sidekickisvisible, no visibility; the card's cur_visibility is SetVisible's (F-74494, which plays the ring and the close), only
+                    // when it comes up: a text changed on the card up (the challenge's decline empties the prompt)
+                    // does not open it again)
+                    if self.shown.is_none() {
+                        p.set_global("cur_visibility", Value::Int(1));
+                    }
                     self.shown = Some(state);
                 }
             }
             None => {
                 if self.shown.take().is_some() {
+                    if std::env::var("MCLA_PHONE_LOG").is_ok() {
+                        log::info!("phone: put away");
+                    }
                     p.set_global("cur_visibility", Value::Int(0));
                     // (the script folds it by its timer: 22 movie frames)
                     self.closing = 45;

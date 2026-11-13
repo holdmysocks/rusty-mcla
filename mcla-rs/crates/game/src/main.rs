@@ -664,6 +664,8 @@ struct App {
     scene_was: bool,
     /// the racer's countdown has run out: his call waits for the phone's gates
     phone_challenge_due: bool,
+    /// (test hook MCLA_PHONE_DUE_AT: the call forced once)
+    phone_challenge_seen: bool,
     /// the phone form's +788 (held: sidekickDelay, after each call) and the delayed sidekickResume that clears it
     /// (Cruising.sc.xml: 8 s after entering Cruising_Offline; after a call SidekickDelayTime)
     phone_hold: bool,
@@ -1666,6 +1668,7 @@ impl App {
             scene_was: false,
             phone_caller: "",
             phone_challenge_due: false,
+            phone_challenge_seen: false,
             phone_hold: false,
             phone_resume: None,
             phone_cruise: false,
@@ -7331,6 +7334,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         self.phone_challenge_due = self.phone_challenge_in <= 0.0;
                         self.phone_challenge_in = self.phone_challenge_in.max(f32::MIN_POSITIVE);
                     }
+                    // (test hook: MCLA_PHONE_DUE_AT=<tick> - the challenge's rounds run out at that tick)
+                    if std::env::var("MCLA_PHONE_DUE_AT").ok().and_then(|v| v.parse::<u64>().ok()).is_some_and(|t| self.tick_no as u64 >= t) && !self.phone_challenge_seen {
+                        self.phone_challenge_seen = true;
+                        self.phone_challenge_due = true;
+                        // (and the phone's hold after an earlier call lifted)
+                        self.phone_hold = false;
+                        self.phone_resume = None;
+                    }
                     if self.phone_challenge_due && !phone_held {
                         self.phone_challenge_due = false;
                         self.phone_challenge_in = 0.0;
@@ -7665,6 +7676,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             out
                         }).collect();
                         self.game.cruiser_marks = s19h_marks;
+                        self.game.map_men_names = self.roam.men.iter().filter(|m| !m.hidden).map(|m| (self.game.career.name_of(&m.name), m.car.clone())).collect();
                         // (the map's hookmen, all of them: the slot men - subtype 3, the flag; a man an
                         // active mission points at carries the mission's pulse and "!" (element +126) -
                         // and the time trial and tournament men, subtype 4, icons 5 / 7)
@@ -11347,6 +11359,16 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     let v = hudmap::NavCam::shape_stick(glam::Vec2::new(pad.axis(pads::Axis::LeftX), -pad.axis(pads::Axis::LeftY)));
                     if v != glam::Vec2::ZERO {
                         stick = v;
+                    }
+                }
+                // (test hook: MCLA_MAP_PAD="from:to:ls:x:y" holds the left stick, y down, over those frames)
+                if let Ok(v) = std::env::var("MCLA_MAP_PAD") {
+                    for step in v.split(',') {
+                        let f: Vec<&str> = step.split(':').collect();
+                        let n = |i: usize| f.get(i).and_then(|s| s.trim().parse::<f32>().ok()).unwrap_or(0.0);
+                        if f.len() >= 5 && f[2].trim() == "ls" && (n(0) as u64..=n(1) as u64).contains(&self.frame_no) {
+                            stick = glam::Vec2::new(n(3), n(4));
+                        }
                     }
                 }
                 self.nav_free = self.game.map_free.is_some() || self.game.map_drift.is_some();
