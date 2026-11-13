@@ -278,6 +278,19 @@ pub fn vinyl_option(layers: &[crate::vinyl::Layer], marks: &[bool], at: usize, o
     (left, clip)
 }
 
+/// The police camera's time line (Graphics_GetCopTimeString, F-10438 / F-95858): the hour and the minute of the light
+/// manager's clock (trunc(hour x 60)), AM / PM by the hour under 12 (the hour itself is not made 12-hour), then
+/// "%02d-%02d-%d" of the system date's month, the word at +6 of the date getter's copy (SYSTEMTIME's wDayOfWeek, 0 - 6:
+/// the original prints the day of the week where the day of the month would go) and the year.
+pub fn cop_time_string(hour: f32, month: u32, weekday: u32, year: i32) -> String {
+    let m = (hour * 60.0) as i32;
+    let (h, mi) = (m / 60, m % 60);
+    format!("{:02}:{:02}{}   {:02}-{:02}-{}", h, mi, if h < 12 { "AM" } else { "PM" }, month, weekday, year)
+}
+
+/// The police camera's movie (`policecam/policecam.swf`).
+pub const POLICECAM_MOVIE: &str = "resources/ui/policecam/0xd7f64d61.r27";
+
 /// Where the vinyl editor is: zone, layer and menu row.
 #[derive(Clone, Default, Debug)]
 pub struct VinylEdit {
@@ -680,6 +693,11 @@ pub struct Game {
     pub place_title: Option<(String, String)>,
     /// textures and strings shared by the Flash movies
     pub ui_shared: Option<crate::flash_ui::UiShared>,
+    /// the police dash camera's movie (CopPullover.sco: UIManager_StreamMovie "policecam" with the cop camera on over the
+    /// walk, UnloadMovie when the ticket form opens - `policecam_step`)
+    pub policecam: Option<crate::flash_ui::FlashMovie>,
+    /// main.rs's cop camera (Graphics_SetCopCamera) and the light manager's hour, for `policecam_step`
+    pub policecam_on: Option<f32>,
     /// the start-up movie before the start screen (boot.rs; None: OFF, or over)
     pub boot: Option<crate::boot::Boot>,
     /// the minimap's frame movie (hudmap.swf)
@@ -1573,6 +1591,8 @@ impl Game {
             hud_camera: -1,
             cut_mask: 0.0,
             ui_shared: None,
+            policecam: None,
+            policecam_on: None,
             boot: None,
             flash_map: None,
             hm: None,
@@ -2445,6 +2465,44 @@ impl Game {
         log::info!("garage: bought {} for ${} - {} vehicles, slots of the model {}", self.dir_name(i), price, self.owned.len(), self.mc4.as_ref().map_or(0, |m| m.garage.iter().filter(|c| c.vehicle.eq_ignore_ascii_case(&model)).count()));
         self.show_message(&format!("PURCHASED FOR ${}", price));
         true
+    }
+
+    /// The police dash camera's movie over the walk: UIManager_StreamMovie("policecam", "policecam/policecam.swf", ...)
+    /// (F-40278 -> F-65985) after Graphics_SetCopCamera(1), then UIManager_FindMovie and FlashHelper_SetGlobalString(movie,
+    /// "tod", Graphics_GetCopTimeString()); UIManager_UnloadMovie("policecam") (F-57873) when the ticket form opens, after
+    /// SetCopCamera(0) - here the movie lives while the cop camera is on. The movie runs itself at its 12 frames a second
+    /// (timecodes, the "REC" line); its getvar of selectedlevel_longname reads the game's mcRegistry (F-70659), where
+    /// nothing puts that name, so the handler's missing-variable arm gives d_selectedlevel_longname = 0.0.
+    pub fn policecam_step(&mut self, ctx: &egui::Context) {
+        use mcla_flash::value::Value;
+        let Some(hour) = self.policecam_on else {
+            if self.policecam.take().is_some() {
+                log::info!("policecam: unloaded");
+            }
+            return;
+        };
+        if self.policecam.is_none() {
+            let Some(sh) = self.ui_shared.as_ref() else { return };
+            let Some(mut m) = crate::flash_ui::FlashMovie::load(&self.data_dir, POLICECAM_MOVIE, sh) else { return };
+            // (the date getter: the system clock's FILETIME as SYSTEMTIME, no local zone)
+            let now = chrono::Utc::now();
+            use chrono::Datelike;
+            let tod = cop_time_string(hour, now.month(), now.weekday().num_days_from_sunday(), now.year());
+            // (the movie's first frame sets its sample values - tod "02:58 PM   01/29/2007", d_selectedlevel_longname
+            // "HOLLYWOOD" - before the script's FindMovie loop, 0x893 - 0x925, finds it and sets tod; its getvar at
+            // the clip's third frame then gives 0.0)
+            m.player.tick();
+            m.player.set_global("d_selectedlevel_longname", Value::Float(0.0));
+            m.player.set_global("tod", Value::str(&tod));
+            log::info!("policecam: streamed, tod {tod:?}");
+            self.policecam = Some(m);
+        }
+        let dt = ctx.input(|i| i.stable_dt).min(0.1);
+        if let Some(m) = self.policecam.as_mut() {
+            m.player.update(dt);
+            let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::new("policecam")));
+            m.paint(ctx, &painter);
+        }
     }
 
     /// Read the performance shop's price lists (`tune/garage`: files of 13 parts with two
@@ -5275,6 +5333,7 @@ impl Game {
         if let (Some(b), Some(sh)) = (self.boot.as_mut(), self.ui_shared.as_ref()) {
             b.load(&self.data_dir, sh);
         }
+        self.policecam_step(ctx);
         // (DEFAULT_WITH_CUT's climb: the form that asked is closed, nothing is drawn over the flight)
         if self.climb_on {
             if let Some(fm) = self.flash_menu.as_mut() {
@@ -16616,6 +16675,15 @@ mod tests {
 
     /// The layer options with marks (COPY F-31237 / F-60961, CUT and DELETE F-71386): the marks count only
     /// when more than one is marked and the cursor's layer is one of them.
+    /// Graphics_GetCopTimeString (F-95858): the light manager's hour as hour and minute (not 12-hour), AM below 12, then
+    /// month, the day of the week and the year.
+    #[test]
+    fn cop_time_string_as_the_original() {
+        assert_eq!(crate::game::cop_time_string(18.09, 11, 4, 2026), "18:05PM   11-04-2026");
+        assert_eq!(crate::game::cop_time_string(0.5, 1, 0, 2009), "00:30AM   01-00-2009");
+        assert_eq!(crate::game::cop_time_string(11.999, 12, 6, 2026), "11:59AM   12-06-2026");
+    }
+
     #[test]
     fn layer_options_follow_the_marks() {
         use crate::vinyl::Layer;
