@@ -1344,31 +1344,48 @@ pub fn ahead(v: &mut crate::vehicles::Vehicles, cars: &[usize], to_go: Option<f3
     if dt <= 0.0 || crate::offroad::mesh().is_none() || !*ON.get_or_init(|| std::env::var("MCLA_AIV_AHEAD").map_or(true, |x| x != "0")) {
         return;
     }
-    let jobs: Vec<(usize, &Aiv, Vec<crate::aiv::Obstacle>, AivCar, bool)> = cars
+    // (which brains update this tick - cheap, in order; then each one's inputs and its steps side by side)
+    let due: Vec<usize> = cars
         .iter()
-        .filter_map(|&i| {
-            let ai = v.cars[i].ai.as_ref()?;
-            let b = ai.brain.0.as_deref()?;
+        .copied()
+        .filter(|&i| {
+            let Some(ai) = v.cars[i].ai.as_ref() else { return false };
+            let Some(b) = ai.brain.0.as_deref() else { return false };
             // (an update this tick: `run`'s frame clock)
-            if b.held.is_some() && !frame_due(&mut b.frame_acc.clone(), dt) {
-                return None;
-            }
-            if ai.hit_pending {
-                return None;
-            }
-            let (car, obstacles) = frame_inputs(v, i, b, to_go);
-            Some((i, &b.aiv, obstacles, b.aiv_car(&car), b.activate_due))
+            !(b.held.is_some() && !frame_due(&mut b.frame_acc.clone(), dt)) && !ai.hit_pending
         })
         .collect();
-    if jobs.len() < 2 {
+    if due.len() < 2 {
         return;
     }
-    let done: Vec<(usize, crate::aiv::AivAhead)> = jobs.par_iter().map(|(i, aiv, obstacles, car, activate)| (*i, aiv.ahead(obstacles, car, *activate, FRAME))).collect();
+    // (on a pool of its own: on rayon's global pool the jobs queued behind the sector loader's decodes (world.rs,
+    // up to 12 long jobs at a time) and the tick waited for them - 20 - 27 ms a tick in a 7-opponent race while
+    // sectors streamed in; the inputs (`frame_inputs`, read only) are gathered inside the jobs too - D59)
+    let vr: &crate::vehicles::Vehicles = v;
+    let done: Vec<(usize, crate::aiv::AivAhead)> = aiv_pool().install(|| {
+        due.par_iter()
+            .map(|&i| {
+                let b = vr.cars[i].ai.as_ref().and_then(|ai| ai.brain.0.as_deref()).expect("a racer's brain");
+                let (car, obstacles) = frame_inputs(vr, i, b, to_go);
+                (i, b.aiv.ahead(&obstacles, &b.aiv_car(&car), b.activate_due, FRAME))
+            })
+            .collect()
+    });
     for (i, a) in done {
         if let Some(b) = v.cars[i].ai.as_mut().and_then(|ai| ai.brain.0.as_deref_mut()) {
             b.ahead = Some(Box::new(a));
         }
     }
+}
+
+/// The racers' aiv jobs' own threads (`ahead`): half the cores, 1 - 8 (a field of 7 racers in one round), so the race line never waits for the
+/// loaders on rayon's global pool and a 4-core machine keeps two cores for the rest.
+fn aiv_pool() -> &'static rayon::ThreadPool {
+    static P: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
+    P.get_or_init(|| {
+        let n = std::thread::available_parallelism().map_or(2, |n| n.get());
+        rayon::ThreadPoolBuilder::new().num_threads((n / 2).clamp(1, 8)).thread_name(|i| format!("aiv-{i}")).build().expect("aiv threads")
+    })
 }
 
 /// `tick` with the brain held outside the car (the cruising brain runs its racing brain inside its own update,
