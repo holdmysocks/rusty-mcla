@@ -3575,8 +3575,10 @@ impl Game {
 
     /// The player's line at the race's end (the include RaceOver.sch's EndOfRaceSequence, alike in all 50 scripts that
     /// call it, always with its speech argument 1): a time trial, a delivery or a payback (event kinds 2, 6, 7) WIN, or
-    /// LOSE with bFailure; any other race WIN in first place, CLOSE in second within 300 ms of the winner's time
-    /// (Race_GetWinningTime), else LOSE. WIN and CLOSE say nothing in a delivery race (the current race's type 4:
+    /// LOSE with bFailure; any other race WIN in first place, else LOSE. (CLOSE is second place with the finish time within
+    /// 300 ms of Race_GetWinningTime, F-94654: race +3760, which the race's ctor F-61221 and Race_Reset F-83102 set to -1 and
+    /// only Race_SetWinningTime F-89008 changes - called by the network race cores alone (D7). Off line it stays -1, the
+    /// test is finish + 1 <= 300 and never holds: no CLOSE.) WIN and CLOSE say nothing in a delivery race (the current race's type 4:
     /// F-64589, F-88148); LOSE has no gate (F-77215). None: nothing is said. A delivery or a payback that failed has
     /// no finish time (the port's failures are all before the line), and the sequence skips its line then ("did not
     /// finish": the racer's +32 INT_MAX outside a series or tournament).
@@ -3593,9 +3595,11 @@ impl Game {
             None => {
                 let res = &self.last_results;
                 let ms = |t: Option<f32>| t.map(|t| (t as f64 * 1000.0).round() as i64);
+                // (the winning time off line: -1 - see above)
+                const WINNING_MS: i64 = -1;
                 match res.iter().position(|r| r.0.starts_with("YOU")) {
                     Some(0) => "WIN",
-                    Some(1) if matches!((ms(res[0].1), ms(res[1].1)), (Some(a), Some(b)) if b - a <= 300) => "CLOSE",
+                    Some(1) if matches!(ms(res[1].1), Some(b) if b - WINNING_MS <= 300) => "CLOSE",
                     _ => "LOSE",
                 }
             }
@@ -16702,7 +16706,10 @@ mod tests {
         let r = |n: &str, t: Option<f32>| (n.to_string(), t);
         g.last_results = vec![r("YOU (X)", Some(60.0)), r("B", Some(61.0))];
         assert_eq!(g.end_race_speech(), Some("WIN"));
+        // (second within 300 ms of the winner: still LOSE - the winning time is -1 off line, CLOSE needs a finish under 0.3 s)
         g.last_results = vec![r("A", Some(60.0)), r("YOU (X)", Some(60.3))];
+        assert_eq!(g.end_race_speech(), Some("LOSE"));
+        g.last_results = vec![r("A", Some(0.1)), r("YOU (X)", Some(0.299))];
         assert_eq!(g.end_race_speech(), Some("CLOSE"));
         g.last_results = vec![r("A", Some(60.0)), r("YOU (X)", Some(60.301))];
         assert_eq!(g.end_race_speech(), Some("LOSE"));
