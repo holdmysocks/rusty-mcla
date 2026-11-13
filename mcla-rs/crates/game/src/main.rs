@@ -849,6 +849,8 @@ struct App {
     pad_cam_ud: bool,
     /// a button that ends the AirRide view is held (boomcam::air_ride_buttons)
     pad_air: bool,
+    /// the Idle end test's buttons held (mc4::pad_wakes_idle; F-24075)
+    pad_idle: bool,
     /// the player's own handbrake this frame (mcPlayerInput +20), before the port's parked hold
     own_handbrake: bool,
     /// mcCarSSTurbo +20: the turbo's lens ramp (F-60935)
@@ -1756,6 +1758,7 @@ impl App {
             pad_pan_side: 0.0,
             pad_cam_ud: false,
             pad_air: false,
+            pad_idle: false,
             own_handbrake: false,
             sst_view: 0.0,
             cam_fx: None,
@@ -3022,10 +3025,9 @@ impl App {
             // (the idle camera is ended by the pad - F-24075, its Idle view - and the press of
             // CAM_UP / CAM_DOWN that ends it does not change the view as well: F-67519 runs
             // after it and passes the press over while that camera goes)
-            let woke = self.event_dir.idle(&self.cam_switch.blend) && crate::mc4::pad_wakes_idle(&st, &live);
-            if woke {
-                self.idle_time = 0.0;
-            }
+            // (the chooser's Idle end test zeroes the idle time: boomcam::EventDirector::idle_reset)
+            self.pad_idle = crate::mc4::pad_wakes_idle(&st, &live);
+            let woke = self.event_dir.idle(&self.cam_switch.blend) && self.pad_idle;
             if (a(10) || a(11)) && !woke {
                 self.camera_button(a(10));
             }
@@ -10184,12 +10186,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         // the burnout camera: with the CINEMATIC CAMERA option on and a chase view in
                         // use, a burnout spun on the handbrake brings in the event camera's Burnout
                         // view (F-24075; boomcam::EventDirector)
-                        let allowed = cinematic
-                            && boomcam::VIEW_OF_PORT[(mode as usize).min(5)] >= 2
-                            && !self.look_back
-                            && !self.cam_switch.blend.views_blending()
-                            && !self.ability_cam.active(&self.cam_switch.blend)
-                            && matches!(self.game.mode, Mode::FreeRoam | Mode::Race);
+                        // (the start section's gate: the option and the port's game modes; the director's blend and the
+                        // view are the chooser's own tests - F-24075)
+                        let allowed = cinematic && matches!(self.game.mode, Mode::FreeRoam | Mode::Race);
+                        // (the look-back or the ability camera in the director: the chooser does nothing)
+                        let hold = self.look_back || self.ability_cam.active(&self.cam_switch.blend);
                         let inv = render_state.rot.inverse();
                         let front_z = render_state.wheels.iter().map(|w| (inv * (w.world_pos - render_state.pos)).z).fold(f32::INFINITY, f32::min);
                         let track_car = boomcam::TrackCar {
@@ -10248,6 +10249,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         let air_time = render_state.veh.as_ref().map_or(render_state.airborne_time, |v| v.air584());
                         let ein = boomcam::EventIn {
                             allowed,
+                            hold,
                             view: boomcam::VIEW_OF_PORT[(mode as usize).min(5)] as u8,
                             bike,
                             stunt: vs.map_or(0, |v| if bike { v.bg.state } else { v.wheelie as i16 }),
@@ -10272,11 +10274,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             pan_side: self.pad_pan_side,
                             cam_pressed: self.pad_cam_ud,
                             // (mcCarAirRide +12 fitted and +13 on - physics::vehsim::AirRide)
-                            air_on: vs.map_or(false, |v| v.air.fitted && v.air.on),
+                            air_fitted: vs.map_or(false, |v| v.air.fitted),
+                            air_on: vs.map_or(false, |v| v.air.on),
                             air_held: self.pad_air,
+                            idle_held: self.pad_idle,
                             reverse_gear: render_state.gear < 0,
                             air_time,
                             idle: self.idle_time,
+                            // (the drive view's camera on its look back, camBoomCS +208)
+                            view_back: self.look_back,
                             ..Default::default()
                         };
                         self.pad_pan.0 = false;
@@ -10351,6 +10357,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             crash: self.crash_cam.active(&self.cam_switch.blend),
                             damage_out: self.crash_bits & 4 != 0 && self.crash_timer <= 0.0 && !car.model.bike,
                             destroyed: self.crash_bits & 4 != 0,
+                            no_push: self.crash_bits & 0x20 != 0,
                             ..ein
                         };
                         if let Some(o) = self.event_dir.frame(
@@ -10366,6 +10373,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             aspect,
                         ) {
                             others.push((boomcam::CamId::Event, o));
+                        }
+                        if self.event_dir.idle_reset {
+                            self.idle_time = 0.0;
                         }
                         // the ability camera (F-38892): pushed over InTime while the ability runs in a
                         // chase view (no look back, no blend; the event camera's event cleared), handed

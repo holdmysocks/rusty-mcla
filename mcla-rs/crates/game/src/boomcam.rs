@@ -3676,11 +3676,14 @@ fn step_sweep(test: &dyn Fn(Vec3, f32) -> Option<(f32, Vec3)>, a: Vec3, b: Vec3,
 /// manager in a frame (rule in docs/reference/cameras/event_chooser_rule.md).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct EventIn {
-    /// the start section's gate besides the event camera's own state: the CINEMATIC CAMERA
-    /// option, no director blend, no pause / photo camera; when it falls away a running event
-    /// ends (look back, a wreck, a view change - approx.: the original's look back refuses
-    /// Hydraulics / AirRide)
+    /// the start section's gate (F-24075 part 2) besides the event camera's own state, the director's
+    /// blend and the view: the CINEMATIC CAMERA option (mgr+88 == 1), no pause / photo camera (+101), the
+    /// race editor's overhead view off; the port adds its game mode (free roam or a race). It only
+    /// gates the starts: a running event goes on to its own end test.
     pub allowed: bool,
+    /// the look-back (+64) or the ability (+68) camera in the director: the chooser returns before
+    /// anything (no start, no end test, no re-arm)
+    pub hold: bool,
     /// the drive view (mgr+80: 0 bumper, 1 cockpit, 2/3/4 STATIC/CLASSIC/ACTION)
     pub view: u8,
     pub bike: bool,
@@ -3717,17 +3720,24 @@ pub struct EventIn {
     /// CAM_PAN_LEFT held -1, CAM_PAN_RIGHT held +1 (left first), else 0
     pub pan_side: f32,
     pub cam_pressed: bool,
-    /// mcCarAirRide (chassis +672): fitted (+12) and on (+13); `air_held`: any of MUSIC_DOWN,
-    /// MUSIC_UP, MUSIC_PAUSE, MAP, CAM_UP, CAM_DOWN, LOOKBACK held or CAMERA_LEFT / RIGHT / UP
-    /// above 0.2 (the AirRide end test's buttons)
+    /// mcCarAirRide (chassis +672): fitted (+12, F-57868) and on (+13) - the start takes both, the
+    /// end and the re-arm the on alone; `air_held`: any of MUSIC_DOWN, MUSIC_UP, MUSIC_PAUSE, MAP,
+    /// CAM_UP, CAM_DOWN, LOOKBACK held or CAMERA_LEFT / RIGHT / UP above 0.2 (the AirRide end test's
+    /// buttons); `idle_held`: the Idle end test's (the same with HYDRAULICS, mc4::pad_wakes_idle)
+    pub air_fitted: bool,
     pub air_on: bool,
     pub air_held: bool,
+    pub idle_held: bool,
+    /// chassis +592 bit 0x20: an event the chooser turns on is set but not pushed (F-94591)
+    pub no_push: bool,
     /// the gearbox in reverse (transmission +20 == 0)
     pub reverse_gear: bool,
     /// the chassis' air time (vt+52 = chassis +584)
     pub air_time: f32,
     /// the pad block's idle time (+112)
     pub idle: f32,
+    /// the drive view's camera looks back (its vt+56, camBoomCS +208): no Idle start
+    pub view_back: bool,
     /// the wipeout camera is in use (current, blending in, or the Damageout view's blend source):
     /// the chooser does nothing else; `damage_out`: a destroyed car (not a bike) whose damage-out
     /// timer has run out - Damageout (17) starts; `destroyed`: chassis +592 bit 0x4 (its end test)
@@ -3754,9 +3764,10 @@ pub type RayTest<'a> = &'a dyn Fn(Vec3, Vec3) -> bool;
 #[derive(Default)]
 pub struct EventDirector {
     cam: TrackCam,
-    /// the event set (cam +784 holds it): it was pushed to the director and not turned off since
+    /// the event set (cam +784 holds it): it was turned on and not turned off since
     on: bool,
-    quit: bool,
+    /// the Idle end test zeroed the pad block's idle time (+112) this frame (main.rs takes it)
+    pub idle_reset: bool,
     /// the event on (cam +784)
     ev: usize,
     /// the enable bytes (cam +2816 + e) at 0: such an event may not be set
@@ -3771,6 +3782,16 @@ pub struct EventDirector {
     /// (tests: the director the wrappers below run it on)
     #[cfg(test)]
     tdir: Director,
+}
+
+// (tests: the chooser's calls in their order, as tools/event_chooser_reference.py writes the original's)
+#[cfg(test)]
+thread_local! {
+    pub(crate) static CHOOSER_LOG: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+#[cfg(test)]
+pub(crate) fn chooser_log(s: &str) {
+    CHOOSER_LOG.with(|l| *l.borrow_mut() += s);
 }
 
 pub const EV_SSTURBO: usize = 0;
@@ -3839,11 +3860,9 @@ impl EventDirector {
     pub fn cut_out(&mut self) {
         self.cam.look_yaw = 0.0;
         self.on = false;
-        self.quit = false;
     }
     pub fn reset(&mut self) {
         self.on = false;
-        self.quit = false;
     }
     /// The Idle view is on (the HUD is put away while it is).
     pub fn idle(&self, dir: &Director) -> bool {
@@ -3887,7 +3906,7 @@ impl EventDirector {
         if i.hyd_on && i.pan_pressed {
             return Some(EV_HYDRAULICS);
         }
-        if i.air_on {
+        if i.air_fitted && i.air_on {
             return Some(EV_AIR_RIDE);
         }
         if !i.bike && i.g18 != 0 {
@@ -3909,7 +3928,7 @@ impl EventDirector {
         if i.bike && i.reverse_gear && i.hb_sim != 0.0 && fast {
             return Some(EV_REVERSE);
         }
-        (fx.idle_delay > 0.0 && i.idle >= fx.idle_delay).then_some(EV_IDLE)
+        (fx.idle_delay > 0.0 && i.idle >= fx.idle_delay && !i.view_back).then_some(EV_IDLE)
     }
 
     /// The side an event is set to (F-26269): its Offset and TrackTo are mirrored when it
@@ -3963,9 +3982,9 @@ impl EventDirector {
             EV_TURN => end(i.g18 == 0 || i.stick_x.abs() < 0.75 || i.stick_y.abs() > 0.75 || i.charge > 0.5 || i.tuck, -1.0),
             EV_REVERSE => end(i.hb_sim < 0.01, -1.0),
             EV_HYDRAULICS => end(!i.hyd_on || i.cam_pressed, -1.0),
-            // (the buttons' second test is in `frame`: it also turns the event's byte off)
+            // (the buttons' second tests are in `frame`: AirRide's also turns the event's byte off, Idle's
+            // zeroes the idle time)
             EV_AIR_RIDE => end(!i.air_on, -1.0),
-            // (the pad's buttons zero the idle time - main.rs)
             EV_IDLE => end(i.idle == 0.0, 0.7),
             EV_DAMAGEOUT => end(!i.destroyed, -1.0),
             _ => None,
@@ -3982,12 +4001,19 @@ impl EventDirector {
     /// target). Without a blend a cut ends the event view at once, a blend starts one from the
     /// event camera (F-18878, F-41709).
     fn off(&mut self, dir: &mut Director, t: &TrackTune, b: f32) {
+        #[cfg(test)]
+        {
+            chooser_log(&format!("off {:08x}|", b.to_bits()));
+        }
         let back = if b >= 0.0 { b } else if t.ret > 0.0 { t.ret } else { t.blend };
         let blend = back > f32::from_bits(0x3a83_126f);
         // (the event's exit zeroes the look object, F-94591)
         self.cam.look_yaw = 0.0;
-        self.quit = false;
         self.on = false;
+        // (out of the director only set-event(-1): an event set without its push, chassis +592 bit 0x20)
+        if !dir.involves(CamId::Event) {
+            return;
+        }
         let view = CamId::View(dir.view);
         // (every camera's BlendGoal is 1: the constructors' +164 and all 719 shipped keys)
         if dir.active() {
@@ -4005,9 +4031,15 @@ impl EventDirector {
     /// The event camera pushed over `time` (F-98424 type 3 from the director's camera; the begin
     /// F-18878 and start F-41709): weight 0, goal 1, the director's time - or queued behind a
     /// blend the director runs (F-43758).
-    fn begin_in(&mut self, dir: &mut Director, time: f32) {
+    fn begin_in(&mut self, dir: &mut Director, time: f32, no_push: bool) {
+        #[cfg(test)]
+        {
+            chooser_log(&format!("on {} bf800000|", self.ev));
+        }
         self.on = true;
-        dir.push(CamId::Event, time, 1.0);
+        if !no_push {
+            dir.push(CamId::Event, time, 1.0);
+        }
     }
 
     /// One frame (after the drive view's own), before the director's step: the event's start and
@@ -4028,87 +4060,101 @@ impl EventDirector {
         if self.running() && self.ev == EV_HYDRAULICS {
             self.cam.look_yaw += dt * i.pan_side * 2.0;
         }
-        let out_of_director = |s: &Self, dir: &Director| !s.on && !dir.involves(CamId::Event);
+        self.idle_reset = false;
         // part 1: while the wipeout camera is in use the only start is Damageout, whatever the
-        // option and the view, and nothing ends
+        // option and the view, and nothing ends (an on is refused while the event camera is in the director)
         if i.crash {
-            if i.damage_out && out_of_director(self, dir) {
+            if i.damage_out && !dir.involves(CamId::Event) {
                 if let Some(t) = self.tune(data_dir, car_name, EV_DAMAGEOUT).filter(|t| t.blend > 0.0) {
                     self.off_bytes = [false; 18];
                     self.ev = EV_DAMAGEOUT;
                     self.cam.set(&t, car, EV_DAMAGEOUT, 0.0);
-                    self.begin_in(dir, t.blend);
+                    self.begin_in(dir, t.blend, i.no_push);
                 }
             }
             let t = self.tune(data_dir, car_name, self.ev)?;
             return self.show(dir, &t, car, dt, test, aspect);
         }
-        // part 2: an event starts only while the camera is wholly out of the director
-        if out_of_director(self, dir) {
-            self.quit = false;
-            if i.allowed && i.view >= 2 {
-                if let Some(ev) = self.pick(data_dir, car_name, fx, i, car, test, ray).filter(|&e| !self.off_bytes[e]) {
-                    if let Some(t) = self.tune(data_dir, car_name, ev).filter(|t| t.blend > 0.0) {
-                        // (a successful on re-arms every event, vt+36)
-                        self.off_bytes = [false; 18];
-                        let side = self.side(ev, i, car);
-                        self.ev = ev;
-                        self.cam.set(&t, car, ev, side);
-                        self.begin_in(dir, t.blend);
-                    }
+        // (the look-back or the ability camera in the director: nothing else)
+        if i.hold {
+            let t = self.tune(data_dir, car_name, self.ev)?;
+            return self.show(dir, &t, car, dt, test, aspect);
+        }
+        // part 2: an event starts only with the event camera out of the director, no director blend, a
+        // chase view and the gate
+        if !dir.involves(CamId::Event) && i.allowed && !dir.active() && i.view >= 2 {
+            if let Some(ev) = self.pick(data_dir, car_name, fx, i, car, test, ray).filter(|&e| !self.off_bytes[e]) {
+                if let Some(t) = self.tune(data_dir, car_name, ev).filter(|t| t.blend > 0.0) {
+                    // (a successful on re-arms every event, vt+36)
+                    self.off_bytes = [false; 18];
+                    let side = self.side(ev, i, car);
+                    self.ev = ev;
+                    self.cam.set(&t, car, ev, side);
+                    self.begin_in(dir, t.blend, i.no_push);
                 }
             }
         }
-        let mut out = None;
-        if !out_of_director(self, dir) {
+        if self.running() {
             let Some(t) = self.tune(data_dir, car_name, self.ev) else {
                 self.on = false;
                 return None;
             };
-            if self.running() {
-                // part 3, the pre-emption: in ACTION a wheelie ends the nitrous view; a slipstream
-                // turbo or a nitrous shot ends any other event
-                let pre = if self.ev == EV_NITROUS && i.stunt != 0 {
-                    Some(0.5)
-                } else if i.sst_on && i.g18 == 0 && i.view == 4 && self.ev != EV_SSTURBO && self.blend_of(data_dir, car_name, EV_SSTURBO) > 0.0 {
-                    Some(-1.0)
-                } else if i.nitro_on && i.g18 == 0 && i.view == 4 && self.ev != EV_NITROUS && self.blend_of(data_dir, car_name, EV_NITROUS) > 0.0 {
-                    Some(-1.0)
-                } else {
-                    None
-                };
-                // (CAM_UP's leave asks for 0.2 s; the start gate falling away for the record's)
-                let b = if self.quit {
-                    Some(0.2)
-                } else if !i.allowed {
-                    Some(-1.0)
-                } else {
-                    pre.or_else(|| self.ends(fx, i, car, ray))
-                };
-                if let Some(b) = b {
+            // part 3, the pre-emption: in ACTION a wheelie ends the nitrous view; a slipstream
+            // turbo or a nitrous shot ends any other event
+            let pre = if self.ev == EV_NITROUS && i.stunt != 0 {
+                Some(0.5)
+            } else if i.sst_on && i.g18 == 0 && i.view == 4 && self.ev != EV_SSTURBO && self.blend_of(data_dir, car_name, EV_SSTURBO) > 0.0 {
+                Some(-1.0)
+            } else if i.nitro_on && i.g18 == 0 && i.view == 4 && self.ev != EV_NITROUS && self.blend_of(data_dir, car_name, EV_NITROUS) > 0.0 {
+                Some(-1.0)
+            } else {
+                None
+            };
+            if let Some(b) = pre {
+                self.off(dir, &t, b);
+            } else {
+                // part 4, the event's end test; three events have a second test that runs whether or
+                // not the first ended it, its off going to the director again
+                if let Some(b) = self.ends(fx, i, car, ray) {
                     self.off(dir, &t, b);
                 }
-                // Nitrous: the event camera pulled in from a wall ends it (0.2 s; 0 while still
-                // blending in: a cut push, so only F-29802's turn-round) and keeps it off until
-                // the shot ends
-                if self.ev == EV_NITROUS && self.cam.corrected {
-                    if self.running() {
-                        let b = if dir.active() && dir.dst == CamId::Event { 0.0 } else { 0.2 };
+                match self.ev {
+                    // Nitrous: the event camera pulled in from a wall ends it - a director blend is
+                    // finished first (F-70013) and the new current camera updated once more (its vt+40,
+                    // not ported), then a cut; else 0.2 s - and keeps it off until the shot ends
+                    EV_NITROUS if self.cam.corrected => {
+                        let b = if dir.active() {
+                            dir.finish_now();
+                            #[cfg(test)]
+                            {
+                                chooser_log("fin|vt40|");
+                            }
+                            0.0
+                        } else {
+                            0.2
+                        };
                         self.off(dir, &t, b);
+                        self.off_bytes[EV_NITROUS] = true;
                     }
-                    self.off_bytes[EV_NITROUS] = true;
-                }
-                // AirRide: whether or not the air ride went off, a held camera / music button
-                // ends it and keeps it off until the air ride is switched off (F-24075)
-                if self.ev == EV_AIR_RIDE && i.air_held {
-                    if self.running() {
+                    // AirRide: a held camera / music button ends it and keeps it off until the air
+                    // ride is switched off
+                    EV_AIR_RIDE if i.air_held => {
                         self.off(dir, &t, -1.0);
+                        self.off_bytes[EV_AIR_RIDE] = true;
                     }
-                    self.off_bytes[EV_AIR_RIDE] = true;
+                    // Idle: a held camera / music / hydraulics button ends it and zeroes the idle time
+                    EV_IDLE if i.idle_held => {
+                        self.off(dir, &t, 0.7);
+                        self.idle_reset = true;
+                    }
+                    _ => {}
                 }
             }
-            out = self.show(dir, &t, car, dt, test, aspect);
         }
+        let out = match self.tune(data_dir, car_name, self.ev) {
+            Some(t) if dir.involves(CamId::Event) => self.show(dir, &t, car, dt, test, aspect),
+            _ => None,
+        };
         // part 5: the AirRide byte comes back when the air ride is off, the Nitrous byte when the
         // shot ends
         if !i.air_on {
@@ -4856,7 +4902,7 @@ camTrackCS {
         let (mut d, mut dir) = (EventDirector::default(), Director::default());
         let ev = CamId::Event;
         let queued_view = |dir: &Director| matches!(dir.queued, Some(CamId::View(_)));
-        d.begin_in(&mut dir, 1.0);
+        d.begin_in(&mut dir, 1.0, false);
         dir.blend.weight = 0.25;
         d.off(&mut dir, &t, 0.0);
         assert!(d.leaving(&dir));
@@ -4910,7 +4956,7 @@ camTrackCS {
                         c.start(Vec3::ZERO, &car, how, None);
                         dir.push(CamId::Wipeout, how.blend, 1.0);
                     }
-                    "push" => d.begin_in(&mut dir, h(w[1])),
+                    "push" => d.begin_in(&mut dir, h(w[1]), false),
                     "off" => {
                         assert!(more, "{head}: an off after the finish");
                         d.off(&mut dir, &t, h(w[1]));
@@ -4991,7 +5037,7 @@ camTrackCS {
         let step = |d: &mut EventDirector, i: EventIn| {
             d.frame_t(&data, "vp_aud_r8_08", &i, &car, BoomOut { ..chase }, dt, &NO_WORLD, &|_, _| false, 16.0 / 9.0);
         };
-        let on = EventIn { air_on: true, ..ein(0.0, 0.0, 0.0, 0.0) };
+        let on = EventIn { air_fitted: true, air_on: true, ..ein(0.0, 0.0, 0.0, 0.0) };
         // (Hydraulics comes first, two wheels after)
         step(&mut d, EventIn { hyd_on: true, pan_pressed: true, g18: 1, ..on });
         assert_eq!(d.event(), Some(EV_HYDRAULICS));
@@ -6754,7 +6800,7 @@ mod director_blend_tests {
         for _ in 0..5 {
             frame(&mut sw, &mut cam, 1, false);
         }
-        d.begin_in(&mut sw.blend, 0.5);
+        d.begin_in(&mut sw.blend, 0.5, false);
         let mut n = 0;
         while sw.blend.active() {
             frame(&mut sw, &mut cam, 1, true);
@@ -6776,7 +6822,7 @@ mod director_blend_tests {
         for _ in 0..5 {
             frame(&mut sw, &mut cam, 1, false);
         }
-        d.begin_in(&mut sw.blend, 0.5);
+        d.begin_in(&mut sw.blend, 0.5, false);
         for _ in 0..3 {
             frame(&mut sw, &mut cam, 1, true);
         }
@@ -6989,5 +7035,209 @@ mod camfx_ctor_tests {
             }
             assert_eq!([b.timer.to_bits(), b.magnitude.to_bits(), b.scale.to_bits(), b.state as u32], [at(base + 192), at(base + 196), at(base + 200), at(base + 212)], "block {i}");
         }
+    }
+}
+
+/// The event camera's chooser (F-24075) against the original's, one frame per case: tools/event_chooser_reference.py runs the
+/// original's chooser over 6,000 frames, its callees answering from the case (testdata/event_chooser_ref.txt: the case's fields;
+/// then the calls F-94591 on / off and F-70013 with the new camera's vt+40, and the ball and segment probes' arguments, in their
+/// order; then the event field cam +784, the Nitrous / AirRide enable bytes and the idle time). The port's EventDirector::frame
+/// runs on the same state - its own Director set as the case has it: the event camera current, blending in, the source of the
+/// blend back, or out of the director with or without a blend - and writes its calls the same way.
+#[cfg(test)]
+mod event_chooser_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    struct LogWorld {
+        hit: bool,
+    }
+    impl CamWorld for LogWorld {
+        fn contacts(&self, c: Vec3, r: f32, q: CamQuery, _max: usize) -> Vec<(f32, Vec3)> {
+            // (only the chooser's own ball, CamQuery::AIR; the event camera's update has its own probes)
+            if q != CamQuery::AIR {
+                return Vec::new();
+            }
+            chooser_log(&format!("ball {:08x} {:08x} {:08x} {:08x}|", c.x.to_bits(), c.y.to_bits(), c.z.to_bits(), r.to_bits()));
+            if self.hit {
+                vec![(0.0, Vec3::Y)]
+            } else {
+                Vec::new()
+            }
+        }
+        fn sweep(&self, _a: Vec3, _b: Vec3, _r: f32, _cars: bool) -> Option<(f32, Vec3)> {
+            None
+        }
+    }
+
+    // (the records' BlendTime / ReturnTime as the reference gives them, events 0 and 1 from the case)
+    const REC_BLEND: [f32; 18] = [0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 1.5, 0.2, 0.0, 0.0, 1.5];
+    const REC_RET: [f32; 18] = [1.5, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+
+    /// The logs equal, the probes' points to 1e-3 m (the port turns the car's up by a quaternion made of the original's rows).
+    fn same(a: &str, b: &str) -> bool {
+        let (pa, pb): (Vec<&str>, Vec<&str>) = (a.split('|').collect(), b.split('|').collect());
+        pa.len() == pb.len()
+            && pa.iter().zip(&pb).all(|(x, y)| {
+                let (wx, wy): (Vec<&str>, Vec<&str>) = (x.split(' ').collect(), y.split(' ').collect());
+                if wx[0] != "seg" && wx[0] != "ball" {
+                    return x == y;
+                }
+                wx.len() == wy.len()
+                    && wx[0] == wy[0]
+                    && wx[1..].iter().zip(&wy[1..]).all(|(p, q)| {
+                        let (p, q) = (f32::from_bits(u32::from_str_radix(p, 16).unwrap()), f32::from_bits(u32::from_str_radix(q, 16).unwrap()));
+                        (p - q).abs() <= 1e-3
+                    })
+            })
+    }
+
+    #[test]
+    fn chooser_matches_the_original() {
+        let text = include_str!("testdata/event_chooser_ref.txt");
+        let mut lines = text.lines();
+        let names: Vec<&str> = lines.next().unwrap().trim_start_matches("# ").split(' ').collect();
+        let (mut n, mut bad, mut twowheel) = (0, Vec::new(), 0);
+        for line in lines {
+            let (case, orig) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = case.split(' ').map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let c: HashMap<&str, u32> = names.iter().copied().zip(w.iter().copied()).collect();
+            let f = |k: &str| f32::from_bits(c[k]);
+            let u = |k: &str| c[k];
+            // (the pad: present, the game not paused)
+            let inp = u("pad_index") != 0xFFFF && !(u("g4") != 0 && u("g10") == 0);
+            let pressed = |a: u32| u("pressed") >> a & 1 != 0;
+            let held = |a: u32| if a >= 32 { u("held_hi") >> (a - 32) & 1 != 0 } else { u("held") >> a & 1 != 0 };
+            let analog = f("v27") > 0.2 || f("v28") > 0.2 || f("v29") > 0.2;
+            let air_p = u("air_p") != 0;
+            let rows = [Vec3::new(f("m0"), f("m1"), f("m2")), Vec3::new(f("m4"), f("m5"), f("m6")), Vec3::new(f("m8"), f("m9"), f("m10"))];
+            let car = TrackCar {
+                pos: Vec3::new(f("m12"), f("m13"), f("m14")),
+                rot: Quat::from_mat3(&Mat3::from_cols(rows[0], rows[1], rows[2])),
+                vel: Vec3::new(f("vel0"), f("vel1"), f("vel2")),
+                speed: f("speed"),
+                reverse_gear: false,
+                steer: 0.0,
+                front_z: Some(-1.3),
+                slope: Some(0.0),
+                air_time: f("air_time"),
+                aero: 1.0,
+                model_offset_y: 0.7,
+                sst: (0.0, 1.0),
+                nitro_view: 0.0,
+                grounded: 4,
+                wheels: 4,
+                ang_mom: Vec3::ZERO,
+                follow: None,
+                bike_wiped: false,
+            };
+            let bike = u("bike") != 0;
+            let i = EventIn {
+                allowed: u("cinematic") == 1 && u("photo") == 0 && u("editor") == 0,
+                hold: u("act68") != 0 || u("act64") != 0,
+                view: u("view") as u8,
+                bike,
+                stunt: u("stunt") as u16 as i16,
+                g18: u("g18") as u16 as i16,
+                sst_on: u("sst_on") != 0,
+                sst_full: u("sst_full") != 0,
+                nitro_on: u("nitro_on") != 0,
+                nitro_full: u("nitro_full") != 0,
+                tuck: u("tuck") != 0,
+                brake: f("brake"),
+                handbrake: f("handbrake"),
+                hb_sim: f("hb_sim"),
+                stick_y: f("stick_y"),
+                stick_x: f("stick_x"),
+                front_down: u("front_down") != 0,
+                rear_down: u("rear_down") != 0,
+                speed: f("speed"),
+                charge: f("charge"),
+                yaw_rate: f("yaw"),
+                hyd_on: u("hyd_p") != 0 && u("hyd_on") != 0,
+                pan_pressed: inp && (pressed(22) || pressed(23)),
+                pan_side: 0.0,
+                cam_pressed: inp && (pressed(12) || pressed(13)),
+                air_fitted: air_p && u("air_fitted") != 0,
+                air_on: air_p && u("air_on") != 0,
+                air_held: inp && ([20, 19, 21, 14, 12, 13, 26].iter().any(|&a| held(a)) || analog),
+                idle_held: inp && ([12, 44, 13, 26, 20, 19, 21, 14].iter().any(|&a| held(a)) || analog),
+                no_push: u("flags") & 0x20 != 0,
+                reverse_gear: u("gear") == 0,
+                air_time: f("air_time"),
+                idle: f("idle"),
+                view_back: u("lookback") != 0,
+                crash: u("act72") != 0,
+                damage_out: !bike && u("flags") & 4 != 0 && f("wipe_timer") <= 0.0,
+                destroyed: u("flags") & 4 != 0,
+            };
+            // the director as the case has it
+            let view = u("view") as u8;
+            let mut dir = Director { view, ..Default::default() };
+            match (u("act84") as i32, u("blending")) {
+                (1, 0) => dir.cut(CamId::Event),
+                (1, _) => {
+                    dir.push(CamId::Event, 0.7, 1.0);
+                }
+                (0, 0) => {}
+                (0, _) => {
+                    dir.push(CamId::View(if view == 4 { 3 } else { 4 }), 0.7, 1.0);
+                }
+                _ => {
+                    dir.cut(CamId::Event);
+                    dir.push(CamId::View(view), 0.7, 1.0);
+                }
+            }
+            let mut d = EventDirector::default();
+            for (e, name) in EVENT_NAMES.iter().enumerate() {
+                let mut t = TrackTune::from_text("type: a\ncamTrackCS {\n}\n", name);
+                t.blend = match e {
+                    0 => f("rec0_blend"),
+                    1 => f("rec1_blend"),
+                    _ => REC_BLEND[e],
+                };
+                t.ret = REC_RET[e];
+                d.tunes.insert(("t".to_string(), e), Some(t));
+            }
+            d.fx = Some(CamFx { idle_delay: f("idle_delay"), burnout_turn: f("burn_thr"), ..Default::default() });
+            d.loaded = Some("t".to_string());
+            let ev = u("event") as i32;
+            if ev >= 0 {
+                (d.on, d.ev) = (true, ev as usize);
+            }
+            d.cam.track.x = f("track_x");
+            d.cam.corrected = u("corrected") != 0;
+            let world = LogWorld { hit: u("ball") != 0 };
+            let seg = u("seg") != 0;
+            let ray = |a: Vec3, b: Vec3| {
+                chooser_log(&format!("seg {:08x} {:08x} {:08x} {:08x} {:08x} {:08x}|", a.x.to_bits(), a.y.to_bits(), a.z.to_bits(), b.x.to_bits(), b.y.to_bits(), b.z.to_bits()));
+                seg
+            };
+            CHOOSER_LOG.with(|l| l.borrow_mut().clear());
+            d.frame(&mut dir, "", "t", &i, &car, 1.0 / 30.0, &world, &ray, 16.0 / 9.0);
+            let calls = CHOOSER_LOG.with(|l| l.borrow().clone());
+            let e = if d.on { d.ev as i32 } else { -1 };
+            let idle = if d.idle_reset { 0 } else { u("idle") };
+            let port = format!("{calls}; e {e} b {} {} i {idle:08x}", !d.off_bytes[EV_NITROUS] as u8, !d.off_bytes[EV_AIR_RIDE] as u8);
+            let (oc, os) = orig.split_once("; ").unwrap();
+            let (pc, ps) = port.split_once("; ").unwrap();
+            // (TwoWheelSide / Up started in the frame: their end test reads TrackTo.x, which set-event F-26269 writes; the
+            // reference does not run it (its rule is camtrack_rule.md's), so the frame is compared up to the start)
+            if oc.starts_with("on 5 ") || oc.starts_with("on 6 ") {
+                twowheel += 1;
+                if oc.split('|').next() != pc.split('|').next() {
+                    bad.push(format!("{n}: {orig}\n   port {port}"));
+                }
+                n += 1;
+                continue;
+            }
+            if !(same(oc, pc) && os == ps) {
+                bad.push(format!("{n}: {orig}\n   port {port}"));
+            }
+            n += 1;
+        }
+        assert_eq!(n, 6000);
+        assert!(twowheel < 200, "{twowheel}");
+        assert!(bad.is_empty(), "{} of {n} differ:\n{}", bad.len(), bad[..bad.len().min(12)].join("\n"));
     }
 }
