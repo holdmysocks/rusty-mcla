@@ -405,10 +405,10 @@ impl Ambience {
             r.raining = true;
         }
         if r.ext.map_or(true, |h| !lib.playing(h)) {
-            r.ext = lib.play_hash(r.ext_snd, Req::default());
+            r.ext = lib.play_hash(r.ext_snd, Req::default().slot());
         }
         if r.int.map_or(true, |h| !lib.playing(h)) {
-            r.int = lib.play_hash(r.int_snd, Req::default().vol(-100.0));
+            r.int = lib.play_hash(r.int_snd, Req::default().vol(-100.0).slot());
         }
         // the weather categories by the district (+30 flag: dB +31, LPF +33, thunder +35 / +37) or the listener's cover
         // (AG+62..+68), else 0 dB and 23900 Hz, gain and LPF ramped over AG+58 (F-94235: F-83232 then F-30645 on the
@@ -442,7 +442,7 @@ impl Ambience {
             lib.set(h, Req::default().vol(int_db));
         }
         if now >= r.next_thunder && r.thunder.map_or(true, |h| !lib.playing(h)) {
-            r.thunder = lib.play_hash(r.thunder_snd, Req::default());
+            r.thunder = lib.play_hash(r.thunder_snd, Req::default().slot());
             r.next_thunder = now + lib.rand_float(r.thunder_gap.0, r.thunder_gap.1);
         }
     }
@@ -526,7 +526,7 @@ impl Ambience {
             let req = Req { volume: wind_db, ..Default::default() };
             match self.wind {
                 Some(h) if lib.playing(h) => lib.set(h, req),
-                _ => self.wind = lib.play_hash(self.wind_snd, req),
+                _ => self.wind = lib.play_hash(self.wind_snd, req.slot()),
             }
         }
     }
@@ -656,7 +656,7 @@ impl Ambience {
                 if let Some(h) = self.bed.take() {
                     lib.stop_release(h, (self.rain.ramp * 1000.0) as i32 + 1000);
                 }
-                self.bed = if snd != self.null { lib.play_hash(snd, Req { start_pct: pct, ..Default::default() }) } else { None };
+                self.bed = if snd != self.null { lib.play_hash(snd, Req { start_pct: pct, ..Default::default() }.slot()) } else { None };
                 self.bed_snd = if self.bed.is_some() { snd } else { self.null };
                 log::info!("audio: ambience bed {} {}", lib.name_of(snd).unwrap_or("?"), if self.bed.is_some() { "playing" } else { "missing" });
             }
@@ -666,7 +666,7 @@ impl Ambience {
                 if let Some(h) = self.bed2.take() {
                     lib.stop(h);
                 }
-                self.bed2 = if snd2 != self.null { lib.play_hash(snd2, Req::default()) } else { None };
+                self.bed2 = if snd2 != self.null { lib.play_hash(snd2, Req::default().slot()) } else { None };
                 self.bed2_snd = if self.bed2.is_some() { snd2 } else { self.null };
                 if self.bed2.is_some() {
                     log::info!("audio: ambience second bed {}", lib.name_of(snd2).unwrap_or("?"));
@@ -718,12 +718,12 @@ impl Ambience {
             let beds = self.districts[di].clone();
             if self.bed.map_or(true, |h| !lib.playing(h)) {
                 let snd = beds.bed[night as usize];
-                self.bed = if snd != self.null { lib.play_hash(snd, Req::default()) } else { None };
+                self.bed = if snd != self.null { lib.play_hash(snd, Req::default().slot()) } else { None };
                 self.bed_snd = if self.bed.is_some() { snd } else { self.null };
             }
             if self.bed2.map_or(true, |h| !lib.playing(h)) {
                 let snd2 = beds.bed2[night as usize];
-                self.bed2 = if snd2 != self.null { lib.play_hash(snd2, Req::default()) } else { None };
+                self.bed2 = if snd2 != self.null { lib.play_hash(snd2, Req::default().slot()) } else { None };
                 self.bed2_snd = if self.bed2.is_some() { snd2 } else { self.null };
             }
         } else {
@@ -771,7 +771,7 @@ impl Ambience {
                 } else {
                     Req { pos: Some(pos), volume: s.volume, ..Default::default() }
                 };
-                if let Some(h) = lib.play_hash(s.sound, req) {
+                if let Some(h) = lib.play_hash(s.sound, req.slot()) {
                     if timers == 0 { self.shots.push(h) } else { self.quad_shots.push(h) }
                 }
             }
@@ -894,8 +894,8 @@ impl Ambience {
                 }
                 None => {
                     let n = night as usize * 2;
-                    if let Some(h) = lib.play_hash(l.sounds[n], req) {
-                        let companion = (l.sounds[n + 1] != self.null).then(|| lib.play_hash(l.sounds[n + 1], req)).flatten();
+                    if let Some(h) = lib.play_hash(l.sounds[n], req.slot()) {
+                        let companion = (l.sounds[n + 1] != self.null).then(|| lib.play_hash(l.sounds[n + 1], req.slot())).flatten();
                         self.slots.push(Slot { key, sound: h, companion, at });
                         // (F-80314 after the start: the immediate update while "not updated yet")
                         if occluder != 0 {
@@ -921,7 +921,7 @@ impl Ambience {
                 let req = Req::at(best.1);
                 match self.line {
                     Some(h) if lib.playing(h) => lib.set(h, req),
-                    _ => self.line = lib.play_hash(d.line_sound, req),
+                    _ => self.line = lib.play_hash(d.line_sound, req.slot()),
                 }
             } else if let Some(h) = self.line.take() {
                 lib.stop(h);

@@ -600,6 +600,11 @@ impl Preloaded {
         let mut lib = crate::sndobj::SoundLib::load(root, cfg);
         let (mut coll, mut amb, mut fleet, mut occl) = (None, None, None, None);
         if let Some(l) = lib.as_mut() {
+            // the banks resident from the engine's start, read on the wave loader's thread (F-31713)
+            match std::fs::read_to_string(cfg.join("waveslots.xml")) {
+                Ok(x) => l.preload_resident(&x),
+                Err(e) => log::warn!("audio: waveslots.xml not read ({e}): no resident banks preloaded"),
+            }
             // (cfg = <data>/audio/X360/config)
             let data = cfg.ancestors().nth(3).map(|p| p.to_path_buf()).unwrap_or_default();
             coll = Some(crate::collaudio::CollisionAudio::new(&data));

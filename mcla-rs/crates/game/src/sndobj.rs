@@ -92,15 +92,24 @@ pub struct Req {
     /// the port's tag of the car audio entity that asked (its request's client, sound +120): 0 = none; a car's
     /// detach ends every sound of its tag (`SoundLib::cut_owner`)
     pub owner: u32,
+    /// the request waits for its waves to load (a wave slot play, F-21756: the prepare deadline F-90813 takes is -1, so a sound not yet
+    /// loaded waits in the preparing state and starts in the update its load ends); the other requests' deadline is now
+    /// + 0 (their waves are in banks already loaded)
+    pub wait_load: bool,
 }
 
 impl Default for Req {
     fn default() -> Self {
-        Req { pos: None, volume: 0.0, vol2: 0.0, pitch: 0, pan: -1, doppler: 1.0, player: false, start_ms: 0.0, start_pct: 0.0, lpf: 23900, hpf: 0, dry: 1.0, fx_send: 0.0, chain: 0, pans_chain: false, category: 0, occluder: 0, owner: 0 }
+        Req { pos: None, volume: 0.0, vol2: 0.0, pitch: 0, pan: -1, doppler: 1.0, player: false, start_ms: 0.0, start_pct: 0.0, lpf: 23900, hpf: 0, dry: 1.0, fx_send: 0.0, chain: 0, pans_chain: false, category: 0, occluder: 0, owner: 0, wait_load: false }
     }
 }
 
 impl Req {
+    /// The request played through a wave slot (F-21756): it waits for its waves' load.
+    pub fn slot(self) -> Req {
+        Req { wait_load: true, ..self }
+    }
+
     pub fn at(pos: Vec3) -> Req {
         Req { pos: Some(pos), ..Default::default() }
     }
@@ -615,6 +624,8 @@ struct Node {
 
 struct Instance {
     id: u64,
+    /// the wave files a `wait_load` request still waits for (the original's preparing state 1, not updated)
+    loading: Vec<(PathBuf, i32)>,
     /// the sounds.dat object played (0: a converted wave)
     hash: u32,
     root: Node,
@@ -658,6 +669,12 @@ pub struct SoundLib {
     stream_of: Option<HashMap<u32, (PathBuf, i16, i32)>>,
     /// (with the count of `clip_of` at its last use)
     clips: HashMap<PathBuf, (Option<Arc<Clip>>, u64)>,
+    /// the wave loader thread (the original's asynchronous wave slot / bank loads)
+    loader: Loader,
+    /// the waves of the banks resident from the engine's start (waveslots.xml's StaticBank, F-31713): kept, never trimmed
+    resident: hashbrown::HashSet<PathBuf>,
+    /// while a `wait_load` request is made: the files it waits for
+    make_wait: Option<Vec<(PathBuf, i32)>>,
     clip_uses: u64,
     rng: SharedMwc,
     /// the audio controller's three timers (F-46276: engine+572 + 12 k: time, rate, paused): a sound on a paused timer is
@@ -951,6 +968,9 @@ impl SoundLib {
             xf_dist: 0.0,
             stream_of: None,
             clips: HashMap::new(),
+            loader: Loader::new(),
+            resident: Default::default(),
+            make_wait: None,
             clip_uses: 0,
             rng: SharedMwc,
             timer_paused: [false; 3],
@@ -1439,8 +1459,22 @@ impl SoundLib {
             c.1 = self.clip_uses;
             return c.0.clone();
         }
+        let mp3 = file.extension().is_some_and(|e| e == "mp3");
+        if !mp3 {
+            if let Some(w) = self.make_wait.as_mut() {
+                // (a wave slot play: the load runs on the loader's thread, the sound waits for it)
+                if !w.iter().any(|f| f.0 == file) {
+                    w.push((file.to_path_buf(), loop_start));
+                }
+                self.loader.ask(file, loop_start, true);
+                return None;
+            }
+        }
+        if !mp3 {
+            self.loader.cancel(file);
+        }
         let t = std::time::Instant::now();
-        let c = if file.extension().is_some_and(|e| e == "mp3") { decode_mp3(file) } else { crate::audio::load_wav_clip(file) };
+        let c = if mp3 { decode_mp3(file) } else { crate::audio::load_wav_clip(file) };
         let ms = t.elapsed().as_secs_f32() * 1000.0;
         if ms > 20.0 {
             log::info!("audio: {} read in {:.0} ms", file.display(), ms);
@@ -1459,7 +1493,7 @@ impl SoundLib {
     fn trim_clips(&mut self) {
         const IDLE_CLIPS: u64 = 256 << 20;
         let bytes = |c: &Clip| 4 * c.stream.as_ref().map_or(c.data.len(), |s| s.samples.len()) as u64;
-        let mut idle: Vec<(u64, PathBuf, u64)> = self.clips.iter().filter_map(|(p, (c, used))| c.as_ref().filter(|c| Arc::strong_count(c) == 1).map(|c| (*used, p.clone(), bytes(c)))).collect();
+        let mut idle: Vec<(u64, PathBuf, u64)> = self.clips.iter().filter(|(p, _)| !self.resident.contains(*p)).filter_map(|(p, (c, used))| c.as_ref().filter(|c| Arc::strong_count(c) == 1).map(|c| (*used, p.clone(), bytes(c)))).collect();
         let mut total: u64 = idle.iter().map(|e| e.2).sum();
         if total <= IDLE_CLIPS {
             return;
@@ -1472,6 +1506,36 @@ impl SoundLib {
             self.clips.remove(&p);
             total -= b;
         }
+    }
+
+    /// The loader's finished files into the clips (a file that could not be read is kept as none, as a read here).
+    fn take_loaded(&mut self) {
+        for (file, c) in self.loader.take() {
+            if self.clips.contains_key(&file) {
+                continue;
+            }
+            self.clip_uses += 1;
+            let c = c.map(Arc::new);
+            self.clips.insert(file, (c, self.clip_uses));
+        }
+    }
+
+    /// The banks resident from the engine's start read on the loader's thread (F-31713 loads each wave slot with a
+    /// StaticBank at init, before the game runs: their sounds never wait): every wave of each, kept and never trimmed.
+    /// A wave asked for before its read is done is read on the spot.
+    pub fn preload_resident(&mut self, waveslots: &str) {
+        for bank in resident_banks(waveslots) {
+            let Some(waves) = self.bank_waves(joaat(&bank)) else {
+                log::warn!("audio: resident bank {bank} not found");
+                continue;
+            };
+            for w in waves.values() {
+                if self.resident.insert(w.file.clone()) {
+                    self.loader.ask(&w.file, w.loop_start, false);
+                }
+            }
+        }
+        log::info!("audio: {} waves of the resident banks queued", self.resident.len());
     }
 
     // ---------------------------------------------------------------------------------------------- building
@@ -1495,7 +1559,8 @@ impl SoundLib {
                 let w = self.bank_waves(bank).and_then(|m| m.get(&wave).cloned());
                 if let Some(w) = w {
                     let clip = self.clip_of(&w.file.clone(), w.loop_start);
-                    let dur_ms = w.dur_ms.filter(|_| clip.is_some()).or_else(|| clip.as_ref().map(|c| c.frames() as f32 * 1000.0 / c.rate as f32)).unwrap_or(0.0);
+                    let waiting = clip.is_none() && self.make_wait.as_ref().is_some_and(|f| f.iter().any(|f| f.0 == w.file));
+                    let dur_ms = w.dur_ms.filter(|_| clip.is_some() || waiting).or_else(|| clip.as_ref().map(|c| c.frames() as f32 * 1000.0 / c.rate as f32)).unwrap_or(0.0);
                     Kind::Wave { looping: w.loop_start >= 0, wave: Some(w), clip, voice: self.voice_id(), pos_ms: 0.0, dur_ms }
                 } else if let Some((mp3, h0, _)) = self.stream_index().get(&wave).cloned() {
                     // a stream channel: the converted file holds every channel folded to stereo
@@ -1661,7 +1726,11 @@ impl SoundLib {
     }
 
     pub fn play_hash(&mut self, hash: u32, req: Req) -> Option<Handle> {
-        let root = self.make(hash, 0)?;
+        self.take_loaded();
+        self.make_wait = req.wait_load.then(Vec::new);
+        let root = self.make(hash, 0);
+        let loading = self.make_wait.take().unwrap_or_default();
+        let root = root?;
         let id = self.next;
         self.next += 1;
         let timer = Some(self.timer_of(&root.h));
@@ -1669,7 +1738,7 @@ impl SoundLib {
         if std::env::var_os("MCLA_SOUND_STARTS").is_some() {
             log::info!("sound start: {} vol {:.2} pitch {}", self.snd.name_of(hash).unwrap_or("?"), req.volume, req.pitch);
         }
-        self.insts.push(Instance { id, hash, root, req, prev_pos: None, frame_pos: None, doppler: 1.0, stop: false, kill: false, stop_ms: -1, timer });
+        self.insts.push(Instance { loading, id, hash, root, req, prev_pos: None, frame_pos: None, doppler: 1.0, stop: false, kill: false, stop_ms: -1, timer });
         Some(Handle(id))
     }
 
@@ -1715,7 +1784,7 @@ impl SoundLib {
         let id = self.next;
         self.next += 1;
         let timer = Some(self.timer_of(&root.h));
-        self.insts.push(Instance { id, hash: 0, root, req, prev_pos: None, frame_pos: None, doppler: 1.0, stop: false, kill: false, stop_ms: -1, timer });
+        self.insts.push(Instance { loading: Vec::new(), id, hash: 0, root, req, prev_pos: None, frame_pos: None, doppler: 1.0, stop: false, kill: false, stop_ms: -1, timer });
         Some(Handle(id))
     }
 
@@ -1966,11 +2035,30 @@ impl SoundLib {
                 self.timer_ms[t] += ms as f64;
             }
         }
+        self.take_loaded();
         let mut insts = std::mem::take(&mut self.insts);
         let (lp, lr, lf) = self.listener;
         let mut drives = Vec::new();
         let mut states = HashMap::new();
         for inst in insts.iter_mut() {
+            // a sound whose waves are still loading is not updated (F-89113 state 1: the prepare F-80012 again each update, the
+            // play in the update it gives 1); stopped meanwhile, it ends unplayed
+            if !inst.loading.is_empty() {
+                let clips = &self.clips;
+                inst.loading.retain(|f| !clips.contains_key(&f.0));
+                // (a load that came and was trimmed before this update: asked for again)
+                for (f, ls) in &inst.loading {
+                    self.loader.ask(f, *ls, true);
+                }
+                if inst.stop || inst.kill {
+                    inst.root.st = St::Done;
+                    continue;
+                }
+                if !inst.loading.is_empty() {
+                    continue;
+                }
+                fill_clips(&mut inst.root, clips);
+            }
             // a sound on a paused timer is not updated (F-89113): its voices hold where they are, silent, and go on from
             // there when the timer runs again
             if inst.timer.is_some_and(|t| self.timer_paused[t as usize]) {
@@ -2443,6 +2531,145 @@ struct Drive {
 }
 
 /// Every wave / stream voice of a sound's tree.
+/// A `wait_load` sound's waves given their clips once loaded (its nodes were made with none).
+fn fill_clips(n: &mut Node, clips: &HashMap<PathBuf, (Option<Arc<Clip>>, u64)>) {
+    match &mut n.kind {
+        Kind::Wave { wave: Some(w), clip, .. } => {
+            if clip.is_none() {
+                *clip = clips.get(&w.file).and_then(|c| c.0.clone());
+            }
+        }
+        Kind::Wave { .. } | Kind::Stream { .. } | Kind::Empty => {}
+        Kind::Group { children } | Kind::Twin { children, .. } | Kind::Cross { children, .. } => children.iter_mut().for_each(|c| fill_clips(c, clips)),
+        Kind::Looping { child, .. } | Kind::Envelope { child, .. } => fill_clips(child, clips),
+        Kind::Sequential { cur, ahead, .. } => {
+            if let Some(c) = cur {
+                fill_clips(c, clips)
+            }
+            ahead.iter_mut().for_each(|c| fill_clips(c, clips));
+        }
+        Kind::Retrig { live, .. } => live.iter_mut().for_each(|c| fill_clips(c, clips)),
+        Kind::OnStop { child, stopped, .. } => {
+            fill_clips(child, clips);
+            if let Some(s) = stopped {
+                fill_clips(s, clips)
+            }
+        }
+    }
+}
+
+/// The banks waveslots.xml makes resident (a Slot with a StaticBank: loaded by F-31713 at the engine's start).
+pub fn resident_banks(xml: &str) -> Vec<String> {
+    xml.split("<Slot>")
+        .skip(1)
+        .filter_map(|slot| {
+            let slot = slot.split("</Slot>").next()?;
+            let at = slot.find("<StaticBank")?;
+            let v = &slot[at..];
+            let v = &v[v.find('>')? + 1..];
+            Some(v[..v.find('<')?].trim().to_string()).filter(|b| !b.is_empty())
+        })
+        .collect()
+}
+
+/// The wave loader: one thread reads converted wave files, the files a waiting sound asks for before the resident banks'
+/// preload (the original loads its wave slots and banks asynchronously; reading a file here on the game thread took
+/// 21 - 108 ms on a loaded machine, docs/PERFORMANCE.md 2026-11-13).
+struct Loader {
+    q: Arc<(std::sync::Mutex<LoadQ>, std::sync::Condvar)>,
+}
+
+#[derive(Default)]
+struct LoadQ {
+    urgent: std::collections::VecDeque<(PathBuf, i32)>,
+    bulk: std::collections::VecDeque<(PathBuf, i32)>,
+    asked: hashbrown::HashSet<PathBuf>,
+    done: Vec<(PathBuf, Option<Clip>)>,
+    quit: bool,
+}
+
+impl Loader {
+    fn new() -> Loader {
+        let q: Arc<(std::sync::Mutex<LoadQ>, std::sync::Condvar)> = Default::default();
+        let w = q.clone();
+        let spawned = std::thread::Builder::new().name("wave loader".into()).spawn(move || loop {
+            let job = {
+                let (m, cv) = &*w;
+                let Ok(mut g) = m.lock() else { return };
+                loop {
+                    if g.quit {
+                        return;
+                    }
+                    if let Some(j) = g.urgent.pop_front().or_else(|| g.bulk.pop_front()) {
+                        break j;
+                    }
+                    let Ok(n) = cv.wait(g) else { return };
+                    g = n;
+                }
+            };
+            let c = crate::audio::load_wav_clip(&job.0).map(|mut c| {
+                c.loop_start = job.1.max(0) as usize;
+                c
+            });
+            if let Ok(mut g) = w.0.lock() {
+                g.done.push((job.0, c));
+            }
+        });
+        if let Err(e) = spawned {
+            log::warn!("audio: no wave loader thread ({e}): waves are read when they play");
+        }
+        Loader { q }
+    }
+
+    /// Queue a file (once); `urgent` (a sound waits for it) moves it ahead of the preload.
+    fn ask(&self, file: &Path, loop_start: i32, urgent: bool) {
+        let Ok(mut g) = self.q.0.lock() else { return };
+        if g.asked.contains(file) {
+            if urgent {
+                if let Some(i) = g.bulk.iter().position(|j| j.0 == file) {
+                    let j = g.bulk.remove(i).unwrap();
+                    g.urgent.push_back(j);
+                }
+            }
+            return;
+        }
+        g.asked.insert(file.to_path_buf());
+        if urgent {
+            g.urgent.push_back((file.to_path_buf(), loop_start));
+        } else {
+            g.bulk.push_back((file.to_path_buf(), loop_start));
+        }
+        self.q.1.notify_one();
+    }
+
+    /// A file read on the game thread after all: out of the queue (it may be in flight already).
+    fn cancel(&self, file: &Path) {
+        let Ok(mut g) = self.q.0.lock() else { return };
+        if g.asked.remove(file) {
+            g.bulk.retain(|j| j.0 != file);
+            g.urgent.retain(|j| j.0 != file);
+        }
+    }
+
+    fn take(&self) -> Vec<(PathBuf, Option<Clip>)> {
+        let Ok(mut g) = self.q.0.lock() else { return Vec::new() };
+        let done = std::mem::take(&mut g.done);
+        for (f, _) in &done {
+            g.asked.remove(f);
+        }
+        done
+    }
+}
+
+impl Drop for Loader {
+    fn drop(&mut self) {
+        if let Ok(mut g) = self.q.0.lock() {
+            g.quit = true;
+        }
+        self.q.1.notify_all();
+    }
+}
+
 fn hold_voices(n: &Node, f: &mut dyn FnMut(u64)) {
     match &n.kind {
         Kind::Wave { voice, .. } | Kind::Stream { voice, .. } => f(*voice),
@@ -4386,6 +4613,50 @@ mod tests {
         assert!(!lib.playing(scrape), "the loop ends with no release");
         assert!(!lib.playing(off), "the one-shot ends too");
         assert!(lib.playing(other), "another car's sound plays on");
+    }
+
+    /// The wave loads off the game thread (verify_audio_b1.md batch 72): waveslots.xml's resident banks (the 11 slots with
+    /// a StaticBank) read on the loader's thread and kept; a wave slot play waits unstarted for its wave and starts in the
+    /// update its load is in, the same sound played the old way reads its wave at once.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn waves_load_off_the_game_thread() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let mut a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let xml = std::fs::read_to_string(a.cfg.join("waveslots.xml")).expect("waveslots.xml");
+        let banks = resident_banks(&xml);
+        assert_eq!(banks.len(), 11, "{banks:?}");
+        assert!(banks.iter().any(|b| b == r"BANGERS\COLLISIONS") && banks.iter().any(|b| b == r"VEHICLES\VEHICLE_AUX"), "{banks:?}");
+        let mut lib = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
+        let at = Req::at(Vec3::new(5.0, 0.0, 0.0));
+        let h = lib.play("DAMAGE_BUMPER_BREAK_OFF", at.slot()).expect("slot play");
+        let waits = lib.insts.iter().find(|i| i.id == h.0).unwrap().loading.clone();
+        assert!(!waits.is_empty(), "the wave is not read on the game thread");
+        lib.update(0.0, &mut a);
+        let t = std::time::Instant::now();
+        while lib.insts.iter().find(|i| i.id == h.0).is_some_and(|i| !i.loading.is_empty()) {
+            assert!(t.elapsed().as_secs() < 10, "the load never came");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            lib.update(0.0, &mut a);
+        }
+        let i = lib.insts.iter().find(|i| i.id == h.0).expect("still playing");
+        assert!(matches!(&i.root.kind, Kind::Wave { clip: Some(_), .. } | Kind::Group { .. }), "its clip filled in");
+        assert!(lib.clips.get(&waits[0].0).is_some_and(|c| c.0.is_some()));
+        // the same sound played the old way: the wave is cached, nothing waits
+        let h2 = lib.play("DAMAGE_BUMPER_BREAK_OFF", at).expect("play");
+        assert!(lib.insts.iter().find(|i| i.id == h2.0).unwrap().loading.is_empty());
+        // the resident banks: every wave read on the thread, kept through a trim
+        lib.preload_resident(&xml);
+        let n = lib.resident.len();
+        assert!(n > 600, "{n} resident waves");
+        let t = std::time::Instant::now();
+        while lib.resident.iter().any(|f| !lib.clips.contains_key(f)) {
+            assert!(t.elapsed().as_secs() < 120, "the preload never ended");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            lib.take_loaded();
+        }
+        lib.trim_clips();
+        assert!(lib.resident.iter().all(|f| lib.clips.get(f).is_some_and(|c| c.0.is_some())), "a resident wave was dropped or unread");
     }
 
     /// A career speech line as the original plays it (work/slipstream/audio4/cap/n2.txt): PLAYER_NITROUS through the player
