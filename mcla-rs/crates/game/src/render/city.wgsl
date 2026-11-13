@@ -1365,6 +1365,24 @@ fn vs_body(in: VsIn) -> VsOut {
     // (world.rs marks it: the vertical at a quarter of the length - x 1.5 or x 2 by world::mark_binormal)
     if (dot(in.normal, in.normal) < 0.3 && !(g.params.w > 399.5 && g.params.w < 400.5)) { o.normal = vec3<f32>(0.0); }
     if (amb_obj && !amb_tyre && dot(obj.dents[1], obj.dents[1]) > 0.0 && dot(in.color1.rgb, vec3<f32>(1.0)) > 0.001) { o.normal = normalize((obj.model * vec4<f32>(amb_n, 0.0)).xyz); }
+    // (a set-up car's cabin emissive parts - InteriorTexturedEmissive(Alpha), vehicles.rs: uv2.y > 0.5, uv1.y and uv2.x below
+    // -0.5. VS_Emissive (cars/0xf295c729) turns the normal by the bone's rows twice: instructions 13 - 15 give
+    // M n, 31 / 38 normalise it, 40 - 42 turn that by M again into o2, M = the bone's matrix in the world (gCarMtxBuffer
+    // at gBoneIndex; the world rows c0 - c2 are not applied). Here the vertex normal is already M n, so it is turned
+    // once more by the object's rotation and the mesh's rest rotation. Read live in the original at noon in the R8 (lights
+    // moved about the dial: its shading normal about (-0.80, 0.39, 0.42) = M M n, not the face's own; CAR_PARTS.md
+    // "noon dials"). MCLA_DEBUG_VIEW=889: turned once, as before)
+    if (obj.params.w > 15.5 && !amb_obj && in.uv2.y > 0.5 && in.uv1.y < -0.5 && in.uv2.x < -0.5 && !(g.params.w > 888.5 && g.params.w < 889.5)) {
+        var rr = mat3x3<f32>(vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(0.0, 0.0, 1.0));
+        if (rest_k > 0u && rest_k <= 12u) {
+            let b = (rest_k - 1u) * 9u;
+            var rf: array<f32, 9>;
+            for (var j = 0u; j < 9u; j = j + 1u) { rf[j] = obj.rest_rot[(b + j) / 4u][(b + j) % 4u]; }
+            rr = mat3x3<f32>(vec3<f32>(rf[0], rf[1], rf[2]), vec3<f32>(rf[3], rf[4], rf[5]), vec3<f32>(rf[6], rf[7], rf[8]));
+        }
+        let mr = mat3x3<f32>(obj.model[0].xyz, obj.model[1].xyz, obj.model[2].xyz);
+        o.normal = normalize(mr * (rr * o.normal));
+    }
     o.bflip = clamp(round(2.0 * (nlen_b - 1.0)) * 0.5, 0.0, 1.0);
     o.uv0 = in.uv0;
     o.uv1 = in.uv1;
