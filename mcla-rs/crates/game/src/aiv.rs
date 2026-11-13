@@ -1201,8 +1201,10 @@ impl Aiv {
 
     /// F-12813 (car state, one leg of line building, progress, trimming), then the
     /// optimiser (F-32780 -> F-62607) when the line is not used up.
-    /// (approx.: the original runs the optimiser as an async job joined on the next update, and
-    /// only when brain+253 is clear; here it runs at once)
+    /// (the original runs the optimiser as a job when a runtime word is 0, as in the image, and only when brain +253 is clear: +253 is
+    /// written by the brain's constructor F-42537 alone, to 0, and both readers of the aiv, the update F-13552 and the
+    /// control step F-17058, join the job before anything else - so running it at once gives the same states;
+    /// docs/reference/ai/verify_follower.md section 14)
     pub fn update(&mut self, car: &AivCar, dt: f32) {
         self.touch();
         self.update_state(car, dt);
