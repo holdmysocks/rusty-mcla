@@ -716,6 +716,10 @@ pub struct Audio {
     start_delay: (u32, u32),
     /// the playing song's predelay and start offset (ms) and its length (ms; the wave info's samples / rate)
     song_clock: (u32, u32),
+    // (when the output was last reopened - the test hook MCLA_AUDIO_REOPEN_TEST)
+    reopen_at: Instant,
+    // (the checks in a row that found the stream stopped: the next check waits longer - watch_output)
+    stalls: u32,
     song_len_ms: u32,
     /// the next song start plays the song that played last again (F-62155 plays the manager's +68, which only the next
     /// song F-51486 moves on; the port's start moves on unless this is set)
@@ -882,6 +886,8 @@ impl Audio {
             music_gain: 1.0,
             start_delay: (0, 0),
             song_clock: (0, 0),
+        reopen_at: Instant::now(),
+        stalls: 0,
             song_len_ms: 0,
             song_replay: false,
             song_back: false,
@@ -1130,8 +1136,13 @@ impl Audio {
 
     /// The song's place (ms): the sound's +172, its start offset and what the sink played after the predelay.
     pub(crate) fn song_ms(&self) -> u32 {
+        self.song_ms_at(self.music.as_ref().map_or(Duration::ZERO, |s| s.get_pos()))
+    }
+
+    /// The song's place (ms) with the sink at pos.
+    fn song_ms_at(&self, pos: Duration) -> u32 {
         let (pre, off) = self.song_clock;
-        let played = self.music.as_ref().map_or(0, |s| s.get_pos().as_millis() as u64);
+        let played = pos.as_millis() as u64;
         off.saturating_add(played.saturating_sub(pre as u64).min(u32::MAX as u64) as u32)
     }
 
@@ -1282,14 +1293,23 @@ impl Audio {
             }
         }
         let el = self.watch.elapsed().as_secs_f32();
-        if el < WATCH_SECS {
+        // (a stream that stopped again right after its reopen - a wireless headset asleep - is looked at again after 6, 12, 24,
+        // 48 s: each reopen opens the device on this thread, 65 - 215 ms, every 3 s before - docs/PERFORMANCE.md 2026-11-13)
+        if el < WATCH_SECS * (1u32 << self.stalls.min(4)) as f32 {
             return;
         }
         self.watch = Instant::now();
         let pulled = self.pulled.swap(0, Ordering::Relaxed) as f32;
+        // (test hook MCLA_AUDIO_REOPEN_TEST=<s>: the output reopened that often - the restore's song place, docs/PERFORMANCE.md 2026-11-13)
+        static REOPEN: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+        let test = REOPEN.get_or_init(|| std::env::var("MCLA_AUDIO_REOPEN_TEST").ok().and_then(|v| v.trim().parse().ok())).is_some_and(|t| self.reopen_at.elapsed().as_secs_f32() >= t);
+        let stalled = self.handle.is_some() && pulled < el * RATE as f32 * 2.0 * 0.25;
+        self.stalls = if stalled { self.stalls.saturating_add(1) } else { 0 };
         let reason = if self.handle.is_none() {
             Some("no device open".to_string())
-        } else if pulled < el * RATE as f32 * 2.0 * 0.25 {
+        } else if test {
+            Some("the reopen test".to_string())
+        } else if stalled {
             Some(format!("the stream on {:?} stopped ({:.0} of {:.0} samples pulled)", self.device, pulled, el * RATE as f32 * 2.0))
         } else {
             let now = self.default_now.lock().ok().and_then(|n| n.clone());
@@ -1340,12 +1360,22 @@ impl Audio {
         self.drain = None;
         self.pulled.store(0, Ordering::Relaxed);
         self.watch = Instant::now();
+        // (the song started again where it was: its place folded into the start's predelay and offset, the skip on the
+        // song skip thread from 2 s in. It was the new sink's try_seek, which waits for the output's thread to take the
+        // seek: on a device that does not pull (a wireless headset asleep) the game hung there for good - GitHub #48,
+        // docs/PERFORMANCE.md 2026-11-13; and the song's clock was (0, 0) after it)
+        self.reopen_at = Instant::now();
         if let Some((pos, paused)) = music {
-            self.start_track_now();
+            let was = self.song_ms_at(pos);
+            let (pre, off) = self.song_clock;
+            let p = pos.as_millis().min(u32::MAX as u128) as u32;
+            self.start_delay = if p < pre { (pre - p, off) } else { (0, off.saturating_add(p - pre)) };
+            self.start_track_with();
+            self.start_delay = (0, 0);
             self.track_changed = false;
-            if let Some(s) = self.music.as_ref() {
-                let _ = s.try_seek(pos);
-                if paused {
+            log::info!("audio: the song goes on at {} ms (it was at {was} ms)", self.song_ms());
+            if paused {
+                if let Some(s) = self.music.as_ref() {
                     s.pause();
                 }
             }
@@ -1721,12 +1751,7 @@ impl Audio {
     /// start, docs/PERFORMANCE.md) runs on a thread of its own from 2 s in; the sink waits, empty, and gets the same
     /// samples when it is done (`song_arrived`). A decoder seek would be ~1 ms but lands 3 - 300 frames off.
     fn start_track(&mut self) {
-        self.start_track_with(false);
-    }
-
-    /// `start_track` with the skip done here (the output's restore seeks the sink right after).
-    fn start_track_now(&mut self) {
-        self.start_track_with(true);
+        self.start_track_with();
     }
 
     /// The skipped song a thread hands back (`start_track`).
@@ -1744,7 +1769,7 @@ impl Audio {
         }
     }
 
-    fn start_track_with(&mut self, now: bool) {
+    fn start_track_with(&mut self) {
         if self.music_files.is_empty() || self.handle.is_none() {
             return;
         }
@@ -1766,7 +1791,7 @@ impl Audio {
             self.song_clock = (pre, off);
             self.song_len_ms = Self::stream_len_ms(&p);
             let song = move || -> SongSource { Box::new(dec.skip_duration(std::time::Duration::from_millis(off as u64)).delay(std::time::Duration::from_millis(pre as u64))) };
-            if now || off < 2000 {
+            if off < 2000 {
                 s.append(song());
             } else {
                 let (tx, rx) = std::sync::mpsc::channel();

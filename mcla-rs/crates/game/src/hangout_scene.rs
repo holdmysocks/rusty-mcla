@@ -329,6 +329,24 @@ fn stand_car(game: &mut Game, vehicles: &mut Vehicles, gpu: &mut Gpu, world: &mu
 }
 
 impl HangoutScene {
+    /// The hangout `key`'s set-up cars read on worker threads and their dressing's files warmed, once (the player
+    /// within 250 m; also the soak hook's, before it puts the car at the entry - docs/PERFORMANCE.md 2026-11-13).
+    pub fn read_ahead(&mut self, game: &Game, vehicles: &mut Vehicles, world: &World, key: &'static str) {
+        if self.read_ahead == Some(key) {
+            return;
+        }
+        if let Some(k) = setup_of(key) {
+            for (setup, _, _) in k.cars {
+                let car = crate::mc4::setup_vehicle(setup);
+                vehicles.prefetch(world, &world.assets.path("resources/vehicle").join(&car));
+                if let Some(d) = game.mc4_dress_of(&car, setup) {
+                    crate::vehicles::warm_dress(&world.assets.root, &d);
+                }
+            }
+        }
+        self.read_ahead = Some(key);
+    }
+
     /// Once a frame from the hangouts' block of the loop: `near` the nearest hangout's pull-in
     /// scene and its distance, `scene` the cine scene playing and its camera.
     pub fn update(&mut self, game: &mut Game, vehicles: &mut Vehicles, gpu: &mut Gpu, world: &mut World, near: Option<(&str, f32)>, scene: Option<&str>, cam: Option<(Vec3, Vec3, Vec3, f32)>, dt: f32) {
@@ -367,18 +385,10 @@ impl HangoutScene {
         // stop the game - docs/PERFORMANCE.md 2026-10-23 (5))
         if self.tick % 30 == 0 && game.race.is_none() {
             let k = near.filter(|n| n.1 < 250.0).and_then(|n| crate::mc4::hangout_key_of_scene(n.0)).and_then(|k| setup_of(k));
-            let key = k.map(|k| k.key);
-            if key.is_some() && key != self.read_ahead {
-                let k = k.unwrap();
-                for (setup, _, _) in k.cars {
-                    let car = crate::mc4::setup_vehicle(setup);
-                    vehicles.prefetch(world, &world.assets.path("resources/vehicle").join(&car));
-                    if let Some(d) = game.mc4_dress_of(&car, setup) {
-                        crate::vehicles::warm_dress(&world.assets.root, &d);
-                    }
-                }
+            match k {
+                Some(k) => self.read_ahead(game, vehicles, world, k.key),
+                None => self.read_ahead = None,
             }
-            self.read_ahead = key;
         }
         let want = near.filter(|n| n.1 < 170.0).and_then(|n| crate::mc4::hangout_key_of_scene(n.0).filter(|_| game.mc4_hangout_open(n.0) || panel).map(|k| k.to_string()));
         let want = if game.race.is_some() { None } else { want };
@@ -393,6 +403,7 @@ impl HangoutScene {
                     stand_car(game, vehicles, gpu, world, &model, setup, Vec3::from(*p), *h, format!("{TAG}{}", k.key));
                 }
                 log::info!("hangout scene: {} - {} cars of its set-up stand there", k.key, k.cars.len());
+                crate::ticktimes::pt("hangout: cars stood");
             }
             self.cars_of = want.clone();
         }

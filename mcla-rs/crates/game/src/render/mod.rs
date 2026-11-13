@@ -1221,27 +1221,44 @@ impl UniformBatch {
 
 /// DX12's compiled programs kept on disk (GitHub #33: DXC took 14 s for the city's general fragment program and so on,
 /// at every start): the patched wgpu-hal (vendor/wgpu-hal) reads and writes them in the folder `MCLA_DXIL_CACHE`
-/// names, here `<user folder>\shadercache\dx12-<version>`; the folders of other versions are removed. A set
-/// `MCLA_DXIL_CACHE` is kept (empty: no cache, a test hook).
+/// names, here `<user folder>\shadercache\dx12`. A file's name is the hash of everything that goes into its compile
+/// (the HLSL text, entry point, profile, flags, wgpu-hal's and DXC's versions), so it stays right across the game's
+/// updates: a program an update did not change is not compiled again (GitHub #48: a folder per version, the others
+/// removed, made every update's first DX12 start compile all ~170 programs, 1 - 2 s each in DXC). The newest folder
+/// of the old kind (`dx12-<version>`) becomes it once, the rest are removed; over 64 MB (~2.6 MB a version) it is
+/// emptied. A set `MCLA_DXIL_CACHE` is kept (empty: no cache, a test hook).
 fn dxil_cache_dir() {
     if std::env::var_os("MCLA_DXIL_CACHE").is_some() {
         return;
     }
     let root = mcla_config::paths::user_data_dir().join("shadercache");
-    let name = concat!("dx12-", env!("CARGO_PKG_VERSION"));
-    if let Ok(list) = std::fs::read_dir(&root) {
-        for e in list.flatten() {
-            let n = e.file_name();
-            let n = n.to_string_lossy();
-            if n.starts_with("dx12-") && n != name {
-                match std::fs::remove_dir_all(e.path()) {
-                    Ok(()) => log::info!("shader cache: removed the old {n}"),
-                    Err(err) => log::warn!("shader cache: could not remove {}: {err}", e.path().display()),
-                }
+    let dir = root.join("dx12");
+    let mut old: Vec<(std::time::SystemTime, std::path::PathBuf)> = std::fs::read_dir(&root)
+        .map(|l| l.flatten().filter(|e| e.file_name().to_string_lossy().starts_with("dx12-")).map(|e| (e.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH), e.path())).collect())
+        .unwrap_or_default();
+    old.sort();
+    if !dir.is_dir() {
+        if let Some((_, newest)) = old.pop() {
+            match std::fs::rename(&newest, &dir) {
+                Ok(()) => log::info!("shader cache: {} kept as {}", newest.display(), dir.display()),
+                Err(err) => log::warn!("shader cache: could not keep {}: {err}", newest.display()),
             }
         }
     }
-    let dir = root.join(name);
+    for (_, p) in old {
+        match std::fs::remove_dir_all(&p) {
+            Ok(()) => log::info!("shader cache: removed the old {}", p.display()),
+            Err(err) => log::warn!("shader cache: could not remove {}: {err}", p.display()),
+        }
+    }
+    let files: Vec<(std::path::PathBuf, u64)> = std::fs::read_dir(&dir).map(|l| l.flatten().filter_map(|e| Some((e.path(), e.metadata().ok()?.len()))).collect()).unwrap_or_default();
+    let bytes: u64 = files.iter().map(|f| f.1).sum();
+    if bytes > 64 << 20 {
+        log::info!("shader cache: {} files, {} MB - emptied", files.len(), bytes >> 20);
+        for (p, _) in files {
+            let _ = std::fs::remove_file(p);
+        }
+    }
     log::info!("shader cache: {}", dir.display());
     std::env::set_var("MCLA_DXIL_CACHE", dir);
 }

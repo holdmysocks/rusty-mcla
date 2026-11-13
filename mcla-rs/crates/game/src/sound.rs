@@ -1188,6 +1188,7 @@ impl Sound {
             // the songs: a MUSIC_USER stream at 0 dB (3.1), less their headroom (Audio::stream_gain)
             a.music_volume = lib.category("MUSIC_USER").map_or(0.0, |c| mcla_formats::audcfg::db2lin(c.volume));
         }
+        crate::ticktimes::pt("snd: occlusion");
         // ---- sound occlusion (occlusion.rs): the cars' occluders, the manager's updates and the ticks; their outputs go
         // to the voices whose requests name them
         if let (Some(lib), Some(oc)) = (&mut self.lib, &mut self.occl) {
@@ -1197,6 +1198,7 @@ impl Sound {
                 f.occ = self.occ_slots.iter().map(|(k, v)| (*k, *v)).collect();
             }
         }
+        crate::ticktimes::pt("snd: collisions");
         // ---- collisions (collaudio.rs): every car's contacts of the frame, the props' hits
         if let (Some(lib), Some(coll)) = (&mut self.lib, &mut self.coll) {
             coll.begin_frame(dt);
@@ -1364,6 +1366,7 @@ impl Sound {
         self.impact_cool = (self.impact_cool - dt).max(0.0);
         self.backfire_cool = (self.backfire_cool - dt).max(0.0);
 
+        crate::ticktimes::pt("snd: front end");
         // ---- front end ------------------------------------------------------------
         if self.started {
             if self.mode != Some(game.mode) {
@@ -1405,6 +1408,7 @@ impl Sound {
         self.money = game.money;
         self.map_big = game.hud_map_big;
 
+        crate::ticktimes::pt("snd: race flow");
         // ---- race flow ------------------------------------------------------------
         if let Some(r) = game.race.as_ref() {
             if self.lib.is_some() {
@@ -1470,6 +1474,7 @@ impl Sound {
         }
         self.end_race = game.end_seq_n;
 
+        crate::ticktimes::pt("snd: player car");
         // ---- the player's car -----------------------------------------------------
         let Some(p) = vehicles.player() else {
             if let (Some(lib), Some((_, e))) = (&mut self.lib, &mut self.engine) {
@@ -1796,6 +1801,7 @@ impl Sound {
         self.damage = st.damage;
         self.throttle = throttle;
 
+        crate::ticktimes::pt("snd: props");
         // ---- props ----------------------------------------------------------------
         for h in prop_hits.iter().filter(|_| self.coll.is_none()) {
             let vol = (0.35 + h.speed / 40.0).min(1.0);
@@ -1819,6 +1825,7 @@ impl Sound {
             }
         }
 
+        crate::ticktimes::pt("snd: other cars");
         // ---- other vehicles (the port's own sounds where the sound objects are missing) -------------
         if driving && !fleet_on {
             let mut near: Vec<(f32, usize)> = vehicles.cars.iter().enumerate().filter(|(_, c)| !c.is_player && c.parked.is_none() && c.placed).map(|(i, c)| (c.state.pos.distance(cam_pos), i)).filter(|(d, _)| *d < 90.0).collect();
@@ -1863,6 +1870,7 @@ impl Sound {
             }
         }
 
+        crate::ticktimes::pt("snd: police");
         // ---- police ---------------------------------------------------------------
         // (step 19d: the payback client's friends have no siren and no radio)
         if self.heat != Some(police.heat) && !police.goons && !fleet_on {
@@ -1890,6 +1898,7 @@ impl Sound {
             }
         }
 
+        crate::ticktimes::pt("snd: abilities");
         // ---- abilities ------------------------------------------------------------
         let on = ability.active > 0.0;
         if let Some(lib) = &mut self.lib {
@@ -1941,11 +1950,13 @@ impl Sound {
         }
         self.ability_ready = ready;
 
+        crate::ticktimes::pt("snd: weather");
         // ---- weather --------------------------------------------------------------
         if rain > 0.03 && !in_menu && self.lib.is_none() {
             a.set_loop(7, &format!("{AUX}/amb_bed_rain_int_fin"), (rain * 0.45, rain * 0.45), 1.0);
         }
 
+        crate::ticktimes::pt("snd: ambience");
         // ---- district ambience -----------------------------------------------------
         if self.beds.is_none() {
             self.beds = Some(load_beds(a.root()));
@@ -2061,6 +2072,7 @@ impl Sound {
 
         a.update_music((driving || game.mode == Mode::Paused) && !game.radio_held);
         self.finish(a, dt);
+        crate::ticktimes::pt("snd: end");
     }
 
     /// A frontend sound by name (F-42664: 0 dB, no position; the tree's speaker masks place it); the port's own

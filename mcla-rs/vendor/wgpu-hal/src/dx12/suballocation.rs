@@ -63,7 +63,12 @@ pub(crate) fn create_buffer_resource(
     }
 
     // MCLA patch (GitHub #48): a buffer of 16 MB or more gets a committed resource of its own (`commit_own`)
-    if commit_own(&device.raw, &raw_desc) {
+    // (MCLA_DX12_COMMIT_MESH_KB=<n>: vertex / index buffers - no CPU mapping - from n KB up committed too: a trial of the
+    // sectors' and cars' streaming meshes)
+    static MESH: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    let mesh = *MESH.get_or_init(|| std::env::var("MCLA_DX12_COMMIT_MESH_KB").ok().and_then(|v| v.trim().parse::<u64>().ok()).map(|kb| kb << 10));
+    let is_mesh = desc.usage.intersects(crate::BufferUses::VERTEX | crate::BufferUses::INDEX) && !is_cpu_read && !is_cpu_write;
+    if commit_own(&device.raw, &raw_desc) || (is_mesh && mesh.is_some_and(|m| raw_desc.Width >= m)) {
         return create_committed_buffer_resource(device, desc, raw_desc).map(|resource| (resource, None));
     }
 

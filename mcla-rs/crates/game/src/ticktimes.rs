@@ -33,6 +33,23 @@ struct T {
 
 thread_local!(static T_: RefCell<T> = RefCell::new(T { at: None, sum: [0.0; 11], ticks: 0, one: [0.0; 11] }));
 
+// (named points of this tick, ms from its start - only with MCLA_SLOWTICK, logged with a slow tick)
+thread_local!(static PTS: RefCell<(Option<Instant>, Vec<(&'static str, f64)>)> = const { RefCell::new((None, Vec::new())) });
+
+/// A named point in this tick (MCLA_SLOWTICK: a slow tick's line lists them with their time from the tick's start).
+pub fn pt(name: &'static str) {
+    if slowtick().is_none() {
+        return;
+    }
+    let now = Instant::now();
+    PTS.with(|p| {
+        let mut p = p.borrow_mut();
+        if let Some(t0) = p.0 {
+            p.1.push((name, (now - t0).as_secs_f64() * 1000.0));
+        }
+    });
+}
+
 // (MCLA_SLOWTICK=<ms>: a tick longer than that is logged with its sections - docs/PERFORMANCE.md)
 fn slowtick() -> Option<f64> {
     static V: std::sync::OnceLock<Option<f64>> = std::sync::OnceLock::new();
@@ -43,6 +60,13 @@ fn slowtick() -> Option<f64> {
 pub fn start() {
     let now = Instant::now();
     T_.with(|t| t.borrow_mut().at = Some((S::Other, now)));
+    if slowtick().is_some() {
+        PTS.with(|p| {
+            let mut p = p.borrow_mut();
+            p.0 = Some(now);
+            p.1.clear();
+        });
+    }
 }
 
 /// From here on the tick's time goes to `s`.
@@ -80,7 +104,8 @@ pub fn end(level_objs: usize) {
             let total: f64 = t.one.iter().sum();
             if total > lim {
                 let list: Vec<String> = t.one.iter().enumerate().filter(|(_, ms)| **ms >= 0.5).map(|(i, ms)| format!("{} {:.1}", NAMES[i], ms)).collect();
-                log::info!("slowtick: {:.1} ms: {}", total, list.join(", "));
+                let pts = PTS.with(|p| p.borrow().1.iter().map(|(n, ms)| format!("{n} {ms:.1}")).collect::<Vec<_>>().join(", "));
+                log::info!("slowtick: {:.1} ms: {}{}", total, list.join(", "), if pts.is_empty() { String::new() } else { format!(" | at {pts}") });
             }
         }
         t.one = [0.0; 11];
