@@ -2,6 +2,7 @@
 
 
 mod ability;
+mod cpuset;
 mod boot;
 mod bootload;
 mod carpic;
@@ -17782,6 +17783,8 @@ fn main() -> std::process::ExitCode {
 fn run_game() -> Result<()> {
     // (logging, the panic hook and the exit code: `hooks::run`)
     let opt = parse_args();
+    // (the worker pool and thread placement on a hybrid CPU, before anything uses the pool - D59.pcores)
+    cpuset::init();
     game::savedir::init(opt.save_dir.as_deref());
     // (the mods first: the sound library's thread merges their sound objects while the game loads - modfs.rs)
     crate::modcars::init(std::path::Path::new(&opt.data_dir));

@@ -42,4 +42,5 @@ rodio = { version = "0.20", default-features = false, features = ["symphonia-all
 
 # (the message box when no graphics device can be made - hooks::gpu_init_failed, GitHub #16)
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_UI_WindowsAndMessaging"] }
+# (and the core classes / thread placement on hybrid CPUs - cpuset.rs)
+windows-sys = { version = "0.59", features = ["Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_System_SystemInformation"] }
