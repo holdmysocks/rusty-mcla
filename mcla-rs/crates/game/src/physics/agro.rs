@@ -265,6 +265,11 @@ pub struct Hook {
 impl Hook {
     /// A contact for the law: true when `key` is not in the table, and it goes in (8 slots, the oldest out). (That the
     /// 3 s timer retires an entry is inferred.)
+    /// The table has `key` (F-83713's lookup; the 3 s a contact stays are the port's retiring)
+    pub fn law_known(&self, key: u64) -> bool {
+        self.law_tab.iter().any(|e| e.0 == key && e.1 > self.now)
+    }
+
     pub fn law_new_contact(&mut self, key: u64, value: f32) -> bool {
         let now = self.now;
         self.law_tab.retain(|e| e.1 > now);

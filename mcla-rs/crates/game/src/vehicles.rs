@@ -1282,15 +1282,7 @@ pub struct Dress {
 /// this when the partner stands (< 0.2235 m/s), the partner when this stands, else the one whose velocity points at the other the
 /// more (velocity . offset / speed).
 fn first_is_aggressor(va: Vec3, vb: Vec3, d: Vec3) -> bool {
-    const STANDING: f32 = 0.2235;
-    let (sa, sb) = (va.length(), vb.length());
-    if sb < STANDING {
-        true
-    } else if sa <= STANDING {
-        false
-    } else {
-        va.dot(d) / sa > vb.dot(-d) / sb
-    }
+    crate::physics::law_contact::aggressor(va.length(), vb.length(), Vec3::ZERO, d, va, vb).unwrap_or(true)
 }
 
 impl CarInstance {
@@ -5892,28 +5884,30 @@ if keep || c.state.pos.distance(center) < 450.0 {
     }
 
     fn notify_contact(&mut self, a: usize, b: usize) {
-        const MOVING: f32 = 4.47;
+        use crate::physics::law_contact::{aggressor, car_bit};
+        // (F-83713, the vehicle case: either speed over 4.47 m/s, the aggressor by `aggressor`; only when the walker's
+        // table (+492) has not got the partner - then slot 40 of both (F-33876 -> F-60290 for a racer, F-30284 for an
+        // opponent) puts each into the other's table with the aggressor's speed. The port keeps the player's table only:
+        // a pair's two tables are filled together, so the player's answers for both walkers)
         let (sa, sb) = (self.cars[a].state.vel.length(), self.cars[b].state.vel.length());
-        if !(sa > MOVING || sb > MOVING) {
+        let (ca, cb) = (&self.cars[a].state, &self.cars[b].state);
+        let Some(a_aggressor) = aggressor(sa, sb, ca.pos, cb.pos, ca.vel, cb.vel) else { return };
+        let (aggr, victim) = if a_aggressor { (a, b) } else { (b, a) };
+        let speed = if a_aggressor { sa } else { sb };
+        let player = if self.cars[a].is_player { a } else if self.cars[b].is_player { b } else { return };
+        let partner = if player == a { b } else { a };
+        let key = 2u64 << 32 | self.cars[partner].uid as u64;
+        let victim_cop = self.cars[victim].cop;
+        let Some(vs) = self.cars[player].state.veh.as_deref_mut() else { return };
+        if !vs.agro.law_new_contact(key, speed) {
             return;
         }
-        let a_aggressor = first_is_aggressor(self.cars[a].state.vel, self.cars[b].state.vel, self.cars[b].state.pos - self.cars[a].state.pos);
-        for (victim, aggressor) in [(b, a), (a, b)] {
-            if a_aggressor == (victim == b) && self.cars[aggressor].is_player {
-                if let Some(ai) = self.cars[victim].ai.as_mut().filter(|ai| ai.brain.is_some()) {
-                    ai.hit_pending = true;
-                }
-                // (F-83713: the aggressor's law word gets 2 when the victim is a police car; a racer sets a bit no law
-                // code reads. Traffic is class 6: `agro_contacts`)
-                if self.cars[victim].cop {
-                    let key = 2u64 << 32 | self.cars[victim].uid as u64;
-                    let v = if aggressor == a { sa } else { sb };
-                    if let Some(vs) = self.cars[aggressor].state.veh.as_deref_mut() {
-                        if vs.agro.law_new_contact(key, v) {
-                            vs.agro.law_word |= 2;
-                        }
-                    }
-                }
+        if aggr == player {
+            // (the aggressor's law word: 2 against a police car (+465), 8 against any other car not the human's)
+            vs.agro.law_word |= car_bit(victim_cop, false);
+            // (F-30284: an opponent's brain starts its collision timer when the player ran into it)
+            if let Some(ai) = self.cars[victim].ai.as_mut().filter(|ai| ai.brain.is_some()) {
+                ai.hit_pending = true;
             }
         }
     }

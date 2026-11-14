@@ -1983,10 +1983,11 @@ impl LooseState {
                     continue;
                 };
                 let obj = &self.objs[o];
-                // (F-83713, the law's word: ambient traffic on a new contact above 6.705 m/s of the car's own, a prop on any
-                // new contact, broken or not)
+                // (F-83713, the law's word: ambient traffic on a new contact above 6.705 m/s of the car's own - a slower
+                // touch is not put in the table - a prop on any new contact, broken or not)
                 if let Some(vh) = obj.veh.filter(|v| v.class == 6) {
-                    if hook.law_new_contact(1 << 32 | vh.index as u64, car.speed) && car.speed > 6.705 {
+                    let key = 1 << 32 | vh.index as u64;
+                    if super::law_contact::ambient_counts(!hook.law_known(key), car.speed) && hook.law_new_contact(key, car.speed) {
                         hook.law_word |= 8;
                     }
                 } else if obj.veh.is_none() && obj.inst.is_some() && hook.law_new_contact(o as u64, car.speed) {

@@ -21,6 +21,7 @@ pub mod fluid;
 pub mod gjk;
 pub mod contact_call;
 pub mod headon;
+pub mod law_contact;
 pub mod wipeout;
 pub mod hull;
 pub mod loose;
