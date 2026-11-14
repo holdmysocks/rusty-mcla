@@ -289,7 +289,7 @@ fn demand(c: &CarInstance, br: &crate::brain::Brain, kappa: f32, a_cmd: f32) -> 
     let vs = st.veh.as_ref();
     let (drift, nitro, sling, grav) = match vt.as_deref() {
         Some(t) => (
-            if t.sync_torque > 0.0 { t.t.gyro.drift_torque / t.sync_torque } else { 0.0 },
+            crate::brain::drift_ratio(t.t.gyro.drift_torque, t.sync_torque),
             [t.t.nitro.boost_exp, t.t.nitro.boost_amount, t.t.nitro.boost_time],
             [t.t.ss_turbo.boost_exp, t.t.ss_turbo.boost_amount, t.t.ss_turbo.use_time],
             // (F-95280: -9.8 x the tune's BoundGravity; `VehTune::gravity` is already 9.8 x it)

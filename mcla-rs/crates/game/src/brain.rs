@@ -1257,6 +1257,18 @@ pub fn tick(v: &mut crate::vehicles::Vehicles, i: usize, to_go: Option<f32>, dt:
     input
 }
 
+/// F-40927, the aiv's rpm-ratio input (F-28541's f3): the gyro tune's DriftTorque (+180) over the engine's torque at its
+/// best power (engine +20, the port's `sync_torque`), one single division; 0 without a car (the port: without a tune). The
+/// guard for a torque of 0 is the port's (a tune before its curve is made); every car's is above 0.
+/// (tools/racer_getters_reference.py, docs/reference/ai/verify_racer_update.md)
+pub fn drift_ratio(drift_torque: f32, sync_torque: f32) -> f32 {
+    if sync_torque > 0.0 {
+        drift_torque / sync_torque
+    } else {
+        0.0
+    }
+}
+
 /// What a brain update reads of its car and of the cars and props round it: the car (`BrainCar`) and its obstacles.
 fn frame_inputs(v: &crate::vehicles::Vehicles, i: usize, brain: &Brain, to_go: Option<f32>) -> (BrainCar, Vec<crate::aiv::Obstacle>) {
     let c = &v.cars[i];
@@ -1266,7 +1278,7 @@ fn frame_inputs(v: &crate::vehicles::Vehicles, i: usize, brain: &Brain, to_go: O
     let (engine, drift_ratio, nitro_tune, sling_tune) = match vt.as_deref() {
         Some(t) => (
             RevEngine::of(t),
-            if t.sync_torque > 0.0 { t.t.gyro.drift_torque / t.sync_torque } else { 0.0 },
+            drift_ratio(t.t.gyro.drift_torque, t.sync_torque),
             [t.t.nitro.boost_exp, t.t.nitro.boost_amount, t.t.nitro.boost_time],
             [t.t.ss_turbo.boost_exp, t.t.ss_turbo.boost_amount, t.t.ss_turbo.use_time],
         ),
@@ -1846,6 +1858,80 @@ mod tests {
             }
         }
         assert_eq!((n, bad), (6000, 0));
+    }
+
+    /// mcAiRacer's update F-76010: the brain update (vfunc 44, which writes mcOpponentInput's targets +152 .. +164), then
+    /// F-73409 - for a loaded racer (+656 == 3) mcOpponentInput's vfunc 2, the slew F-94408 - once a game frame. On the live R8
+    /// race (`work/ai-record/fixture/r7_r8_inp.bin`, the input object after each update): the held pedals of snapshot k - 1
+    /// slewed once with dt 1/30 towards snapshot k's targets are snapshot k's held pedals, bit for bit. Two snapshots taken
+    /// less than half a frame apart were read between the brain's write and the slew: their held pedals are the previous
+    /// snapshot's. Returns at once without the fixture (docs/reference/ai/verify_racer_update.md).
+    #[test]
+    fn racer_update_slews_once_a_frame_as_recorded() {
+        let Ok(fix) = std::fs::read("D:/MCLA/work/ai-record/fixture/r7_r8_inp.bin") else { return };
+        let n = u32::from_le_bytes(fix[8..12].try_into().unwrap()) as usize;
+        let rec = 8 + 31232 + 1024 + 192 + 576;
+        let snap = |k: usize| {
+            let o = 12 + k * rec;
+            let t = f64::from_le_bytes(fix[o..o + 8].try_into().unwrap());
+            let inp = &fix[o + 8 + 31232 + 1024..o + 8 + 31232 + 1024 + 192];
+            let f = |a: usize| f32::from_be_bytes(inp[a..a + 4].try_into().unwrap());
+            let held = Pedals { throttle: f(12), brake: f(16), handbrake: f(20), steer: f(24) };
+            let target = Pedals { steer: f(152), throttle: f(156), brake: f(160), handbrake: f(164) };
+            (t, held, target, inp[169] != 0)
+        };
+        let bits = |p: Pedals| [p.steer, p.throttle, p.brake, p.handbrake].map(f32::to_bits);
+        let (mut frames, mut equal, mut mid, mut mid_unslewed, mut two, mut two_equal) = (0, 0, 0, 0, 0, 0);
+        for k in 1..n {
+            let ((tp, prev, ..), (t, held, target, coll)) = (snap(k - 1), snap(k));
+            if t - tp > 2.0 / 30.0 {
+                continue;
+            }
+            if t - tp < 0.5 / 30.0 {
+                mid += 1;
+                mid_unslewed += (bits(held) == bits(prev)) as i32;
+                continue;
+            }
+            // (snapshot times jitter: a gap of 1.6 frames or more held two updates; both moved towards the last target here)
+            let updates = if t - tp < 1.6 / 30.0 { 1 } else { 2 };
+            let mut inp = OpponentInput { cur: prev };
+            let mut got = prev;
+            for _ in 0..updates {
+                got = inp.update(target, coll, FRAME);
+            }
+            if updates == 1 {
+                frames += 1;
+                equal += (bits(got) == bits(held)) as i32;
+            } else {
+                two += 1;
+                two_equal += (bits(got) == bits(held)) as i32;
+            }
+        }
+        println!("{equal} of {frames} one-frame gaps equal, {two_equal} of {two} two-frame gaps; {mid_unslewed} of {mid} mid-update reads unslewed");
+        assert_eq!((equal, two_equal, mid_unslewed), (frames, two, mid));
+        assert_eq!((frames, two, mid), (446, 2, 8));
+    }
+
+    /// mcRacer::GetMatrix F-35658 and the drift ratio F-40927 run offline (tools/racer_getters_reference.py): GetMatrix gives the
+    /// car instance's live matrix ([+28] +16) on the update thread - the one the port's car state is - the frame-end copy +272
+    /// only on the render thread (byte [r13] +72), the racer's +288 without a car; the ratio is `drift_ratio`, bit for bit.
+    #[test]
+    fn racer_getters_match_the_original() {
+        let u = |s: &str| u32::from_str_radix(&s.replace('_', ""), 16).unwrap();
+        let (mut n, mut bad) = (0, 0);
+        for line in include_str!("testdata/racer_getters_ref.txt").lines() {
+            let (lhs, rhs) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = lhs.split_whitespace().collect();
+            if w[0] == "m" {
+                let want = match (w[1], w[2]) { ("1", "0") => 16, ("1", _) => 272, _ => 288 };
+                assert_eq!(rhs.parse::<u32>().unwrap(), want, "{line}");
+                continue;
+            }
+            let got = if w[1] == "1" { drift_ratio(f32::from_bits(u(w[2])), f32::from_bits(u(w[3]))) } else { 0.0 };
+            n += 1;
+            bad += (got.to_bits() != u(rhs)) as i32;
+        }
+        assert_eq!((n, bad), (4000, 0));
     }
     use super::*;
 
