@@ -5,8 +5,9 @@
 #
 # 1. tools/perfgate.ps1, the candidate against the last release, all cores: roam, night, race, garage, hangout.
 # 2. The same on 4 cores (affinity 0x55): roam, race.
-# 3. A soak of the candidate: free roam (--drive --auto --traffic 110) for -SoakMinutes, then tools/soak.py (memory growth,
-#    slow ticks, frame rate drift, panics).
+# 3. A soak of the candidate and of the last release side by side (the machine's two game slots): free roam (--drive
+#    --auto --traffic 110) for -SoakMinutes, then tools/soak.py on the candidate with the release's run as --ref (memory
+#    growth at most 20 % over the release's and private memory under 7 GB, slow ticks, frame rate drift, panics).
 # PASS when neither perf gate prints REGRESSION, no run of theirs was left out (busy machine / GPU shared: run again),
 # and the soak passes. Needs a quiet machine (about 85 min with the soak); the gates wait for it run by run.
 param(
@@ -34,8 +35,13 @@ Gate "all cores, last release (b1) vs candidate (b2)" @('-Scen', 'roam,night,rac
 Gate "4 cores" @('-Scen', 'roam,race', '-Affinity', '85', '-Out', "$Out\c4")
 if (-not $NoSoak) {
   "=== soak, $SoakMinutes min ($(Get-Date -Format HH:mm))"
-  & powershell -NoProfile -ExecutionPolicy Bypass -File $gate -Exe $Rc -Scen roam -Seconds ($SoakMinutes * 60) -Out "$Out\soak" 2>&1 | Out-Null
-  & python -I "$PSScriptRoot\soak.py" "$Out\soak\runs" "b1-roam-vulkan-r1" --minutes $SoakMinutes
+  $jobs = foreach ($x in @(@($Rc, 'rc'), @($Old, 'old'))) {
+    $j = Start-Job -ArgumentList $gate, $x[0], ($SoakMinutes * 60), "$Out\soak_$($x[1])" -ScriptBlock {
+      param($g, $e, $s, $o) & powershell -NoProfile -ExecutionPolicy Bypass -File $g -Exe $e -Scen roam -Seconds $s -NoQuiet -Out $o 2>&1 | Out-Null }
+    Start-Sleep 20; $j
+  }
+  $jobs | Wait-Job | Remove-Job
+  & python -I "$PSScriptRoot\soak.py" "$Out\soak_rc\runs" "b1-roam-vulkan-r1" --minutes $SoakMinutes --ref "$Out\soak_old\runs" "b1-roam-vulkan-r1"
   if ($LASTEXITCODE) { $fails += "soak" }
 }
 "=== $(Get-Date -Format HH:mm)"

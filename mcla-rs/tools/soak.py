@@ -1,9 +1,13 @@
-# soak.py <runs dir> <tag> [--minutes 30]: PASS / FAIL of a long free-roam run made by tools/perfgate.ps1
+# soak.py <runs dir> <tag> [--minutes 30] [--ref <runs dir> <tag>]: PASS / FAIL of a long free-roam run made by tools/perfgate.ps1
 # (docs/PERFORMANCE.md "Release gate"). It reads the run's <tag>.ft.csv (MCLA_FRAMETIMES), <tag>.res.csv (samples every 2 s)
 # and <tag>.err (the log), and checks:
 #   - the game ran to the end (samples up to the last minute) and logged no panic / ERROR line;
 #   - private memory and dedicated VRAM: the rise from minute 5 to the end (the mean of the first and the last two minutes)
 #     at most PRIV_MB / VRAM_MB, and the slope over minutes 5 - end at most SLOPE_MB a minute (a leak grows steadily);
+#     with --ref (the last release's soak, run beside it) instead of those: the level at the end at most the reference's
+#     end plus PRIV_MB / VRAM_MB (v0.21.0 already grows ~40 MB / min in free roam, and a build that starts lower may
+#     grow faster to the same level: docs/PERFORMANCE.md "Release gate"); private memory under PRIV_CEIL_MB at the end
+#     either way;
 #   - slow ticks (`slowtick:` lines, MCLA_SLOWTICK=30) after the first minute: at most SLOW_N, none over SLOW_MAX ms;
 #   - frame rate: the last five minutes within FPS_DROP of minutes 5 - 10 (a session that slows down as it goes on).
 import os, re, statistics as st, sys
@@ -11,6 +15,7 @@ import os, re, statistics as st, sys
 PRIV_MB, VRAM_MB, SLOPE_MB = 300.0, 200.0, 6.0
 SLOW_N, SLOW_MAX = 10, 150.0
 FPS_DROP = 0.10
+PRIV_CEIL_MB = 7000.0
 
 
 def slope(xs, ys):
@@ -19,8 +24,27 @@ def slope(xs, ys):
     return sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / d if d else 0.0
 
 
+def growth(d, tag):
+    """{col: (rise from minutes 5-7 to the last two minutes, slope over minutes 5 - end, MB / min)} of a run, and its last private sample"""
+    res = [l.strip().split(',') for l in open(os.path.join(d, tag + '.res.csv'))][1:]
+    res = [[float(x) for x in r] for r in res if len(r) >= 7]
+    body = [r for r in res if r[0] >= 300]
+    if len(body) <= 60:
+        return None, res
+    o = {}
+    for col in (4, 3):
+        a = st.mean(r[col] for r in body if r[0] < 420)
+        b = st.mean(r[col] for r in body if r[0] >= body[-1][0] - 120)
+        o[col] = (a, b, slope([r[0] / 60 for r in body], [r[col] for r in body]))
+    return o, res
+
+
 def main():
     d, tag = sys.argv[1], sys.argv[2]
+    ref = None
+    if '--ref' in sys.argv:
+        i = sys.argv.index('--ref')
+        ref, _ = growth(sys.argv[i + 1], sys.argv[i + 2])
     minutes = float(sys.argv[sys.argv.index('--minutes') + 1]) if '--minutes' in sys.argv else 30.0
     end = minutes * 60
     res = [l.strip().split(',') for l in open(os.path.join(d, tag + '.res.csv'))][1:]
@@ -38,19 +62,27 @@ def main():
     if bad:
         fails.append(f'{len(bad)} panic / ERROR lines, first: {bad[0][:160]}')
 
-    body = [r for r in res if r[0] >= 300]
-    if len(body) > 60:
+    g, _ = growth(d, tag)
+    if g:
         for col, name, lim in ((4, 'private', PRIV_MB), (3, 'VRAM', VRAM_MB)):
-            a = st.mean(r[col] for r in body if r[0] < 420)
-            b = st.mean(r[col] for r in body if r[0] >= body[-1][0] - 120)
-            k = slope([r[0] / 60 for r in body], [r[col] for r in body])
+            a, b, k = g[col]
             rows.append(f'{name}: {a:.0f} MB at 5-7 min -> {b:.0f} MB at the end ({b - a:+.0f} MB), slope {k:+.1f} MB / min')
-            if b - a > lim:
-                fails.append(f'{name} rose {b - a:.0f} MB (limit {lim:.0f})')
-            if k > SLOPE_MB:
-                fails.append(f'{name} grows {k:.1f} MB / min (limit {SLOPE_MB})')
+            if ref:
+                ra, rb, rk = ref[col]
+                rows.append(f'  the reference: {ra:.0f} -> {rb:.0f} MB ({rb - ra:+.0f} MB), slope {rk:+.1f} MB / min')
+                if b > rb + lim:
+                    fails.append(f'{name} {b:.0f} MB at the end, the reference {rb:.0f} MB (limit +{lim:.0f})')
+            else:
+                if b - a > lim:
+                    fails.append(f'{name} rose {b - a:.0f} MB (limit {lim:.0f})')
+                if k > SLOPE_MB:
+                    fails.append(f'{name} grows {k:.1f} MB / min (limit {SLOPE_MB})')
+        if g[4][1] > PRIV_CEIL_MB:
+            fails.append(f'private {g[4][1]:.0f} MB at the end (ceiling {PRIV_CEIL_MB:.0f})')
     else:
         fails.append('too few samples after minute 5')
+    if '--ref' in sys.argv and not ref:
+        fails.append('the reference run has too few samples')
 
     slow = []
     for l in err:
