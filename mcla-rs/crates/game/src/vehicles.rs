@@ -1432,6 +1432,9 @@ pub struct Vehicles {
     /// a race is on as the ambient manager's byte +0x64251 has it (F-86550): the current race (F-27863), not a payback
     /// (race type 0 - 4, race +3096), not over (+3773, `$IsRaceFinish`) - set by the game each frame
     pub race_event: bool,
+    /// a replay plays (set by the game each frame): every recorded car's place is the recording's (`replay::Recording::apply`),
+    /// a car it has not on the road then stands out of sight, so the racers' safe place does not set them down
+    pub replaying: bool,
     /// the player's standing time (mcPlayer +872, F-16834: under 2.2352 m/s it gains the frame's time, else 0), read by
     /// the traffic's blocking test F-70116 against +876 (`traffic::IDLE_BLOCKS`)
     pub player_idle: f32,
@@ -5476,6 +5479,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
             jobs.push((idx, c.input, StepPost::Trace));
         }
         self.step_cars(&jobs, world, step_dt, shared.is_some());
+        let replaying = self.replaying;
         for &(idx, _, post) in &jobs {
             let c = &mut self.cars[idx];
             // (the crash flags of a car the game drives itself, as mcCar::Update keeps them for every car; the player's
@@ -5498,7 +5502,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 // (the racer's safe place, F-12529: every racer whose car is loaded runs it from the racer update
                 // F-36768 - mcOpponent, mcAiRacer and mcPolice have it at vtable +112 as mcPlayer; traffic and parked
                 // cars are no racers)
-                if c.racer || c.pinned || c.cop || c.goon || !c.roam_key.is_empty() {
+                if !replaying && (c.racer || c.pinned || c.cop || c.goon || !c.roam_key.is_empty()) {
                     let runs = c.crash.bits != 0 && c.crash.timer > 0.0;
                     let vt = c.tuned.as_deref().unwrap_or(&c.model.params).veh.clone();
                     if crate::physics::vehsim::safe_place(&mut c.state, vt.as_deref(), runs) {

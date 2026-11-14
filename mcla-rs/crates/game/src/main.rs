@@ -6528,6 +6528,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.soak_drive -= 1;
                 player_input = physics::car::CarInput { throttle: 0.5, ..Default::default() };
             }
+            self.vehicles.replaying = self.game.replay.is_some();
             crate::ticktimes::mark(crate::ticktimes::S::Vehicles);
             self.vehicles.update(&world, player_input, sim_dt);
             crate::ticktimes::mark(crate::ticktimes::S::Other);
