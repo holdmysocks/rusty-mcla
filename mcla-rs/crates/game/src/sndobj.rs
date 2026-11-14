@@ -2494,13 +2494,7 @@ impl SoundLib {
         // (heard at the frame's place: frame_sample)
         let heard = inst.req.pos.map(|p| inst.frame_pos.unwrap_or(p));
         let positional = heard.is_some() && if v.ctx.pan == -1 && v.ctx.mask == 0 { v.ctx.positional != 0 } else { v.ctx.positional == 1 };
-        let rolloff_at = |d: f32, s: f32| match audcfg::scaled_distance(d, s) {
-            Some(dd) => match self.curves.get(&v.ctx.curve) {
-                Some(c) => c.eval(dd),
-                None => audcfg::default_rolloff_db(dd),
-            },
-            None => 0.0,
-        };
+        let rolloff_at = |d: f32, s: f32| audcfg::rolloff_db(s, d, self.curves.get(&v.ctx.curve));
         // the reverb send (F-77682 / F-24640, BUS_GRAPH_RULE.md 2.4): positional voices only, w = amount x
         // dB2lin(rolloff at the reverb distance scale - rolloff), then x REVERB_SMALL / MEDIUM / LARGE (room size) x level
         let mut w = 0.0;

@@ -420,28 +420,40 @@ pub fn parse_sound(o: &[u8]) -> Sound {
 /// DEFAULT_ROLLOFF's polynomial constants (0x82006BBC..0x82006BEC, float32).
 const ROLL: [f32; 11] = [63.95, 0.027_052_762, -17.042_1, 62.4395, 4.3724, -2.5018, 0.715, 0.9942, -0.2507, -0.5388, 0.2201];
 
-/// The built-in DEFAULT_ROLLOFF (F-98578, curve type 13): 0 dB below 4.99, -100 dB from 128.
+/// The built-in DEFAULT_ROLLOFF (F-98578, curve type 13 - F-33490's case 13 and F-98578 compute it the same way; type 14
+/// too): 0 dB below 4.99, -100 dB from 128 (a NaN distance gives 0). t = (d - 63.95) x 0.02705, then
+/// fmsubs(t, c2, c3) and each power of t (one fmuls after the other) added by fmadds.
 pub fn default_rolloff_db(d: f32) -> f32 {
-    if d - 128.0 >= 0.0 {
-        return -100.0;
-    }
-    if d - 4.99 < 0.0 {
-        return 0.0;
-    }
-    let x = (d - ROLL[0]) * ROLL[1];
     let c = ROLL;
-    x * c[2] - c[3] + c[4] * x.powi(2) + c[5] * x.powi(3) + c[6] * x.powi(4) + c[7] * x.powi(5) + c[8] * x.powi(6) + c[9] * x.powi(7) + c[10] * x.powi(8)
+    let t = (d - c[0]) * c[1];
+    let mut acc = t.mul_add(c[2], -c[3]);
+    let mut p = t * t;
+    for k in &c[4..] {
+        acc = p.mul_add(*k, acc);
+        p *= t;
+    }
+    fsel(d - 128.0, -100.0, fsel(d - 4.99, acc, 0.0))
 }
 
-/// Distance fed to a rolloff curve: `s` = category rolloff scale * the sound's curve scale. `None` when s = 0
-/// (no attenuation).
+/// Distance fed to a rolloff curve (F-98578): `s` = category rolloff scale * the sound's curve scale. `None` when s = 0
+/// (no attenuation). With s >= 1 the part beyond 5 m is scaled, fmadds(d - 5, 1 / s, 5); below 1 the whole, (1 / s) x d.
 pub fn scaled_distance(d: f32, s: f32) -> Option<f32> {
     if s == 0.0 {
-        None
-    } else if s - 1.0 >= 0.0 {
-        Some(if d - 5.0 < 0.0 { d } else { (d - 5.0) / s + 5.0 })
-    } else {
-        Some(d / s)
+        return None;
+    }
+    let inv = 1.0 / s;
+    Some(fsel(s - 1.0, fsel(d - 5.0, (d - 5.0).mul_add(inv, 5.0), d), inv * d))
+}
+
+/// The rolloff in dB (F-98578): the distance scaled as [`scaled_distance`], then the sound's curve (F-33490) or the
+/// built-in DEFAULT_ROLLOFF; 0 when the scale is 0.
+pub fn rolloff_db(s: f32, d: f32, curve: Option<&Curve>) -> f32 {
+    match scaled_distance(d, s) {
+        None => 0.0,
+        Some(dd) => match curve {
+            Some(c) => c.eval(dd),
+            None => default_rolloff_db(dd),
+        },
     }
 }
 
@@ -463,6 +475,8 @@ enum CurveParams {
     Table(Vec<f32>),
     Pow { flip_in: bool, flip_out: bool, exp: f32 },
     Gauss { k: f32, norm: bool },
+    /// types 11 and 12 (F-33490's inline cases; Init F-67749: k at +21, normalised when flags & 0xC): 1 / (1 + k x), squared for 12
+    Inv { k: f32, norm: bool },
     Clamp { db: f32, norm: bool },
     None,
 }
@@ -484,6 +498,35 @@ fn vpow_e(y: f32) -> f32 {
     }
     let ni = if n >= -2147483648.0 && n < 2147483648.0 { n as i32 } else { i32::MIN };
     ftz(p * ftz(f32::from_bits((ni.wrapping_add(127) as u32).wrapping_shl(23))))
+}
+
+/// The vector powf F-33229 (lane 0) as the recomp computes it with the SDK's flush mode: 2^(log2|x| y) by the vexpte
+/// polynomial of [`vpow_e`], the sign of x when y is an odd integer; x = 0 gives a signed 0 (y >= 0) or NaN (y < 0),
+/// y = 0 gives 1, a negative x with a non-integer y NaN. (log2 through f64 and one rounding, as [`lin2db`].)
+fn vpow(x: f32, y: f32) -> f32 {
+    vpow_log(x, y, (f32::from_bits(x.to_bits() & 0x7FFF_FFFF) as f64).log2() as f32)
+}
+
+/// [`vpow`] with log2|x| given (`l`).
+fn vpow_log(x: f32, y: f32, l: f32) -> f32 {
+    let ftz = |v: f32| if v.is_subnormal() { 0.0f32.copysign(v) } else { v };
+    let (xd, yd) = (ftz(x), ftz(y));
+    let yi = if yd.is_nan() { 0 } else if yd >= 2147483648.0 { i32::MAX } else if yd < -2147483648.0 { i32::MIN } else { yd as i32 };
+    let sign = x.to_bits() & 0x8000_0000 & ((yi as u32 & 1) << 31);
+    let (xz, ylt, yz, xlt, yint) = (xd == 0.0, 0.0 > yd, yd == 0.0, 0.0 > xd, yd == yd.trunc());
+    if (xlt && !yint) || xz || yz {
+        return if yz { 1.0 } else if xz && !ylt { f32::from_bits(sign) } else { f32::from_bits(0x7FC0_0000) };
+    }
+    let e = ftz(ftz(l) * yd);
+    let n = e.floor();
+    let f = ftz(e - n);
+    let mut p = 1.877_576_7e-3f32;
+    for c in [8.989_339_7e-3f32, 5.582_631_8e-2, 2.401_536_1e-1, 6.931_530_8e-1, 1.0] {
+        p = ftz(ftz(p * f) + c);
+    }
+    let ni = if n >= -2147483648.0 && n < 2147483648.0 { n as i32 } else { i32::MIN };
+    let r = ftz(p * ftz(f32::from_bits((ni.wrapping_add(127) as u32).wrapping_shl(23))));
+    f32::from_bits(r.to_bits() | sign)
 }
 
 /// The PowerPC `fsel`: `a` when `c >= 0`, else `b` (a NaN `c` picks `b`).
@@ -514,6 +557,7 @@ impl Curve {
             }
             7 => CurveParams::Pow { flip_in: b21 & 1 != 0, flip_out: b21 & 2 != 0, exp: be_f32(o, 22) },
             9 => CurveParams::Gauss { k: be_f32(o, 21), norm: flags & 0xC != 0 },
+            11 | 12 => CurveParams::Inv { k: be_f32(o, 21), norm: flags & 0xC != 0 },
             14 => CurveParams::Clamp { db: be_i16(o, 21) as f32 * 0.01, norm: flags & 0xC == 4 },
             _ => CurveParams::None,
         };
@@ -556,9 +600,10 @@ impl Curve {
             CurveParams::Const(c) => *c,
             CurveParams::Points(p) => {
                 let ((x0, y0), (x1, y1)) = (p[0], p[1]);
-                let y = if x <= x0 {
+                // (F-11926 / F-90404: not above x0 takes y0, then not below x1 takes y1 - a NaN input takes y0)
+                let y = if !(x > x0) {
                     y0
-                } else if x >= x1 {
+                } else if !(x < x1) {
                     y1
                 } else if y0 == y1 {
                     y0
@@ -592,8 +637,9 @@ impl Curve {
                 }
             }
             CurveParams::Pow { flip_in, flip_out, exp } => {
+                // (F-18683: the flips by fsel of Init F-14336's -1 / 0, the power by the vector powf F-33229)
                 let xi = if *flip_in { 1.0 - x } else { x };
-                let y = if xi > 0.0 { xi.powf(*exp) } else { 0.0 };
+                let y = vpow(xi, *exp);
                 if *flip_out {
                     1.0 - y
                 } else {
@@ -610,8 +656,22 @@ impl Curve {
                     b
                 }
             }
+            CurveParams::Inv { k, norm } => {
+                // (types 11 / 12: b = k x + 1, y = 1 / b (11) or 1 / (b b) (12); normalised: (y - y(1)) / (1 - y(1)),
+                // y(1) from 1 / (k + 1))
+                let a = 1.0 / (k + 1.0);
+                let b = k * x + 1.0;
+                let (y, y1) = if self.kind == 11 { (1.0 / b, a) } else { (1.0 / (b * b), a * a) };
+                if *norm {
+                    (y - y1) / (1.0 - y1)
+                } else {
+                    y
+                }
+            }
             CurveParams::Clamp { db, norm } => {
-                let y = default_rolloff_db(x).min(*db);
+                // (F-97596: the rolloff, fsel against Init F-84191's dB, then less the dB when normalised)
+                let r = default_rolloff_db(x);
+                let y = fsel(r - db, *db, r);
                 if *norm {
                     y - db
                 } else {
@@ -758,6 +818,59 @@ pub fn category_timers(cats: &Dat) -> HashMap<u32, u8> {
 
 #[cfg(test)]
 mod tests {
+
+    /// tools/curve_reference.py ran the original's curve init F-57265 and evaluator F-33490 on every curves.dat object
+    /// (86: kinds 1 - 7, 9, 12, 13, 14) at fixed and random inputs, and the rolloff F-98578 on random scales and distances
+    /// with the built-in DEFAULT_ROLLOFF and with each curve: 42,325 results, all equal bit for bit but 3 type 7 powers
+    /// whose recorded value is the one of a log2 one ulp off (the recorder's host log2f, as curve3_log2_ambiguous_cases).
+    #[test]
+    fn curves_match_the_original() {
+        let h = |x: &str| u32::from_str_radix(&x[1..], 16).unwrap();
+        let unhex = |x: &str| (0..x.len()).step_by(2).map(|i| u8::from_str_radix(&x[i..i + 2], 16).unwrap()).collect::<Vec<u8>>();
+        let (mut curves, mut n, mut bad, mut log2_ulp) = (Vec::new(), 0, Vec::new(), 0);
+        for l in include_str!("testdata/curve_ref.txt").lines() {
+            let t: Vec<&str> = l.split(' ').collect();
+            match t[0] {
+                "K" => curves.push(Curve::parse(&unhex(&t[1][1..]))),
+                "X" => {
+                    let c = curves.last().unwrap();
+                    let (x, r) = (f32::from_bits(h(t[1])), h(t[2]));
+                    n += 1;
+                    let got = c.eval(x).to_bits();
+                    // (the recorder's host log2f is not correctly rounded for a few inputs - see curve3_log2_ambiguous_cases:
+                    // the recorded power is the one of a log2 one ulp off the correctly rounded one)
+                    if let (got, CurveParams::Pow { flip_in, flip_out, exp }) = (got, &c.params) {
+                        let xi = if *flip_in { 1.0 - x } else { x };
+                        let l = (f32::from_bits(xi.to_bits() & 0x7FFF_FFFF) as f64).log2() as f32;
+                        let near = [f32::from_bits(l.to_bits() + 1), f32::from_bits(l.to_bits() - 1)].map(|l| {
+                            let y = vpow_log(xi, *exp, l);
+                            if *flip_out { (1.0 - y).to_bits() } else { y.to_bits() }
+                        });
+                        if got != r && near.contains(&r) {
+                            log2_ulp += 1;
+                            continue;
+                        }
+                    }
+                    if got != r && !(f32::from_bits(got).is_nan() && f32::from_bits(r).is_nan()) {
+                        bad.push(format!("kind {} x {:e}: {:e} want {:e}", c.kind, x, f32::from_bits(got), f32::from_bits(r)));
+                    }
+                }
+                "D" => {
+                    let c = (t[1] != "kn").then(|| &curves[t[1][1..].parse::<usize>().unwrap()]);
+                    let (s, d, r) = (f32::from_bits(h(t[2])), f32::from_bits(h(t[3])), h(t[4]));
+                    n += 1;
+                    let got = rolloff_db(s, d, c).to_bits();
+                    if got != r {
+                        bad.push(format!("rolloff kind {:?} s {:e} d {:e}: {:e} want {:e}", c.map(|c| c.kind), s, d, f32::from_bits(got), f32::from_bits(r)));
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert!(n > 40_000, "{n}");
+        assert!(log2_ulp <= 3, "{log2_ulp}");
+        assert!(bad.is_empty(), "{} of {n} differ: {:#?}", bad.len(), &bad[..bad.len().min(20)]);
+    }
     #[test]
     fn math_operation_records_are_29_bytes() {
         // ZZZ_TEST_MATH's payload from sounds.dat: one op, opcode 12, output variable 0x49DC73B3.
