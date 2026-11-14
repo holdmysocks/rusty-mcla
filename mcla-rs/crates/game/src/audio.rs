@@ -740,6 +740,9 @@ pub struct Audio {
     /// the per-voice calls of this tick (drive, hold, a loop's clip, a chain's settings), applied in order under the
     /// mixer's one lock a tick (`flush`, D59: was a lock per call, ~77 a tick)
     pending: Vec<MixCmd>,
+    /// the calls of a tick applied under one lock (MCLA_MIXER_ONE_LOCK=1); off: each call takes the lock at once, as
+    /// before D59.mixer-lock (the batch made the next tick's lock wait longer while the output caught up)
+    batch: bool,
     engines: HashMap<String, Option<Arc<EngineBank>>>,
     /// wave names per bank folder (from `_index.tsv`)
     index: HashMap<String, Arc<Vec<String>>>,
@@ -922,6 +925,7 @@ impl Audio {
             clips: HashMap::new(),
             clip_secs: HashMap::new(),
             pending: Vec::new(),
+            batch: std::env::var("MCLA_MIXER_ONE_LOCK").is_ok_and(|v| v == "1"),
             engines: HashMap::new(),
             index: HashMap::new(),
             music: None,
@@ -1285,7 +1289,7 @@ impl Audio {
     }
 
     fn set_loop_clip(&mut self, id: u64, clip: Arc<Clip>, gains: (f32, f32), speed: f32) {
-        self.pending.push(MixCmd::LoopClip { id, clip, gains, speed });
+        self.queue(MixCmd::LoopClip { id, clip, gains, speed });
     }
 
     fn apply_loop_clip(m: &mut Mixer, id: u64, clip: Arc<Clip>, gains: (f32, f32), speed: f32) {
@@ -1307,7 +1311,7 @@ impl Audio {
     /// Create or update a voice that lives while it is driven every frame (the sound objects' waves): `start` is the
     /// frame a new voice starts at; a one-shot voice ends at its last frame.
     pub fn drive(&mut self, id: u64, clip: &Arc<Clip>, mix: Mix, speed: f32, looping: bool, start: f64, filt: (u16, u16)) {
-        self.pending.push(MixCmd::Drive { id, clip: clip.clone(), mix, speed, looping, start, filt });
+        self.queue(MixCmd::Drive { id, clip: clip.clone(), mix, speed, looping, start, filt });
     }
 
     fn apply_drive(m: &mut Mixer, id: u64, clip: &Arc<Clip>, mix: Mix, speed: f32, looping: bool, start: f64, filt: (u16, u16)) {
@@ -1350,7 +1354,7 @@ impl Audio {
     }
 
     pub fn set_chain(&mut self, id: u32, p: &ChainParams) {
-        self.pending.push(MixCmd::Chain(id, p.clone()));
+        self.queue(MixCmd::Chain(id, p.clone()));
     }
 
     fn apply_chain(m: &mut Mixer, id: u32, p: &ChainParams) {
@@ -1367,7 +1371,15 @@ impl Audio {
     /// Hold a driven voice where it is, silent, for this frame (its sound is on a paused audio timer: F-89113 skips the
     /// sound and the type's pause method stops its voice); the next `drive` goes on from there.
     pub fn hold(&mut self, id: u64) {
-        self.pending.push(MixCmd::Hold(id));
+        self.queue(MixCmd::Hold(id));
+    }
+
+    /// A call into the mixer: queued for the tick's one lock, or applied now.
+    fn queue(&mut self, c: MixCmd) {
+        self.pending.push(c);
+        if !self.batch {
+            self.flush();
+        }
     }
 
     /// This tick's per-voice calls into the mixer, in their order, under one lock.
@@ -2403,6 +2415,7 @@ mod tests {
         let clip = Arc::new(Clip::mono((0..48000).map(|i| ((i as f32) * 0.031).sin() * 0.5).collect(), RATE));
         let run = |each: bool| -> Vec<f32> {
             let mut a = Audio::new_offline(&dir).expect("audio");
+            a.batch = !each;
             for tick in 0..120u32 {
                 for v in 0..6u64 {
                     if (tick + v as u32) % 17 == 5 {
