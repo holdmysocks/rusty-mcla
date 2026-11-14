@@ -338,9 +338,13 @@ impl HangoutScene {
         if let Some(k) = setup_of(key) {
             for (setup, _, _) in k.cars {
                 let car = crate::mc4::setup_vehicle(setup);
-                vehicles.prefetch(world, &world.assets.path("resources/vehicle").join(&car));
-                if let Some(d) = game.mc4_dress_of(&car, setup) {
-                    crate::vehicles::warm_dress(&world.assets.root, &d);
+                let dress = game.mc4_dress_of(&car, setup);
+                // (with the build in the set-up's parts made on the worker too, as `stand_car` builds it: the plain
+                // build's made there was not the one taken, and the set-up's ran on the game thread, 85 - 130 ms a car - D59)
+                let cfg = dress.as_ref().map(|d| d.cfg.clone()).unwrap_or_default();
+                vehicles.prefetch_as(world, &world.assets.path("resources/vehicle").join(&car), &cfg);
+                if let Some(d) = dress.as_ref() {
+                    crate::vehicles::warm_dress(&world.assets.root, d);
                 }
             }
         }

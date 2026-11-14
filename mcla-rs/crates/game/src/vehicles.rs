@@ -2754,11 +2754,13 @@ impl Vehicles {
     }
 
     /// Load a car directory into a shared GPU model.
+    #[track_caller]
     pub fn load_model(&mut self, gpu: &mut Gpu, world: &mut World, dir: &Path) -> Result<Arc<CarModel>> {
         self.load_model_cfg(gpu, world, dir, &CarConfig::default())
     }
 
     /// The model of `dir` with `cfg` as loaded before (`replace_player`'s lookup), else loaded now.
+    #[track_caller]
     pub fn model_cached(&mut self, gpu: &mut Gpu, world: &mut World, dir: &Path, cfg: &CarConfig) -> Result<Arc<CarModel>> {
         let name = dir.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
         match self.models.iter().find(|m| m.name == name && m.cfg == *cfg) {
@@ -2767,6 +2769,7 @@ impl Vehicles {
         }
     }
 
+    #[track_caller]
     pub fn load_model_cfg(&mut self, gpu: &mut Gpu, world: &mut World, dir: &Path, cfg: &CarConfig) -> Result<Arc<CarModel>> {
         // (built ahead in an earlier tick - `build_ahead`: the same build, put in the list here as before)
         let name = dir.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
@@ -2830,16 +2833,30 @@ impl Vehicles {
     }
 
     /// A car's model built (`load_model_cfg` puts it in `models`).
+    #[track_caller]
     fn build_model(&mut self, gpu: &mut Gpu, world: &mut World, dir: &Path, cfg: &CarConfig) -> Result<Arc<CarModel>> {
         let t_load = std::time::Instant::now();
+        // (how the read-ahead went, for the miss log below: the files read / being read / not, the build's CPU part made)
+        let files = match self.parsed.get(&parsed_key(dir)) {
+            Some(Parsed::Read(..)) => "read ahead",
+            Some(Parsed::Reading(h, _)) if h.is_finished() => "read ahead",
+            Some(Parsed::Reading(..)) => "still being read",
+            None => "not read ahead",
+        };
         let car = self.car_asset(world, dir)?;
         let ms_parse = t_load.elapsed().as_secs_f32() * 1000.0;
+        let prep_ahead = self.preps.iter().any(|(k, c, _)| *k == parsed_key(dir) && c == cfg);
         let CarPrep { car_is_ambient, rest_rot, meshes, lamp_acc, own_hubs, glow_bones, glow_sides, font_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone, slot_bones, turn_bones, susp_draw, roof_place, upgrade, flip } = match self.take_prep(dir, cfg) {
             Some(p) => p,
             None => Self::prep_car(&car, dir, cfg),
         };
         let mut batches = Vec::new();
         let mut stages: Vec<(&str, f64)> = vec![("read", t_load.elapsed().as_secs_f64() * 1000.0)];
+        // (D59 audit: a build whose files or CPU part were made here on the game thread, and who asked for it)
+        if !prep_ahead || files != "read ahead" {
+            let at = std::panic::Location::caller();
+            log::info!("vehicles: read-ahead miss {} ({}) from {}:{}: files {} ({:.1} ms), build's CPU part {} ({:.1} ms)", dir.file_name().map(|s| s.to_string_lossy()).unwrap_or_default(), if *cfg == CarConfig::default() { "plain" } else { "set-up" }, at.file(), at.line(), files, ms_parse, if prep_ahead { "made ahead" } else { "made here" }, stages[0].1 - ms_parse as f64);
+        }
         let mut merged: hashbrown::HashMap<(u32, u32, u32), MergeAcc> = hashbrown::HashMap::new();
         // (meshes sharing textures and material mode are merged into one draw, in build order: `prep_car`)
         for m in meshes {
@@ -3054,6 +3071,7 @@ impl Vehicles {
         let mut rim_dir = None;
         // (a mod car's stock rims: its own folder or its manifest's `donors.rims` - modcars.rs)
         let mod_rims = crate::modcars::car(&car.name).and_then(|c| c.rims.clone());
+        let bt6 = build_times::Span::new(6);
         for dir in mod_rims.into_iter().chain(cands.iter().cloned()) {
             if dir.is_dir() {
                 wheels = self.wheel_set(gpu, world, &dir, tyre, rim_ratio);
@@ -3069,8 +3087,10 @@ impl Vehicles {
                 }
             }
         }
+        drop(bt6);
         // the brakes: the car's own where the disc has them, else the plain set
         let mut brake_dir = None;
+        let bt7 = build_times::Span::new(7);
         let brakes = {
             let root = world.assets.root.join("resources/brakes");
             let own = [base_name.strip_prefix("vpd_").map(|n| format!("brkd_stk_{n}")), base_name.strip_prefix("vp_").map(|n| format!("brk_stk_{n}"))];
@@ -3089,6 +3109,7 @@ impl Vehicles {
                 }
             }
         };
+        drop(bt7);
         stages.push(("wheels", t_load.elapsed().as_secs_f64() * 1000.0));
         let lamps: Vec<(u8, Vec3)> = lamp_acc.iter().map(|((id, _), (sum, n))| (*id as u8, *sum / (*n).max(1) as f32)).collect();
         let own_wheels = own_hubs.iter().any(|h| h.is_some()).then_some(own_hubs);
@@ -3105,7 +3126,7 @@ impl Vehicles {
             let t = build_times::take();
             stages.push(("rest", t_load.elapsed().as_secs_f64() * 1000.0));
             let st: Vec<String> = stages.iter().scan(0.0, |p, (n, t)| { let d = t - *p; *p = *t; Some(format!("{n} {d:.2}")) }).collect();
-            log::info!("car build gpu {}: own textures {:.2}, shared textures {:.2}, bind groups {:.2}, buffers {:.2}, pack copy {:.2}, merge {:.2} ms; stages {}; whole build {:.1} ms", car.name, t[0], t[1], t[2], t[3], t[4], t[5], st.join(", "), t_load.elapsed().as_secs_f64() * 1000.0);
+            log::info!("car build gpu {}: own textures {:.2}, shared textures {:.2}, bind groups {:.2}, buffers {:.2}, pack copy {:.2}, merge {:.2}, rims {:.2}, brakes {:.2} ms; stages {}; whole build {:.1} ms", car.name, t[0], t[1], t[2], t[3], t[4], t[5], t[6], t[7], st.join(", "), t_load.elapsed().as_secs_f64() * 1000.0);
         }
         let m = Arc::new(CarModel { lods, lod_radius, lod_centre, lod_steps, bound_box, own_wheels, name: car.name.clone(), lamps, glow_bones, glow_sides, font_bones, batches, params, params_mods, simtunes, vehmods: car.vehmods.clone(), fit: car.fit, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, susp_lever: car.susp_lever, susp_bones: (!car.susp_bones.is_empty()).then(|| Arc::new(car.susp_bones.clone())), bike_wheel_width, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), spoiler: car.spoiler.clone().map(Arc::new), clamshell: car.clamshell.clone().filter(|_| car.skinned_top.is_some()).map(Arc::new), skinned_top: car.skinned_top.clone().filter(|_| car.clamshell.is_some()).map(Arc::new), needles: [car.needles[0].clone().map(Arc::new), car.needles[1].clone().map(Arc::new), upgrade.as_ref().map(|u| u.0.clone())], needle_place: upgrade.as_ref().map_or(Mat4::IDENTITY, |u| u.1), light_flip: flip.as_ref().map(|f| f.0.clone()), flip_place: flip.as_ref().map_or(Mat4::IDENTITY, |f| f.1), roof_skin, roof_place, cop_lights: car.cop_lights.clone().map(Arc::new), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone, slot_bones, turn_bones, susp_draw, fx_anchors, fx_anchor_rear, rest_rot: rest_table(&rest_rot) });
         Ok(m)
@@ -4022,6 +4043,7 @@ impl Vehicles {
     /// have to be built: the model with the set-up's parts, its rims at their size on its
     /// tires, its brakes, its paints (`CarLook`), its share of upgrades. `resolve(car,
     /// set-up)` reads the set-up (`Game::mc4_dress_of`). Returns the car dressed.
+    #[track_caller]
     pub fn dress_setups(&mut self, gpu: &mut Gpu, world: &mut World, resolve: &mut dyn FnMut(&str, &str) -> Option<Dress>) -> Option<usize> {
         let t_dress = std::time::Instant::now();
         let i = self.cars.iter().position(dress_waits)?;
@@ -4141,6 +4163,7 @@ impl Vehicles {
     }
 
     /// Swap the player's model/colour/kit (garage).
+    #[track_caller]
     pub fn replace_player(&mut self, gpu: &mut Gpu, world: &mut World, dir: &Path, color: [f32; 4], cfg: &CarConfig, rim_dir: Option<&Path>) -> Result<()> {
         let name = dir.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
         let model = match self.models.iter().find(|m| m.name == name && m.cfg == *cfg) {
