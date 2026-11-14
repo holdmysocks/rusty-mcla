@@ -4612,3 +4612,62 @@ mod tests {
         assert_eq!(bad, 0);
     }
 }
+
+/// A record of the mission states in the format of work/career2/mk/rec/missionrec.py (the original's
+/// mission manager read in the recomp), for comparing the two (`MCLA_MISSION_DUMP=<file>`): a full dump
+/// first ("S <id> <state>", "L1" the log's order, "L2" the completion order), then each change. The
+/// state is the original's number (`Career::state_id_of`); "O <id> <k> <+116> <+117> <+118>" each objective's bytes.
+pub struct MissionDump {
+    out: std::io::BufWriter<std::fs::File>,
+    last: Option<(Vec<u32>, Vec<usize>, Vec<usize>)>,
+    t0: std::time::Instant,
+}
+
+impl MissionDump {
+    pub fn from_env() -> Option<Self> {
+        let p = std::env::var("MCLA_MISSION_DUMP").ok()?;
+        std::fs::File::create(p).ok().map(|f| MissionDump { out: std::io::BufWriter::new(f), last: None, t0: std::time::Instant::now() })
+    }
+
+    pub fn step(&mut self, c: &Career, frame: u64) {
+        use std::io::Write;
+        let t = self.t0.elapsed().as_secs_f64();
+        let st: Vec<u32> = (0..c.state.len()).map(|i| c.state_id_of(i)).collect();
+        let ids = |l: &[usize]| l.iter().map(|&i| c.missions[i].id.as_str()).collect::<Vec<_>>().join(" ");
+        let o = &mut self.out;
+        match &self.last {
+            None => {
+                let _ = writeln!(o, "{:.3} f {} dump {} missions", t, frame, st.len());
+                for (i, (m, s)) in c.missions.iter().zip(&st).enumerate() {
+                    let _ = writeln!(o, "S {} {}", m.id, s);
+                    // each objective's bytes +116 (satisfied), +117 (always hidden), +118 (hidden)
+                    let ext = c.ext.get(i).filter(|_| c.ext_ok(i));
+                    for (k, r) in m.objectives.iter().enumerate() {
+                        let met = c.state[i].progress.get(k).copied().unwrap_or(0) >= r.conds.first().map_or(1, |cd| c.target(m, cd));
+                        let (al, hi) = ext.map_or((r.hidden, r.hidden), |e| (e.obj_always[k], e.obj_hidden[k]));
+                        let _ = writeln!(o, "O {} {} {} {} {}", m.id, k, met as u8, al as u8, hi as u8);
+                    }
+                }
+                let _ = writeln!(o, "L1 {}\nL2 {}", ids(&c.order), ids(&c.done));
+            }
+            Some((ls, l1, l2)) => {
+                if *ls == st && *l1 == c.order && *l2 == c.done {
+                    return;
+                }
+                for (i, (a, b)) in ls.iter().zip(&st).enumerate() {
+                    if a != b {
+                        let _ = writeln!(o, "T {:.3} f {} {} {} -> {}", t, frame, c.missions[i].id, a, b);
+                    }
+                }
+                if *l1 != c.order {
+                    let _ = writeln!(o, "L1 {:.3} {}", t, ids(&c.order));
+                }
+                if *l2 != c.done {
+                    let _ = writeln!(o, "L2 {:.3} {}", t, ids(&c.done));
+                }
+            }
+        }
+        let _ = o.flush();
+        self.last = Some((st, c.order.clone(), c.done.clone()));
+    }
+}

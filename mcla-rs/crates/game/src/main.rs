@@ -661,6 +661,8 @@ struct App {
     story_warp_start: bool,
     /// (scene, set-up): a queued story scene whose STORY_LOCATION_CUT_SIMPLE warp comes first, when the scene would start
     story_warp_for: Option<(usize, usize)>,
+    /// MCLA_MISSION_DUMP: the mission states for comparing with the original (career::MissionDump)
+    mission_dump: Option<career::MissionDump>,
     payback_hold: bool,
     /// its black (the scene's fade_to_black, garage_core's fade up)
     garage_mask: boomcam::CutMask,
@@ -1679,6 +1681,7 @@ impl App {
             story_in: None,
             story_warp_start: false,
             story_warp_for: None,
+            mission_dump: career::MissionDump::from_env(),
             payback_hold: false,
             garage_mask: Default::default(),
             garage_out: None,
@@ -4937,6 +4940,9 @@ impl App {
                     self.place_view = None;
                     self.game.place_title = None;
                 }
+            }
+            if let Some(md) = self.mission_dump.as_mut() {
+                md.step(&self.game.career, self.frame_no);
             }
             self.mode_before = self.game.mode;
             // (step 23b: the hangouts' scenes - the cars of their set-ups, the panel's camera, the
