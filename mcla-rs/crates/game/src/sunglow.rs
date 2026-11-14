@@ -117,6 +117,8 @@ struct Probe {
     step: QueryStep,
     /// the original's sample count this frame (2, 4 in the menus) - set by the frame
     original_samples: u32,
+    /// this frame's read-backs were started and the device polled early (`prepoll`, on a pool thread)
+    prepolled: bool,
 }
 
 struct SunGlow {
@@ -263,6 +265,7 @@ fn load_probe(device: &wgpu::Device, globals_layout: &wgpu::BindGroupLayout, sha
         mark: None,
         step: QueryStep::default(),
         original_samples: 2,
+        prepolled: false,
     }
 }
 
@@ -274,7 +277,7 @@ pub fn original_count(marked: u32, scene_h: u32, port_samples: u32, original_sam
 
 impl Probe {
     /// The query of this frame: read the slot drawn two frames ago (kept count when not ready), the visible share.
-    fn read(&mut self, gpu: &Gpu, total: i32) -> (usize, f32) {
+    fn start_maps(&mut self) {
         // (last frame's copy has been submitted since: start its read-back)
         for s in 0..2 {
             if matches!(self.slots[s], Slot::Copied) {
@@ -284,8 +287,17 @@ impl Probe {
                 self.slots[s] = Slot::Mapping(flag);
             }
         }
-        let _ = gpu.device.poll(wgpu::Maintain::Poll);
+    }
+
+    fn read(&mut self, gpu: &Gpu, total: i32) -> (usize, f32) {
+        self.start_maps();
         let i = self.step.idx;
+        // (D59.sun-prepoll: after an early poll the device is polled here again only while the slot read now has
+        // not come back, so the slot is seen ready on the same frames as with the one poll here)
+        let waiting = matches!(&self.slots[i], Slot::Mapping(f) if f.load(Ordering::Acquire) == 0);
+        if !std::mem::take(&mut self.prepolled) || waiting {
+            let _ = gpu.device.poll(wgpu::Maintain::Poll);
+        }
         let mut answer = None;
         if let Slot::Mapping(flag) = &self.slots[i] {
             match flag.load(Ordering::Acquire) {
@@ -368,6 +380,18 @@ impl Probe {
     }
 }
 
+/// D59.sun-prepoll: start the query read-backs and poll the device on a pool thread while the city is recorded,
+/// so the main thread's poll in the glow's pass is left with no device clean-up. MCLA_SUN_POLL_LATE=1: off.
+pub fn prepoll(gpu: &Gpu) {
+    {
+        let mut guard = STATE.lock().unwrap();
+        let Some(s) = guard.as_mut() else { return };
+        s.probe.start_maps();
+        s.probe.prepolled = true;
+    }
+    let _ = gpu.device.poll(wgpu::Maintain::Poll);
+}
+
 /// The pass: after the scene (its depth is read), before the tone map's chain. `sun_color` is the sky file's
 /// SunColorKF at the hour, as stored (no decoding); `sun_dir` the sky's sun direction (the glow's own).
 pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, sun_color: [f32; 3], cam: [f32; 3], sun_dir: [f32; 3]) {
@@ -375,7 +399,9 @@ pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, sun_color: [f32; 3], cam: 
     let Some(s) = guard.as_mut() else { return };
     let cs = crate::sky::cloud_speed();
     // (F-63954: the query read, the share, then the probe drawn into the same query; the glow F-77533 after)
+    crate::passprof::mark("sunglow: probe read");
     let (q, visible) = s.probe.read(gpu, cs.glow_pixels);
+    crate::passprof::mark("sunglow: draw");
     let centre = probe_centre(cam, sun_dir, cs.glow_query_size, cs.glow_distance);
     if std::env::var_os("MCLA_SUN_PROBE_LOG").is_some() {
         log::info!("sun probe: camera {cam:?} sun {sun_dir:?} centre {centre:?}");

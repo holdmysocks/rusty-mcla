@@ -29,6 +29,7 @@ use glam::{Mat4, Vec3};
 use std::sync::Mutex;
 
 /// What the pass needs of one car (`Vehicles::blob_cars`).
+#[derive(Debug)]
 pub struct CarBlob {
     /// the body's matrix
     pub m: Mat4,
@@ -348,12 +349,28 @@ fn push(out: &mut Vec<f32>, rows: [[f32; 4]; 6]) {
 
 /// The pass: after the scene (its depth is read), before the glow passes and the tone map.
 /// `night`: the light quads' D (0.2 at night outside the garage, else 0.125).
+/// D59 check (main.rs, MCLA_BLOB_CHECK=1): a digest of everything `run` reads of the cars - the records, the blob list,
+/// the cones and the LOD pick its mask draws take - so that recording the passes earlier in the frame can be compared
+/// with recording them at their place.
+pub fn digest(vehicles: &crate::vehicles::Vehicles, cam: Vec3, night: bool, collider: Option<&crate::physics::collision::WorldCollider>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    format!("{:?}", car_records(vehicles, cam, night, collider)).hash(&mut h);
+    format!("{:?}", vehicles.blob_cars()).hash(&mut h);
+    format!("{:?}", vehicles.cones).hash(&mut h);
+    format!("{:?}", vehicles.lod_pick).hash(&mut h);
+    (vehicles.hide_player, vehicles.interior_glass, vehicles.render_alpha.to_bits()).hash(&mut h);
+    h.finish()
+}
+
 pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, vehicles: &crate::vehicles::Vehicles, cam: Vec3, night: bool, collider: Option<&crate::physics::collision::WorldCollider>) {
     let guard = STATE.lock().unwrap();
     let Some(s) = guard.as_ref() else { return };
     let dbg = view();
     // (a car whose neon is on: its body record is the fifth light quad, not an occlusion quad - F-62149 sorts by +4)
+    crate::passprof::mark("blob: records");
     let mut recs = car_records(vehicles, cam, night, collider);
+    crate::passprof::mark("blob: lights+cones");
     if dbg == 275 {
         for r in recs.iter_mut() {
             r.2 = None;
@@ -398,6 +415,7 @@ pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, vehicles: &crate::vehicles
         pass.set_vertex_buffer(1, s.cone_inst.slice(..(n * CONE_SIZE) as u64));
         pass.draw(0..180, 0..n as u32);
     }
+    crate::passprof::mark("blob: blob_cars+quads");
     let mut data: Vec<f32> = Vec::new();
     let mut n = 0usize;
     for c in vehicles.blob_cars() {

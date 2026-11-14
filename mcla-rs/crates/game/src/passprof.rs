@@ -37,7 +37,7 @@ pub fn mark(name: &'static str) {
 /// The shadow block's side-by-side jobs (main.rs: 0 the shadow map, 1 - 4 the cascades, 5 the collector, 6 the
 /// reflection, 7 the night collector, 8 the walkers' and the cast's skinning): each job's own time, summed over the 240
 /// frames of a `passes:` line and logged beside it as `jobs:`.
-static JOBS: std::sync::Mutex<[f64; 12]> = std::sync::Mutex::new([0.0; 12]);
+static JOBS: std::sync::Mutex<[f64; 16]> = std::sync::Mutex::new([0.0; 16]);
 
 /// Whether the pass times are on (MCLA_PASS_TIMES).
 pub fn on() -> bool {
@@ -47,7 +47,7 @@ pub fn on() -> bool {
 /// Job `j` took `ms` this frame.
 pub fn job(j: usize, ms: f64) {
     if let Ok(mut a) = JOBS.lock() {
-        a[j.min(11)] += ms;
+        a[j.min(15)] += ms;
     }
 }
 
@@ -65,10 +65,10 @@ pub fn end() {
             let line: Vec<String> = p.sums.iter().map(|(n, s)| format!("{n} {:.2}", s / 240.0)).collect();
             log::info!("passes: {} ms", line.join(", "));
             if let Ok(mut a) = JOBS.lock() {
-                let names = ["shadow", "casc1", "casc2", "casc3", "casc4", "collector", "reflection", "night", "skinning", "casc sectors", "casc cars+peds", "casc props"];
+                let names = ["shadow", "casc1", "casc2", "casc3", "casc4", "collector", "reflection", "night", "skinning", "casc sectors", "casc cars+peds", "casc props", "city A1", "city A2", "city B1", "sun poll"];
                 let l: Vec<String> = names.iter().zip(a.iter()).map(|(n, v)| format!("{n} {:.2}", v / 240.0)).collect();
                 log::info!("jobs: {} ms", l.join(", "));
-                *a = [0.0; 12];
+                *a = [0.0; 16];
             }
             p.sums.clear();
             p.frames = 0;

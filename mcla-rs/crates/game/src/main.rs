@@ -13766,16 +13766,23 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         // (a car picture's frames draw the cars alone: no sky, sectors, ground sheet, props, people, glows)
         let pic_on = pic.is_some();
         let secs: Vec<&world::GpuSector> = if map_baked || pic_on { Vec::new() } else { loaded.values().chain(sets.values()).collect() };
+        // (D59: where A1 ends and A2 begins follows the two workers' times - A1 also draws the sky, so a half by batches left
+        // it the slowest arm (A1 0.85 - 1.18 ms against A2 0.67 - 1.07). A1 is submitted before A2, so the draws reach the
+        // GPU in the same order wherever the list is cut; each sector sets its own state (see above). MCLA_CITY_HALF=1: the
+        // half by batches, as before.)
+        static CITY_FRAC: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3F00_0000);
+        let city_frac = if std::env::var_os("MCLA_CITY_HALF").is_some() { 0.5 } else { f32::from_bits(CITY_FRAC.load(std::sync::atomic::Ordering::Relaxed)) };
         let half = {
             let total: usize = secs.iter().map(|s| s.batches.len()).sum();
             let mut acc = 0;
             secs.iter()
                 .position(|s| {
                     acc += s.batches.len();
-                    acc * 2 >= total
+                    acc as f32 >= total as f32 * city_frac
                 })
                 .map_or(secs.len(), |i| i + 1)
         };
+        let mut arm_ms = [0.0f64; 2];
         let city_a = |pass: &mut wgpu::RenderPass<'_>, draws: &mut usize, part: &[&world::GpuSector], first: bool, mut probe: Option<&mut gpuprof::Probe>| {
             let gpu = &gpu;
             pass.set_bind_group(0, &gpu.globals_bg, &[]);
@@ -13854,12 +13861,31 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             early_cbs.push(std::mem::replace(&mut enc, gpu.device.create_command_encoder(&Default::default())).finish());
             gpuprof::stamp(&gpu.device, &gpu.queue, &mut enc, "city B");
         }
+        // (D59: the car blobs' passes - carblob.rs, the cars drawn again into the blob mask - are recorded at the end of this
+        // scope, while this thread would wait for the workers, into a command buffer of their own that goes where they
+        // were recorded before: after the particles, before the power-ups. Nothing between changes what they read (the
+        // rear-view mirror swaps the LOD pick back). MCLA_BLOB_IN_PLACE=1: recorded there, as before.)
+        let blob_early = !map3d && pic.is_none() && std::env::var_os("MCLA_BLOB_IN_PLACE").is_none();
+        let blob_night = self.game.mode != Mode::Garage && (self.time_of_day > 18.0 || self.time_of_day < 6.0);
+        let mut blob_cb: Option<wgpu::CommandBuffer> = None;
+        let mut blob_digest: Option<u64> = None;
+        let sun_prepoll = pic.is_none() && std::env::var_os("MCLA_SUN_POLL_LATE").is_none();
         mcla_flash::raster::pool().in_place_scope(|scope| {
+            if sun_prepoll {
+                let gpu = &gpu;
+                scope.spawn(move |_| {
+                    let t0 = std::time::Instant::now();
+                    sunglow::prepoll(gpu);
+                    passprof::job(15, t0.elapsed().as_secs_f64() * 1000.0);
+                });
+            }
             if split_city {
                 let [o1, o2, o3] = &mut parts_out;
+                let [m1, m2] = &mut arm_ms;
                 let (city_a, city_b1, secs, gpu) = (&city_a, &city_b1, &secs, &gpu);
                 let (pr1, pr2) = (&mut probe_a1, &mut probe_a2);
                 scope.spawn(move |_| {
+                    let t0 = std::time::Instant::now();
                     let mut e = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("city sky and sectors") });
                     let mut n = 0usize;
                     {
@@ -13867,9 +13893,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         city_a(&mut pass, &mut n, if split_secs { &secs[..half] } else { &secs[..] }, true, pr1.as_mut());
                     }
                     *o1 = Some((e.finish(), n));
+                    *m1 = t0.elapsed().as_secs_f64() * 1000.0;
+                    passprof::job(12, *m1);
                 });
                 if split_secs {
                     scope.spawn(move |_| {
+                        let t0 = std::time::Instant::now();
                         let mut e = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("city sectors (2)") });
                         let mut n = 0usize;
                         {
@@ -13877,8 +13906,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             city_a(&mut pass, &mut n, &secs[half..], false, pr2.as_mut());
                         }
                         *o2 = Some((e.finish(), n));
+                        *m2 = t0.elapsed().as_secs_f64() * 1000.0;
+                        passprof::job(13, *m2);
                     });
                     scope.spawn(move |_| {
+                        let t0 = std::time::Instant::now();
                         let mut e = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("city ground and props") });
                         gpuprof::write(&mut e, slot_b1);
                         let mut n = 0usize;
@@ -13888,6 +13920,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             city_b1(&mut pass, &mut n);
                         }
                         *o3 = Some((e.finish(), n));
+                        passprof::job(14, t0.elapsed().as_secs_f64() * 1000.0);
                     });
                 }
             }
@@ -13906,12 +13939,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     city_b1(&mut pass, &mut draws);
                     stat_props = draws - d0;
                 }
+                passprof::mark("city: B cars");
                 gpuprof::stamp_pass(&gpu.device, &mut pass, "B cars");
                 pass.set_pipeline(&gpu.pipeline_opaque);
                 let d1 = draws;
                 self.vehicles.draw_culled(&mut pass, &gpu, false, &mut draws, Some((cam_pos, 450.0)), Some(&frustum), false);
                 pass.set_stencil_reference(0);
                 stat_cars = draws - d1;
+                passprof::mark("city: B people");
                 gpuprof::stamp_pass(&gpu.device, &mut pass, "B people");
                 // (the people - walkers, the scenes' characters, the drivers - draw every batch with the Object material
                 // (skin.rs `SkinBuffer::draw`): its own pipeline once built, the city program with the other materials' paths
@@ -13928,6 +13963,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 pass.set_pipeline(&gpu.pipeline_blend);
                 // (shop panes write depth as the original's pane draws do; MCLA_DEBUG_VIEW=330: as before, no depth writes)
                 let pane_zw = std::env::var("MCLA_DEBUG_VIEW").map_or(true, |v| v.trim() != "330");
+                passprof::mark("city: B blended sectors");
                 gpuprof::stamp_pass(&gpu.device, &mut pass, "B blended sectors");
                 draw_sectors(&mut pass, &sector_view, loaded.values().chain(sets.values()).filter(|_| !pic_on), 1, pane_zw, &mut draws, None);
                 pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
@@ -13935,6 +13971,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             if !map3d {
                 // (lighting, 2026-10-13: the glass props' panes - door leaves, glass walls: VSPropGlass / PSPropGlass,
                 // drawn after the shop panes, blended, both sides, no depth writes; MCLA_DEBUG_VIEW=580: not drawn)
+                passprof::mark("city: B glass props");
                 gpuprof::stamp_pass(&gpu.device, &mut pass, "B glass props");
                 if !pic_on && std::env::var("MCLA_DEBUG_VIEW").map_or(true, |v| v.trim() != "580") {
                     pass.set_pipeline(&gpu.pipeline_inst_blend);
@@ -13942,12 +13979,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.props.draw_glass(&mut pass, &gpu, self.cam.pos, &frustum, Some(&occluded), &mut draws);
                     pass.set_pipeline(&gpu.pipeline_blend);
                 }
+                passprof::mark("city: B car glass");
                 gpuprof::stamp_pass(&gpu.device, &mut pass, "B car glass");
                 self.vehicles.draw_culled(&mut pass, &gpu, true, &mut draws, Some((cam_pos, 200.0)), Some(&frustum), false);
                 // (then the wheels' blur discs, into the stencil only - F-49519 after the cars' glass)
                 self.vehicles.draw_wheel_blur(&mut pass, &gpu, &mut draws, Some((cam_pos, 450.0)), Some(&frustum), self.garage_light().is_some(), false);
                 pass.set_pipeline(&gpu.pipeline_blend);
                 pass.set_stencil_reference(0);
+                passprof::mark("city: B glows");
                 gpuprof::stamp_pass(&gpu.device, &mut pass, "B glows");
                 if !pic_on && (self.time_of_day > 18.0 || self.time_of_day < 6.0) {
                     self.props.draw_glows(&mut pass, &gpu);
@@ -13962,7 +14001,24 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             pass.set_pipeline(&gpu.pipeline_blend);
             pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
+            drop(pass);
+            passprof::mark("city: car blobs");
+            if blob_early {
+                let mut e = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("car blobs") });
+                carblob::run(&gpu, &mut e, &self.vehicles, self.cam.pos, blob_night, Some(&world.collider));
+                blob_cb = Some(e.finish());
+                if std::env::var_os("MCLA_BLOB_CHECK").is_some() {
+                    blob_digest = Some(carblob::digest(&self.vehicles, self.cam.pos, blob_night, Some(&world.collider)));
+                }
+            }
         });
+        passprof::mark("city: after the scope");
+        // (the cut moves a little towards the faster arm each frame: no effect on the picture, only on which thread draws what)
+        if split_secs && arm_ms[0] > 0.0 && arm_ms[1] > 0.0 {
+            let d = ((arm_ms[0] - arm_ms[1]) / (arm_ms[0] + arm_ms[1])) as f32;
+            let f = (city_frac - 0.02 * d).clamp(0.2, 0.8);
+            CITY_FRAC.store(f.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        }
         gpuprof::probe_end(&mut enc, [probe_a1, probe_a2].into_iter().flatten().collect());
         for (k, (cb, n)) in parts_out.into_iter().enumerate().filter_map(|(k, o)| o.map(|o| (k, o))) {
             early_cbs.push(cb);
@@ -14028,6 +14084,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
             }
         }
+        passprof::mark("particles");
         if !map3d {
             // (the particles and the rain in a pass of their own, the depth read-only: the
             // checkpoint smoke reads it for its soft fade - PSCheckpointProj)
@@ -14044,6 +14101,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 rain::draw(&mut pass);
             }
         }
+        passprof::mark("blobs+pu+dof+tune");
         {
             // the original's post chain, tuned by the weather's keys; the radial blur follows the speed
             let (speed, nitro) = self.vehicles.player().filter(|_| self.drive).map(|c| (c.state.speed(), c.state.nitro_on())).unwrap_or((0.0, false));
@@ -14055,17 +14113,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // abilities: Zone tunnels the view, the others kick it
             radial += self.ability.fx() * 0.05;
             let mut tune = self.post_tune(&self.sky_now());
-            tune.dt = dt;
-            // (the port's own radial speed blur is retired: the original has no such term - its motion blur is the
-            // streak pass, render/mb.rs; work/ui-sharp/agent_tone. MCLA_RADIAL=1: as before)
-            tune.radial = if post_on && std::env::var("MCLA_RADIAL").is_ok_and(|v| v.trim() == "1") { radial } else { 0.0 };
-            tune.center = [0.5, 0.46];
-            tune.plain = !post_on;
-            // (test hook: MCLA_LUM = the adapted luminance to expose by, instead of the measured one)
-            tune.force_lum = std::env::var("MCLA_LUM").ok().and_then(|v| v.parse().ok());
-            if std::env::var("MCLA_TOD_DUMP").is_ok() && self.frame_no == 60 { eprintln!("post tune: grey {} white {} bright {:?} limits {:?} sat {} cc {:?}", tune.middle_grey, tune.white, tune.bright, tune.limits, tune.saturation, tune.color_correct); }
-            // the lamps' glow pass: reads the scene's depth, the tone map adds its picture
-            // the sun's glow quad over the finished scene (sunglow.rs), then the lamps' pass
             // F-16712 -> F-55690 for the local player's car: by the running ability (ab +52 kind, +48 == 3) - Agro (1) the
             // streaks x 4 (TintFade = 1 + 3), grip (4, the port has none) DesatScale 1 - and the car's nitrous ease +328;
             // with the game object's +5 (paused the frame before) or +11 every term is 0 (TintFade 1, DesatScale 0).
@@ -14078,14 +14125,38 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             tune.blur_fx = self.blur_fx;
             self.was_paused = self.game.mode == Mode::Paused;
+            tune.dt = dt;
+            // (the port's own radial speed blur is retired: the original has no such term - its motion blur is the
+            // streak pass, render/mb.rs; work/ui-sharp/agent_tone. MCLA_RADIAL=1: as before)
+            tune.radial = if post_on && std::env::var("MCLA_RADIAL").is_ok_and(|v| v.trim() == "1") { radial } else { 0.0 };
+            tune.center = [0.5, 0.46];
+            tune.plain = !post_on;
+            // (test hook: MCLA_LUM = the adapted luminance to expose by, instead of the measured one)
+            tune.force_lum = std::env::var("MCLA_LUM").ok().and_then(|v| v.parse().ok());
+            if std::env::var("MCLA_TOD_DUMP").is_ok() && self.frame_no == 60 { eprintln!("post tune: grey {} white {} bright {:?} limits {:?} sat {} cc {:?}", tune.middle_grey, tune.white, tune.bright, tune.limits, tune.saturation, tune.color_correct); }
+            // the lamps' glow pass: reads the scene's depth, the tone map adds its picture
+            // the sun's glow quad over the finished scene (sunglow.rs), then the lamps' pass
+            passprof::mark("blob: run (rest)");
             // the occlusion blobs under the cars (carblob.rs): over the finished scene, before the glow passes
-            if !map3d && pic.is_none() {
+            // (MCLA_BLOB_CHECK=1: what the blobs read, here against when they were recorded)
+            if let Some(d) = blob_digest {
+                let now = carblob::digest(&self.vehicles, self.cam.pos, self.game.mode != Mode::Garage && (self.time_of_day > 18.0 || self.time_of_day < 6.0), Some(&world.collider));
+                if self.frame_no % 60 == 0 || now != d {
+                    log::info!("blob check: frame {}: {}", self.frame_no, if now == d { "same" } else { "DIFFERENT" });
+                }
+            }
+            if let Some(cb) = blob_cb.take() {
+                early_cbs.push(std::mem::replace(&mut enc, gpu.device.create_command_encoder(&Default::default())).finish());
+                early_cbs.push(cb);
+            } else if !map3d && pic.is_none() {
                 carblob::run(&gpu, &mut enc, &self.vehicles, self.cam.pos, self.game.mode != Mode::Garage && (self.time_of_day > 18.0 || self.time_of_day < 6.0), Some(&world.collider));
             }
+            passprof::mark("pu_fx");
             // (step 19g: the effects on the cars - ice blocks, shields, stealth - pu_fx.rs)
             if !map3d {
                 pu_fx::run(&gpu, &mut enc, &self.vehicles, self.powerups.as_ref(), Vec3::new(globals.cam_pos[0], globals.cam_pos[1], globals.cam_pos[2]), Some(&self.drivers));
             }
+            passprof::mark("pu_draw");
             // (step 19f: the power-up sources' cards and ground glows - pu_draw.rs)
             if let Some(pu) = self.powerups.as_ref() {
                 // (each entry culled by its sphere against the frame's planes, F-50958 in F-12500)
@@ -14097,19 +14168,23 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             // (the depth once more - the power-ups' passes write it - then the sun's glow, the last draw into the
             // multisampled scene, and the colour resolve: the samples averaged)
+            passprof::mark("resolve+sunglow+halo");
             gpu.resolve_scene_depth(&mut enc);
             if pic.is_none() {
                 // (the probe at camera + the glow's sun direction, as the glow's own quad)
                 let sd = Vec3::new(globals.true_sun[0], globals.true_sun[1], globals.true_sun[2]).normalize_or_zero();
                 sunglow::run(&gpu, &mut enc, self.sky.sun_color.rgb(self.time_of_day).to_array(), [globals.cam_pos[0], globals.cam_pos[1], globals.cam_pos[2]], sd.to_array());
             }
+            passprof::mark("resolve colour");
             gpu.resolve_scene_color(&mut enc);
             render::ms::set_plain();
+            passprof::mark("halo");
             if pic.is_none() {
                 halo::run(&gpu, &mut enc);
             } else {
                 halo::clear(&gpu, &mut enc);
             }
+            passprof::mark("dof+gps");
             // the depth of field (post.rs: the far blur's buffer, lerped in by the tone map): the weather's
             // m_DoFParams at the hour; not in the garage or on the 3D map
             if !map3d && self.game.mode != Mode::Garage {
@@ -14184,8 +14259,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             self.bw_last = now;
             tune.police = self.police_cam && pic.is_none() && std::env::var_os("MCLA_POLICE_CAM_OFF").is_none()
                 || std::env::var_os("MCLA_POLICE_CAM").is_some();
+            passprof::mark("post: run");
             gpuprof::stamp(&gpu.device, &gpu.queue, &mut enc, "post");
             gpu.post.run(&gpu.device, &gpu.queue, &mut enc, &view, &gpu.depth, &gpu.stencil_copy, &tune);
+            passprof::mark("ui");
             gpuprof::stamp(&gpu.device, &gpu.queue, &mut enc, "ui");
             gpu.depth_to_ui(&mut enc);
         }
