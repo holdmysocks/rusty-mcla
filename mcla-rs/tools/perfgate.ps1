@@ -6,7 +6,7 @@
 # Each run: a user folder per exe and backend under -Out (its shader cache kept between runs), a copy of -Save and a
 # fixed settings file (1920x1080 windowed, no vsync, no cap) put back before the run, MCLA_FRAMETIMES / MCLA_FRAMELOG /
 # MCLA_SLOWTICK on, and the process's CPU, GPU 3D engine, dedicated VRAM and private memory sampled every 2 s.
-# Before each run it waits (at most 5 min) for the machine to be quiet: no other exe running from the repo folder and
+# Before each run it waits (at most 5 + 2 min) for the machine to be quiet: no other exe running from the repo folder and
 # the CPU under -QuietPct for 10 s. Then tools/perfgate.py prints the table (fps, 1 % low, worst frame, worst tick,
 # phase means, GPU time per pass, VRAM) and, with two builds, the change of each and the regressions.
 # At most one game runs at a time (the 2-instance rule of the machine counts other sessions' games too).
@@ -21,10 +21,12 @@ param(
   [string]$Data = "D:/MCLA/extracted/cache",
   [string]$Save = "$env:LOCALAPPDATA\RustyMCLA\saves\mcla_save.json",
   [int]$Affinity = 0,
-  [double]$QuietPct = 12,
+  [double]$QuietPct = 20,
   [switch]$NoQuiet
 )
 $ErrorActionPreference = 'Stop'
+# (with -File a list arrives as one string: split it)
+$Scen = @($Scen | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
 $repo = (Resolve-Path "$PSScriptRoot\..\..").Path
 if (-not $Out) { $Out = Join-Path $repo "work\perfgate" }
 New-Item -ItemType Directory "$Out\runs" -Force | Out-Null
@@ -45,7 +47,7 @@ function Wait-Quiet {
   $t0 = Get-Date
   while (@(Get-Process | Where-Object { $_.Path -like "$repo\*" -and $_.Path -notlike "$Out\*" -and $_.MainWindowHandle -ne 0 }).Count -gt 0 -and ((Get-Date) - $t0).TotalMinutes -lt 5) { Start-Sleep 10 }
   $ok = 0; $t1 = Get-Date
-  while ($ok -lt 5 -and ((Get-Date) - $t1).TotalMinutes -lt 5) {
+  while ($ok -lt 5 -and ((Get-Date) - $t1).TotalMinutes -lt 2) {
     $v = (Get-Counter '\Processor(_Total)\% Processor Time' -SampleInterval 2 -MaxSamples 1).CounterSamples[0].CookedValue
     if ($v -lt $QuietPct) { $ok++ } else { $ok = 0 }
   }
