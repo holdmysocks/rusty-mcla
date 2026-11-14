@@ -10504,6 +10504,7 @@ impl Game {
                         self.mission_log = (0, 0, false);
                         self.mlog_near = true;
                         self.mlog_guided = self.career.stats.contains_key("tut:mission_log") && !self.career.stats.contains_key("tut:target");
+                        log::info!("mission log: opened on the active missions (lesson box {}, guided {})", lesson, self.mlog_guided);
                         if lesson {
                             self.tutorial_box = None;
                             if let Some(fp) = self.flash_popup.as_mut() {
@@ -10806,6 +10807,7 @@ impl Game {
                     // will appear highlighted in the Mini Map...", CONTINUE (A))
                     if self.tutorial_box.is_none() && self.mode == Mode::FreeRoam && self.career.stats.contains_key("tut:target_set") && !self.career.stats.contains_key("tut:target") {
                         self.career.stats.insert("tut:target".into(), 1);
+                        log::info!("tutorial: the MINI MAP box (the first target set)");
                         self.tutorial_box = Some(("tutorial_target_title".into(), "tutorial_target_desc".into(), 0.5, 600.0));
                         // (the phone is away under this box - `ng_tut_minimap`)
                         self.tip = None;
@@ -13656,6 +13658,7 @@ impl Game {
                 self.gps_armed = self.mission_target.is_some();
                 self.mlog_guided = false;
                 self.show_map = false;
+                log::info!("mission log lesson: {:?} set as the target", self.mission_target);
                 self.career.stats.insert("tut:target_set".into(), 1);
                 self.dirty = true;
             }

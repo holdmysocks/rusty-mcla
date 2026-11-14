@@ -4407,6 +4407,9 @@ impl App {
                         "a" => self.game.nav_enter = true,
                         "y" => self.game.nav_y = true,
                         "start" => self.game.nav_start = true,
+                        "map" => self.game.nav_map = true,
+                        // (Map only while the mission log lesson, box 76, is up: the call's time varies from run to run)
+                        "maplesson" => self.game.nav_map |= self.game.tutorial_box.as_ref().is_some_and(|t| t.0.contains("mission_log")),
                         "b" => self.game.nav_back = true,
                         "up" => self.game.nav_up = true,
                         "down" => self.game.nav_down = true,
