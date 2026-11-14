@@ -72,21 +72,23 @@ function Invoke-Run([string]$exe, [int]$k, [string]$scen, [int]$rep) {
   if ($Affinity) { try { $p.ProcessorAffinity = [IntPtr]$Affinity } catch {} }
   $errTask = $p.StandardError.ReadToEndAsync(); $outTask = $p.StandardOutput.ReadToEndAsync()
   $csv = "$Out\runs\$tag.res.csv"
-  "sec,cpu_pct,gpu3d_pct,dedicated_mb,private_mb,ws_mb,machine_cpu_pct" | Out-File $csv -Encoding ascii
+  "sec,cpu_pct,gpu3d_pct,dedicated_mb,private_mb,ws_mb,machine_cpu_pct,other_gpu3d_pct" | Out-File $csv -Encoding ascii
   $n = [Environment]::ProcessorCount; $name = $p.ProcessName; $t0 = Get-Date
   while (-not $p.HasExited -and ((Get-Date) - $t0).TotalSeconds -lt $Seconds) {
     Start-Sleep 2
-    $s = [int]((Get-Date) - $t0).TotalSeconds; $cpu = 0; $g = 0; $d = 0; $m = 0
+    $s = [int]((Get-Date) - $t0).TotalSeconds; $cpu = 0; $g = 0; $d = 0; $m = 0; $og = 0
     try {
-      $cs = (Get-Counter -Counter @("\Process($name)\% Processor Time", "\GPU Engine(pid_$($p.Id)_*engtype_3D)\Utilization Percentage",
+      # (every process's 3D engine: ours is $g, the others' $og - another game on the GPU spoils the GPU times)
+      $cs = (Get-Counter -Counter @("\Process($name)\% Processor Time", "\GPU Engine(*engtype_3D)\Utilization Percentage",
         "\GPU Process Memory(pid_$($p.Id)_*)\Dedicated Usage", "\Processor(_Total)\% Processor Time") -ErrorAction SilentlyContinue).CounterSamples
       foreach ($x in $cs) {
-        if ($x.Path -like '*\process(*') { $cpu = $x.CookedValue / $n } elseif ($x.Path -like '*engtype_3d*') { $g += $x.CookedValue }
+        if ($x.Path -like '*\process(*') { $cpu = $x.CookedValue / $n } elseif ($x.Path -like "*pid_$($p.Id)_*engtype_3d*") { $g += $x.CookedValue }
+        elseif ($x.Path -like '*engtype_3d*') { $og += $x.CookedValue }
         elseif ($x.Path -like '*dedicated usage') { $d += $x.CookedValue } elseif ($x.Path -like '*processor(_total)*') { $m = $x.CookedValue }
       }
     } catch {}
     $p.Refresh()
-    "$s,$([math]::Round($cpu,1)),$([math]::Round($g,1)),$([int]($d/1MB)),$([int]($p.PrivateMemorySize64/1MB)),$([int]($p.WorkingSet64/1MB)),$([math]::Round($m,1))" | Out-File $csv -Append -Encoding ascii
+    "$s,$([math]::Round($cpu,1)),$([math]::Round($g,1)),$([int]($d/1MB)),$([int]($p.PrivateMemorySize64/1MB)),$([int]($p.WorkingSet64/1MB)),$([math]::Round($m,1)),$([math]::Round($og,1))" | Out-File $csv -Append -Encoding ascii
   }
   if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
   $p.WaitForExit(10000) | Out-Null

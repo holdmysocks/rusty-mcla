@@ -11,6 +11,8 @@ from collections import defaultdict
 T0 = 40.0
 # A run whose machine (all processes) averaged more CPU than this is left out: another program's load, not the build's.
 BUSY = 35.0
+# ... and one where other processes kept the GPU's 3D engine busier than this on average (another game on the GPU).
+GPU_BUSY = 15.0
 
 
 def pct(v, q):
@@ -32,9 +34,11 @@ def one(d, tag):
                  sim=st.mean(r[3] for r in rows), prep=st.mean(r[5] for r in rows), ui=st.mean(r[7] for r in rows),
                  passes=st.mean(r[8] for r in rows), submit=st.mean(r[9] for r in rows), draws=st.mean(r[10] for r in rows))
     res = [l.strip().split(',') for l in open(os.path.join(d, tag + '.res.csv'))][1:]
-    res = [[float(x) for x in r] for r in res if len(r) == 7 and float(r[0]) >= T0]
+    res = [[float(x) for x in r] for r in res if len(r) in (7, 8) and float(r[0]) >= T0]
     if res and st.mean(r[6] for r in res) > BUSY:
         raise ValueError(f'machine busy: {st.mean(r[6] for r in res):.0f} % CPU on average, left out')
+    if res and len(res[0]) == 8 and st.mean(r[7] for r in res) > GPU_BUSY:
+        raise ValueError(f'GPU shared: other processes used {st.mean(r[7] for r in res):.0f} % of the 3D engine on average, left out')
     if res:
         o.update(cpu=st.mean(r[1] for r in res), gpu3d=st.mean(r[2] for r in res), vram=max(r[3] for r in res), priv=max(r[4] for r in res))
     err = open(os.path.join(d, tag + '.err'), encoding='utf-8', errors='replace').read().splitlines()
