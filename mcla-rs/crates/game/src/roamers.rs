@@ -119,11 +119,11 @@ pub struct Man {
 }
 
 impl Man {
-    /// mcHookman_IsHidden (handler F-30864): 0 without a hookman, or while the career block's unlock-all byte
-    /// (+27785, F-47441; no code writes it - only a save block could, and the port has none) is set; else the
-    /// hookman's +196, the byte mcHookman_Hide (F-55720) writes as arg != 0 - `hidden` here (D57: the port keeps
-    /// the hookman's state in this struct). CruisingHookmanCore (0x0d18ab57) reads it at 0x0f6 / 0x392 / 0x60c:
-    /// not hidden -> his map element (mcHudMapServer_AddElement 0x14d / 0x3cc / 0x63b / 0x715) and icon; hidden -> none.
+    /// mcHookman_IsHidden (handler F-30864, run offline: testdata/is_hidden_ref.txt): 0 without a hookman, or while
+    /// the career block's unlock-all byte (+0x16C89, F-47441 reads it too; no code writes it - only a save block could,
+    /// and the port keeps none: 0) is set; else the hookman's +196, the byte mcHookman_Hide (F-55720) writes as
+    /// arg != 0 - `hidden` here. CruisingHookmanCore (0x0d18ab57) reads it at 0x0f6 / 0x392 / 0x60c: not hidden ->
+    /// his map element (mcHudMapServer_AddElement 0x14d / 0x3cc / 0x63b / 0x715) and icon; hidden -> none.
     pub fn is_hidden(m: Option<&Man>) -> bool {
         m.is_some_and(|m| m.hidden)
     }
@@ -1869,20 +1869,22 @@ mod tests {
 
     #[test]
     fn is_hidden_is_the_originals_rule() {
-        // (F-30864 as read: no hookman -> 0; the unlock-all byte set -> 0; else +196, which F-55720 writes as arg != 0)
-        fn original(man: Option<u8>, unlock_all: u8) -> u32 {
-            match man {
-                Some(b196) if unlock_all == 0 => b196 as u32,
-                _ => 0,
-            }
-        }
+        // (F-30864 run offline, tools/is_hidden_reference.py: <hookman> <+196> <unlock-all> -> <answer>. The port's
+        // +196 is `hidden` (Hide writes 0 / 1) and its unlock-all byte is 0: those rows must give the port's answer)
         let man = |key: &str, hidden: bool| Man { key: key.into(), kind: ManKind::Slot, district: 0, name: String::new(), car: String::new(), config: String::new(), difficulty: 0, mission: String::new(), event: String::new(), hidden, pts: vec![Vec3::ZERO, Vec3::X * 10.0, Vec3::new(10.0, 0.0, 10.0)], at: 0.0, mod_value: -1, uid: 0, heading: None, start: None, fresh: false, reset: false, parked: false, met: false, off: false, no_driver: false };
-        // (the scripts' Hide arguments are 1 and 0; any non-zero word hides; the port's unlock-all byte is always 0)
-        for hide in [1u32, 0, 2, 0xFFFF_FFFF] {
-            let m = man("slot:0:0", hide != 0);
-            assert_eq!(Man::is_hidden(Some(&m)) as u32, original(Some((hide != 0) as u8), 0), "Hide({hide})");
+        let mut n = 0;
+        for l in include_str!("testdata/is_hidden_ref.txt").lines() {
+            let v: Vec<u32> = l.split_whitespace().filter(|w| *w != "->").map(|w| w.parse().unwrap()).collect();
+            let (there, b196, unlock, out) = (v[0], v[1], v[2], v[3]);
+            if unlock != 0 || b196 > 1 {
+                continue;
+            }
+            let m = man("slot:0:0", b196 == 1);
+            let port = Man::is_hidden(if there == 1 { Some(&m) } else { None });
+            assert_eq!(port as u32, out, "{l}");
+            n += 1;
         }
-        assert_eq!(Man::is_hidden(None) as u32, original(None, 0));
+        assert_eq!(n, 4);
         // (the core's branch: only a man not hidden gets a map mark)
         let mut r = Roamers::new();
         r.men = vec![man("slot:0:0", true), man("slot:0:1", false)];
