@@ -524,6 +524,18 @@ impl CarConfig {
     }
 }
 
+/// MCLA_MOUNT_OLD / MCLA_WIDE_OLD, read once (D59: they were read for each part in `variants`, about a thousand reads
+/// a car build).
+fn mount_old() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("MCLA_MOUNT_OLD").is_some())
+}
+
+fn wide_old() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("MCLA_WIDE_OLD").is_some())
+}
+
 pub fn classify_slot(primary: &str, names: &[String]) -> Slot {
     let p = primary.to_ascii_lowercase();
     // the base body fragment is never a slot part, whatever its meshes are called
@@ -580,7 +592,7 @@ pub const SPOILER_TAG: u16 = 16868;
 /// that bone + the part's own bone, capture tg_12), any spoiler on the car's spoiler bone
 /// (R8, Murcielago, Ford GT, Cobra), else on the trunk lid.
 pub fn spoiler_tags(primary: &str) -> Vec<u16> {
-    if std::env::var("MCLA_MOUNT_OLD").is_ok() {
+    if mount_old() {
         return vec![33531];
     }
     let p = primary.to_ascii_lowercase();
@@ -804,7 +816,7 @@ fn primary_name(names: &[String], root: &str) -> String {
             || s.starts_with("hydraulics");
         ok && !s.contains("anim") && !s.starts_with("glow")
     };
-    let root_ok = !root.is_empty() && root.len() >= 4 && root.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_') && std::env::var("MCLA_MOUNT_OLD").is_err();
+    let root_ok = !root.is_empty() && root.len() >= 4 && root.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_') && !mount_old();
     names.iter().find(|s| slot_re(s)).cloned().unwrap_or_else(|| if root_ok { root.to_string() } else { names.first().cloned().unwrap_or_default() })
 }
 
@@ -1223,7 +1235,7 @@ pub fn load_car(assets: &Assets, car_dir: &Path) -> Result<CarAsset> {
     }
     // (exhaust tips are drawn at the rear end's outlet bones, wherever the car's skeleton has a
     // bumper bone or not - the DUB editions have none: `CarAsset::placed_parts_for`)
-    let has_outlets = parts.iter().any(|p| !p.sockets.is_empty()) && std::env::var("MCLA_MOUNT_OLD").is_err();
+    let has_outlets = parts.iter().any(|p| !p.sockets.is_empty()) && !mount_old();
     for part in parts.iter_mut() {
         let slot = classify_slot(&part.primary, &part.names);
         // is the part already in car space? (its box overlaps the body volume)
@@ -1399,7 +1411,7 @@ impl CarAsset {
         let mut v: Vec<String> = Vec::new();
         // (the parts of the garage's other lists - side exhausts `exh_side<n>` beside the tips
         // `exh_pipe<n>` - are chosen by `CarConfig::extra`, never as a variant of the slot)
-        let own_list = |p: &CarPart| extra_part(&p.primary).is_some() && std::env::var("MCLA_MOUNT_OLD").is_err();
+        let own_list = |p: &CarPart| extra_part(&p.primary).is_some() && !mount_old();
         for p in self.parts.iter().filter(|p| p.placed && classify_slot(&p.primary, &p.names) == slot && !own_list(p)) {
             let name = p.primary.as_str();
             let number = match slot {
@@ -1465,7 +1477,7 @@ impl CarAsset {
     pub fn parts_for(&self, cfg: &CarConfig) -> Vec<&CarPart> {
         let wide = self.wide_kit(cfg);
         let mut v = self.parts_for_any(cfg);
-        if std::env::var("MCLA_WIDE_OLD").is_err() {
+        if !wide_old() {
             v.retain(|p| kit_allows(&p.primary, wide));
         }
         v
@@ -1503,7 +1515,7 @@ impl CarAsset {
             // (slots 39 / 40 at the record's index, 0 on every record: the wide table has no hood or spoiler slot of
             // the garage's lists, so the HOOD / SPOILER choice is not drawn with the kit)
             for (slot, primary) in [(Slot::Hood, "hood_wide0"), (Slot::Spoiler, "spoiler_wide0")] {
-                if (cfg.get(slot) == 0 || std::env::var("MCLA_WIDE_OLD").is_err()) && self.parts.iter().any(|p| p.placed && p.primary == primary) {
+                if (cfg.get(slot) == 0 || !wide_old()) && self.parts.iter().any(|p| p.placed && p.primary == primary) {
                     want.insert(slot, primary.to_string());
                 }
             }
@@ -1583,7 +1595,7 @@ impl CarAsset {
         // (F-39836: the tip at `exh_primary0` as the bone stands and at `exh_secondary0` with the
         // bone's x row negated - the mirror image, drawn with the cull mode flipped; vehicles.rs
         // reverses the winding of a mirrored instance)
-        let outlets: Vec<Mat4> = if std::env::var("MCLA_MOUNT_OLD").is_ok() {
+        let outlets: Vec<Mat4> = if mount_old() {
             Vec::new()
         } else {
             parts.iter().filter(|p| !p.sockets.is_empty()).min_by_key(|p| rank(p)).map(|p| p.sockets.iter().map(|(n, m)| {

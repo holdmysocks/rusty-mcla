@@ -1826,10 +1826,44 @@ pub fn car_tex_raw() -> bool {
 
 /// A car's map from its own dictionary, as stored or gamma-decoded by `car_tex_raw`, with the key it is under.
 fn car_upload(gpu: &mut Gpu, key: u32, t: &mcla_formats::rage::texture::Texture) -> (Arc<GpuTexture>, u32) {
+    let _bt = build_times::Span::new(0);
     // (evictable: once no model draws with it, it goes with the unused city textures - `Vehicles::free_idle_models`)
     let (g, k) = if car_tex_raw() { (gpu.upload_texture_raw(key ^ 0x0052_4157, t), key ^ 0x0052_4157) } else { (gpu.upload_texture(key, t), key) };
     gpu.texture_evictable(k, t);
     (g, k)
+}
+
+/// MCLA_BUILDTIMES=1: the GPU part of a car build by kind (0 its own textures, 1 shared / global textures, 2 bind groups,
+/// 3 vertex / index buffers), added to the "car model ... built" line (D59 audit).
+mod build_times {
+    use std::cell::Cell;
+    thread_local!(static T: Cell<[f64; 8]> = const { Cell::new([0.0; 8]) });
+    pub fn on() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var_os("MCLA_BUILDTIMES").is_some())
+    }
+    pub struct Span(usize, Option<std::time::Instant>);
+    impl Span {
+        pub fn new(k: usize) -> Span {
+            Span(k, on().then(std::time::Instant::now))
+        }
+    }
+    impl Drop for Span {
+        fn drop(&mut self) {
+            if let Some(t) = self.1 {
+                let ms = t.elapsed().as_secs_f64() * 1000.0;
+                T.with(|c| {
+                    let mut a = c.get();
+                    a[self.0] += ms;
+                    c.set(a);
+                });
+            }
+        }
+    }
+    /// The times since the last take.
+    pub fn take() -> [f64; 8] {
+        T.with(|c| c.replace([0.0; 8]))
+    }
 }
 
 /// ... and a global or shared one (`World::texture_any`).
@@ -1924,11 +1958,14 @@ fn roof_skin_write(gpu: &Gpu, model: &CarModel, top: &vehicle_model::BoneClip, t
     }
 }
 
-/// CPU-side accumulator for meshes that share a material.
+/// CPU-side accumulator for meshes that share a material: the meshes in build order, put together once where the batch
+/// is made (`write_into` / `flat`; D59: the build copied each vertex twice into vectors grown by doubling, 2 - 60 ms a
+/// car on the game thread). The bytes are those of appending them one after the other, as before.
 struct MergeAcc {
-    verts: Vec<Vertex>,
-    skin: Vec<([u16; 4], [f32; 4])>,
-    indices: Vec<u32>,
+    parts: Vec<MeshGeo>,
+    nverts: usize,
+    nskin: usize,
+    nindices: usize,
     d: Arc<GpuTexture>,
     s2: Arc<GpuTexture>,
     sname: String,
@@ -1941,12 +1978,39 @@ impl MergeAcc {
     /// A mesh's geometry (`MeshGeo`, its indices from 0) after what the batch holds: as `MeshGeo::push` into the batch
     /// itself had put it.
     fn append(&mut self, g: MeshGeo) {
-        let base = self.verts.len() as u32;
         self.min = self.min.min(g.min);
         self.max = self.max.max(g.max);
-        self.verts.extend(g.verts);
-        self.skin.extend(g.skin);
-        self.indices.extend(g.indices.iter().map(|i| i + base));
+        self.nverts += g.verts.len();
+        self.nskin += g.skin.len();
+        self.nindices += g.indices.len();
+        self.parts.push(g);
+    }
+
+    /// Its vertices and indices (from 0, each mesh's after the ones before) added to `v` / `i`.
+    fn write_into(&self, v: &mut Vec<Vertex>, i: &mut Vec<u32>) {
+        pack_parts(&self.parts, v, i);
+    }
+
+    /// Its vertices, skin and indices as vectors of their own.
+    fn flat(&self) -> (Vec<Vertex>, Vec<([u16; 4], [f32; 4])>, Vec<u32>) {
+        let (mut v, mut i) = (Vec::with_capacity(self.nverts), Vec::with_capacity(self.nindices));
+        self.write_into(&mut v, &mut i);
+        let mut sk = Vec::with_capacity(self.nskin);
+        for g in &self.parts {
+            sk.extend_from_slice(&g.skin);
+        }
+        (v, sk, i)
+    }
+}
+
+/// Meshes one after the other, as one batch: their vertices added to `v` and their indices to `i`, each mesh's from 0
+/// after the vertices of the meshes before it (`MergeAcc`).
+fn pack_parts(parts: &[MeshGeo], v: &mut Vec<Vertex>, i: &mut Vec<u32>) {
+    let mut base = 0u32;
+    for g in parts {
+        v.extend_from_slice(&g.verts);
+        i.extend(g.indices.iter().map(|x| x + base));
+        base += g.verts.len() as u32;
     }
 }
 
@@ -2783,6 +2847,7 @@ impl Vehicles {
             None => Self::prep_car(&car, dir, cfg),
         };
         let mut batches = Vec::new();
+        let mut stages: Vec<(&str, f64)> = vec![("read", t_load.elapsed().as_secs_f64() * 1000.0)];
         let mut merged: hashbrown::HashMap<(u32, u32, u32), MergeAcc> = hashbrown::HashMap::new();
         // (meshes sharing textures and material mode are merged into one draw, in build order: `prep_car`)
         for m in meshes {
@@ -2806,7 +2871,11 @@ impl Vehicles {
                     log::debug!("car texture {} from car dict: {}x{} {:?} name {:?} levels {}", name, t.width, t.height, t.format, t.name, t.levels.len());
                     return car_upload(gpu, h, t);
                 }
-                if let Some(t) = car_any(gpu, world, h) {
+                let any = {
+                    let _bt = build_times::Span::new(1);
+                    car_any(gpu, world, h)
+                };
+                if let Some(t) = any {
                     return (t, hk);
                 }
                 log::debug!("car texture miss: {} ({:#010x})", name, h);
@@ -2839,7 +2908,8 @@ impl Vehicles {
                 _ => m.geo,
             };
             let (sname, mode) = (m.sname, m.mode);
-            let acc = merged.entry((k0, k1, m.kbits)).or_insert_with(|| MergeAcc { verts: Vec::new(), skin: Vec::new(), indices: Vec::new(), d, s2, sname, mode, min: Vec3::splat(f32::INFINITY), max: Vec3::splat(f32::NEG_INFINITY) });
+            let acc = merged.entry((k0, k1, m.kbits)).or_insert_with(|| MergeAcc { parts: Vec::new(), nverts: 0, nskin: 0, nindices: 0, d, s2, sname, mode, min: Vec3::splat(f32::INFINITY), max: Vec3::splat(f32::NEG_INFINITY) });
+            let _bt = build_times::Span::new(5);
             acc.append(geo);
         }
         let mut keys: Vec<(u32, u32, u32)> = merged.keys().copied().collect();
@@ -2853,7 +2923,7 @@ impl Vehicles {
                 for (label, z) in [("front hub", h[0].z), ("rear hub", h[2].z), ("middle", 0.0)] {
                     let mut ys: Vec<f32> = Vec::new();
                     for acc in merged.values().filter(|a| a.mode == MatMode::Paint) {
-                        for v in &acc.verts {
+                        for v in acc.parts.iter().flat_map(|g| g.verts.iter()) {
                             if (v.pos[2] - z).abs() < 0.05 && v.pos[0].abs() > h[1].x.abs() - 0.02 {
                                 ys.push(v.pos[1]);
                             }
@@ -2865,7 +2935,7 @@ impl Vehicles {
                 let mut lo = f32::INFINITY;
                 let mut which = String::new();
                 for acc in merged.values() {
-                    for v in &acc.verts {
+                    for v in acc.parts.iter().flat_map(|g| g.verts.iter()) {
                         if v.pos[1] < lo {
                             lo = v.pos[1];
                             which = acc.sname.clone();
@@ -2875,52 +2945,61 @@ impl Vehicles {
                 log::info!("body lowest vertex y {:.3} in shader {}", lo, which);
             }
         }
+        stages.push(("meshes", t_load.elapsed().as_secs_f64() * 1000.0));
         let pack_old = std::env::var_os("MCLA_CAR_PACK_OLD").is_some();
         let pack_dummy = Arc::new(gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("car pack (unset)"), size: 4, usage: wgpu::BufferUsages::VERTEX, mapped_at_creation: false }));
-        let mut pack_v: Vec<Vertex> = Vec::new();
-        let mut pack_i: Vec<u32> = Vec::new();
+        // (sized once for every batch: the most it can hold)
+        let mut pack_v: Vec<Vertex> = Vec::with_capacity(if pack_old { 0 } else { merged.values().map(|a| a.nverts).sum() });
+        let mut pack_i: Vec<u32> = Vec::with_capacity(if pack_old { 0 } else { merged.values().map(|a| a.nindices).sum() });
         for k in keys {
             let acc = merged.remove(&k).unwrap();
-            if acc.indices.is_empty() {
+            if acc.nindices == 0 {
                 continue;
             }
             // (the windows with the glass maps also carry the in-car program's noise as their third texture)
             let win_noise = if k.0 == mcla_formats::hash::joaat("window_detail_mask.dds") ^ 0x0052_4157 && acc.mode == MatMode::CarGlass { glass_noise(gpu, world) } else { None };
+            let bt = build_times::Span::new(2);
             let bind = match win_noise {
                 Some((t3, k2)) => gpu.texture_bind_group3_c(&acc.d, &acc.s2, &t3, k.0, k.1, k2, (k.2 >> 6) & 63),
                 None => gpu.texture_bind_group_c(&acc.d, &acc.s2, k.0, k.1, (k.2 >> 6) & 63),
             };
+            drop(bt);
             // (the skinned roof's vertices are written again while it moves: `Vehicles::upload_uniforms`)
-            let skinned = !acc.skin.is_empty() && acc.skin.len() == acc.verts.len() && (k.2 >> 24) & 3 == 0;
+            let skinned = acc.nskin > 0 && acc.nskin == acc.nverts && (k.2 >> 24) & 3 == 0;
+            // (a batch with a buffer of its own: its vertices put together here)
+            let own = (skinned || pack_old).then(|| acc.flat());
             // (a skinned roof keeps a vertex buffer of its own, written while it moves; the other batches' vertices and
             // indices go into the model's two shared buffers, made after this loop - `pack`; MCLA_CAR_PACK_OLD=1: a buffer
             // pair per batch, as before)
-            let (vb, ib) = if skinned || pack_old {
+            let (vb, ib) = if let Some((verts, _, indices)) = own.as_ref() {
                 let usage = if skinned { wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST } else { wgpu::BufferUsages::VERTEX };
-                let vb = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("car vb"), contents: bytemuck::cast_slice(&acc.verts), usage });
-                let ib = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("car ib"), contents: bytemuck::cast_slice(&acc.indices), usage: wgpu::BufferUsages::INDEX });
+                let _bt = build_times::Span::new(3);
+                let vb = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("car vb"), contents: bytemuck::cast_slice(verts), usage });
+                let ib = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("car ib"), contents: bytemuck::cast_slice(indices), usage: wgpu::BufferUsages::INDEX });
                 (crate::world::BufPart::whole(vb), crate::world::BufPart::whole(ib))
             } else {
                 let vsz = std::mem::size_of::<Vertex>() as u64;
-                let v = crate::world::BufPart { buf: pack_dummy.clone(), off: pack_v.len() as u64 * vsz, len: acc.verts.len() as u64 * vsz };
-                let i = crate::world::BufPart { buf: pack_dummy.clone(), off: pack_i.len() as u64 * 4, len: acc.indices.len() as u64 * 4 };
-                pack_v.extend_from_slice(&acc.verts);
-                pack_i.extend_from_slice(&acc.indices);
+                let v = crate::world::BufPart { buf: pack_dummy.clone(), off: pack_v.len() as u64 * vsz, len: acc.nverts as u64 * vsz };
+                let i = crate::world::BufPart { buf: pack_dummy.clone(), off: pack_i.len() as u64 * 4, len: acc.nindices as u64 * 4 };
+                let _bt = build_times::Span::new(4);
+                acc.write_into(&mut pack_v, &mut pack_i);
                 (v, i)
             };
             if skinned {
-                roof_skin.push((batches.len(), acc.verts.clone(), acc.skin.clone()));
+                if let Some((verts, skin, _)) = own {
+                    roof_skin.push((batches.len(), verts, skin));
+                }
             }
             // (bit 31: a traffic mesh of the blended bucket, bits 26 - 30 its place among them - `prep_car`)
             let (group, lod) = ((k.2 >> 16) as u8, ((k.2 >> 24) & 3) as usize);
             if group != 0 {
-                log::debug!("car {}: moving group {} (1/2 windows, 3 hood, 4 trunk, 5/6 bumpers) batch shader {} tris {}", car.name, group, acc.sname, acc.indices.len() / 3);
+                log::debug!("car {}: moving group {} (1/2 windows, 3 hood, 4 trunk, 5/6 bumpers) batch shader {} tris {}", car.name, group, acc.sname, acc.nindices / 3);
             }
             if std::env::var("MCLA_ANISO_LOG").is_ok() {
                 // (each draw's own-anisotropy code, render/aniso.rs: mask of the fetches, then the value field)
                 log::info!("aniso {} {}: mask {:04b} max {}", car.name, acc.sname, (k.2 >> 6) & 15, crate::render::aniso::OWN_MAX[((k.2 >> 10) & 3) as usize]);
             }
-            let b = GpuBatch { shader: acc.sname, vb, ib, count: acc.indices.len() as u32, bind, mode: acc.mode, min: acc.min, max: acc.max, bucket: (k.2 >> 31) as u8, cull: ((k.2 >> 12) & 7) as u8, base_lens: (k.2 >> 15) & 1 != 0 };
+            let b = GpuBatch { shader: acc.sname, vb, ib, count: acc.nindices as u32, bind, mode: acc.mode, min: acc.min, max: acc.max, bucket: (k.2 >> 31) as u8, cull: ((k.2 >> 12) & 7) as u8, base_lens: (k.2 >> 15) & 1 != 0 };
             if lod == 0 {
                 batch_window.push(group);
                 batches.push(b);
@@ -2931,6 +3010,7 @@ impl Vehicles {
         }
         // (the packed batches' two buffers: each batch's part points into them)
         if !pack_v.is_empty() {
+            let _bt = build_times::Span::new(3);
             let vb = Arc::new(gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("car vb"), contents: bytemuck::cast_slice(&pack_v), usage: wgpu::BufferUsages::VERTEX }));
             let ib = Arc::new(gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("car ib"), contents: bytemuck::cast_slice(&pack_i), usage: wgpu::BufferUsages::INDEX }));
             for b in batches.iter_mut().chain(lods.iter_mut().flat_map(|l| l.0.iter_mut())) {
@@ -2940,6 +3020,7 @@ impl Vehicles {
                 }
             }
         }
+        stages.push(("batches", t_load.elapsed().as_secs_f64() * 1000.0));
         let mut params = car_params(&car);
         // cars with the original's tuning drive on the ported simulation (MCLA_OLD_PHYSICS keeps the simple model)
         let simtunes = if std::env::var("MCLA_OLD_PHYSICS").is_ok() { None } else { car.simtune.clone() };
@@ -2970,6 +3051,7 @@ impl Vehicles {
         log::info!("car {}: hubs {:?} bounds {:?}..{:?} wheel radius {:.3}", car.name, car.hubs, car.min, car.max, params.wheel_radius);
         let params_mods = car_params_mods(&car, &params);
         log::info!("car model {}: {} batches (LOD 1 {}, LOD 2 {}), mass {:.0}, built in {:.0} ms ({:.0} reading the files)", car.name, batches.len(), lods[0].0.len(), lods[1].0.len(), params.mass, t_load.elapsed().as_secs_f32() * 1000.0, ms_parse);
+        stages.push(("params", t_load.elapsed().as_secs_f64() * 1000.0));
         // stock wheels: whl_stk_<car> for the base cars, whld_stk_<car> for the DLC set
         let base_name = car.name.to_ascii_lowercase().replace("_dub", "");
         let cands = stock_rim_dirs(&world.assets.root, &car.name);
@@ -3015,6 +3097,7 @@ impl Vehicles {
                 }
             }
         };
+        stages.push(("wheels", t_load.elapsed().as_secs_f64() * 1000.0));
         let lamps: Vec<(u8, Vec3)> = lamp_acc.iter().map(|((id, _), (sum, n))| (*id as u8, *sum / (*n).max(1) as f32)).collect();
         let own_wheels = own_hubs.iter().any(|h| h.is_some()).then_some(own_hubs);
         let (bw, bl) = if car_is_ambient { traffic::bound_size(&world.assets.root, &car.name) } else { None }.unwrap_or((car.max.x - car.min.x, car.max.z - car.min.z));
@@ -3026,6 +3109,12 @@ impl Vehicles {
         // (F-74884, a bike's set-up: +4092 / +4096 = |max - min| of the translation limits, crBoneData +144 / +160, of the
         // first bone named wheel_0 / wheel_2 in the base fragment's skeleton, then the parts' - F-20921)
         let bike_wheel_width = ["wheel_0", "wheel_2"].map(|n| car.skeleton.as_ref().and_then(|s| s.bones.iter().find(|b| b.name == n)).map_or(params.wheel_width, |b| (b.trans_limits.1 - b.trans_limits.0).length()));
+        if build_times::on() {
+            let t = build_times::take();
+            stages.push(("rest", t_load.elapsed().as_secs_f64() * 1000.0));
+            let st: Vec<String> = stages.iter().scan(0.0, |p, (n, t)| { let d = t - *p; *p = *t; Some(format!("{n} {d:.2}")) }).collect();
+            log::info!("car build gpu {}: own textures {:.2}, shared textures {:.2}, bind groups {:.2}, buffers {:.2}, pack copy {:.2}, merge {:.2} ms; stages {}; whole build {:.1} ms", car.name, t[0], t[1], t[2], t[3], t[4], t[5], st.join(", "), t_load.elapsed().as_secs_f64() * 1000.0);
+        }
         let m = Arc::new(CarModel { lods, lod_radius, lod_centre, lod_steps, bound_box, own_wheels, name: car.name.clone(), lamps, glow_bones, glow_sides, font_bones, batches, params, params_mods, simtunes, vehmods: car.vehmods.clone(), fit: car.fit, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, susp_lever: car.susp_lever, susp_bones: (!car.susp_bones.is_empty()).then(|| Arc::new(car.susp_bones.clone())), bike_wheel_width, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), spoiler: car.spoiler.clone().map(Arc::new), clamshell: car.clamshell.clone().filter(|_| car.skinned_top.is_some()).map(Arc::new), skinned_top: car.skinned_top.clone().filter(|_| car.clamshell.is_some()).map(Arc::new), needles: [car.needles[0].clone().map(Arc::new), car.needles[1].clone().map(Arc::new), upgrade.as_ref().map(|u| u.0.clone())], needle_place: upgrade.as_ref().map_or(Mat4::IDENTITY, |u| u.1), light_flip: flip.as_ref().map(|f| f.0.clone()), flip_place: flip.as_ref().map_or(Mat4::IDENTITY, |f| f.1), roof_skin, roof_place, cop_lights: car.cop_lights.clone().map(Arc::new), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone, slot_bones, turn_bones, susp_draw, fx_anchors, fx_anchor_rear, rest_rot: rest_table(&rest_rot) });
         Ok(m)
     }
@@ -9612,6 +9701,83 @@ pub fn dmg_params(group: u32, bike: bool, movement: [u32; 4]) -> [f32; 4] {
         g if g == DENT_GROUP + 3 => if movement[0] != 0 { DMG_BUMPER_F } else { DMG_BODY },
         g if g == ROOF_GROUP || g == ROOF_GROUP + 2 || g == TURN_GROUP + 2 || g == TURN_GROUP + 3 || g == DENT_GROUP || (SUSP_GROUP..FLIP_GROUP).contains(&g) => DMG_NONE,
         _ => DMG_BODY,
+    }
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+
+    /// The merge as it was before D59 (MergeAcc::append into growing vectors, then each batch extended onto the pack),
+    /// kept here to compare with.
+    #[derive(Default)]
+    struct OldAcc {
+        verts: Vec<Vertex>,
+        skin: Vec<([u16; 4], [f32; 4])>,
+        indices: Vec<u32>,
+        min: Vec3,
+        max: Vec3,
+    }
+    impl OldAcc {
+        fn append(&mut self, g: &MeshGeo) {
+            let base = self.verts.len() as u32;
+            self.min = self.min.min(g.min);
+            self.max = self.max.max(g.max);
+            self.verts.extend(g.verts.iter().copied());
+            self.skin.extend(g.skin.iter().copied());
+            self.indices.extend(g.indices.iter().map(|i| i + base));
+        }
+    }
+
+    /// Every car on the disc (stock build): its meshes grouped by batch key bits, packed the old way and the new
+    /// (`pack_parts`, as `MergeAcc::write_into` / `flat`): the same vertex and index bytes, skin, bounds and ranges.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc"]
+    fn merge_packs_as_before() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let assets = crate::assets::Assets::new(&dir);
+        let root = std::path::Path::new(&dir).join("resources/vehicle");
+        let mut cars: Vec<_> = std::fs::read_dir(&root).unwrap().flatten().map(|e| e.path())
+            .filter(|p| p.is_dir() && p.file_name().map_or(false, |n| { let n = n.to_string_lossy(); n.starts_with("vp_") || n.starts_with("va_") })).collect();
+        cars.sort();
+        let (mut ncars, mut nverts) = (0, 0usize);
+        for p in cars {
+            let name = p.file_name().unwrap().to_string_lossy().to_string();
+            let Ok(car) = vehicle_model::load_car(&assets, &p) else { continue };
+            let prep = Vehicles::prep_car(&car, &p, &CarConfig::default());
+            let mut groups: std::collections::BTreeMap<u32, Vec<MeshGeo>> = Default::default();
+            for m in prep.meshes {
+                groups.entry(m.kbits).or_default().push(m.geo);
+            }
+            let (mut ov, mut oi, mut nv, mut ni) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+            nv.reserve(groups.values().flatten().map(|g| g.verts.len()).sum());
+            for parts in groups.values() {
+                let mut old = OldAcc { min: Vec3::splat(f32::INFINITY), max: Vec3::splat(f32::NEG_INFINITY), ..Default::default() };
+                for g in parts {
+                    old.append(g);
+                }
+                let (off_v, off_i) = (nv.len(), ni.len());
+                assert_eq!((ov.len(), oi.len()), (off_v, off_i), "{name}");
+                ov.extend_from_slice(&old.verts);
+                oi.extend_from_slice(&old.indices);
+                pack_parts(parts, &mut nv, &mut ni);
+                assert_eq!((nv.len() - off_v, ni.len() - off_i), (old.verts.len(), old.indices.len()), "{name}");
+                let (mut fv, mut fi) = (Vec::new(), Vec::new());
+                pack_parts(parts, &mut fv, &mut fi);
+                let sk: Vec<_> = parts.iter().flat_map(|g| g.skin.iter().copied()).collect();
+                assert_eq!(bytemuck::cast_slice::<_, u8>(&fv), bytemuck::cast_slice::<_, u8>(&old.verts), "{name}");
+                assert_eq!(fi, old.indices, "{name}");
+                assert_eq!(sk, old.skin, "{name}");
+                let (mn, mx) = parts.iter().fold((Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)), |(a, b), g| (a.min(g.min), b.max(g.max)));
+                assert_eq!((mn.to_array().map(f32::to_bits), mx.to_array().map(f32::to_bits)), (old.min.to_array().map(f32::to_bits), old.max.to_array().map(f32::to_bits)), "{name}");
+            }
+            assert_eq!(bytemuck::cast_slice::<_, u8>(&nv), bytemuck::cast_slice::<_, u8>(&ov), "{name}");
+            assert_eq!(ni, oi, "{name}");
+            nverts += nv.len();
+            ncars += 1;
+        }
+        println!("merge: {ncars} cars, {nverts} vertices, packed byte for byte as before");
+        assert!(ncars > 80);
     }
 }
 
