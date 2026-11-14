@@ -1159,7 +1159,7 @@ impl SkinBuffer {
             Some(a) => [a[0], a[1], a[2], 0],
             None => crate::fillmap::figure_now(root.w_axis.x, root.w_axis.z),
         };
-        let gpu_ok = self.gpu_skin && self.device.is_some() && !skin_on_cpu();
+        let gpu_ok = self.gpu_skin && self.device.is_some() && matches!(GPU_SKIN.get(), Some(Ok(())));
         let mut mat_off = None;
         for (pi, part) in parts.iter().enumerate() {
             let base = self.nverts;
@@ -1249,6 +1249,7 @@ impl SkinBuffer {
     pub fn upload(&mut self, gpu: &Gpu) {
         if self.device.is_none() {
             self.device = Some(gpu.device.clone());
+            decide_gpu_skinning(&gpu.device, &gpu.queue);
         }
         if self.nverts == 0 {
             return;
@@ -1269,7 +1270,7 @@ impl SkinBuffer {
             gpu.queue.write_buffer(self.vb.as_ref().unwrap(), dst as u64 * vsz, bytemuck::cast_slice(&self.verts[start as usize..(start + n) as usize]));
         }
         if !self.gpu_jobs.is_empty() {
-            self.cs.get_or_insert_with(|| SkinCs::new(&gpu.device)).write(gpu, &self.gpu_mats, &self.gpu_jobs);
+            self.cs.get_or_insert_with(|| SkinCs::new(&gpu.device)).write(&gpu.device, &gpu.queue, &self.gpu_mats, &self.gpu_jobs);
         }
         gpu.queue.write_buffer(self.ib.as_ref().unwrap(), 0, bytemuck::cast_slice(&self.indices));
         // (the lit figures' lanes: rows 0..11 of the object's first lamp table, the mark 2 in row 0
@@ -1485,6 +1486,135 @@ fn skin_on_cpu() -> bool {
     *V.get_or_init(|| std::env::var_os("MCLA_SKIN_CPU").is_some())
 }
 
+/// Whether this device skins on the GPU (D59.gpu-skin): decided once, at start (`decide_gpu_skinning`, called after the
+/// renderer is made) or at the first figure's upload, and logged: "skinning: GPU" or "skinning: CPU (reason)".
+static GPU_SKIN: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
+
+/// Decides and logs which path skins the figures. The GPU path runs only when the device's limits allow
+/// `skin_cs.wgsl`'s bindings and dispatch, its pipeline is made without an error, and a self-test dispatch writes the
+/// CPU's `skin_vertex` words exactly (512 vertices, both layouts). Anything else: the CPU path, as before D59.
+/// MCLA_SKIN_CPU=1 forces the CPU; MCLA_SKIN_LIMITS=downlevel / webgl2 checks against wgpu's lower limit sets instead of
+/// the device's (a test hook: what a weaker card would report).
+pub fn decide_gpu_skinning(dev: &wgpu::Device, q: &wgpu::Queue) -> bool {
+    GPU_SKIN
+        .get_or_init(|| {
+            let r = if skin_on_cpu() {
+                Err("MCLA_SKIN_CPU".to_string())
+            } else {
+                let lim = match std::env::var("MCLA_SKIN_LIMITS").as_deref() {
+                    Ok("downlevel") => wgpu::Limits::downlevel_defaults(),
+                    Ok("webgl2") => wgpu::Limits::downlevel_webgl2_defaults(),
+                    _ => dev.limits(),
+                };
+                gpu_skin_probe(dev, q, &lim)
+            };
+            match &r {
+                Ok(()) => log::info!("skinning: GPU"),
+                Err(e) => log::info!("skinning: CPU ({e})"),
+            }
+            r
+        })
+        .is_ok()
+}
+
+/// The path chosen, for the `perf:` log line ("GPU", "CPU" or "undecided").
+pub fn skinning_path() -> &'static str {
+    match GPU_SKIN.get() {
+        Some(Ok(())) => "GPU",
+        Some(Err(_)) => "CPU",
+        None => "undecided",
+    }
+}
+
+/// What `skin_cs.wgsl` needs of the limits: four storage buffers and a uniform in the compute stage, 64-wide groups, the
+/// arena's dispatch and binding sizes.
+fn gpu_skin_limits_ok(l: &wgpu::Limits) -> Result<(), String> {
+    let need = |ok: bool, what: &str| if ok { Ok(()) } else { Err(format!("limit {what}")) };
+    need(l.max_bind_groups >= 1, "max_bind_groups")?;
+    need(l.max_storage_buffers_per_shader_stage >= 4, &format!("max_storage_buffers_per_shader_stage {} < 4", l.max_storage_buffers_per_shader_stage))?;
+    need(l.max_uniform_buffers_per_shader_stage >= 1, "max_uniform_buffers_per_shader_stage")?;
+    need(l.max_compute_workgroup_size_x >= 64 && l.max_compute_invocations_per_workgroup >= 64, &format!("compute workgroup size {} / {} < 64", l.max_compute_workgroup_size_x, l.max_compute_invocations_per_workgroup))?;
+    need(l.max_compute_workgroups_per_dimension as u64 >= ARENA_MAX_VERTS.div_ceil(64), &format!("max_compute_workgroups_per_dimension {}", l.max_compute_workgroups_per_dimension))?;
+    need(l.max_storage_buffer_binding_size as u64 >= ARENA_MAX_VERTS * SRC_BYTES, &format!("max_storage_buffer_binding_size {}", l.max_storage_buffer_binding_size))?;
+    Ok(())
+}
+
+fn gpu_skin_probe(dev: &wgpu::Device, q: &wgpu::Queue, lim: &wgpu::Limits) -> Result<(), String> {
+    gpu_skin_limits_ok(lim)?;
+    dev.push_error_scope(wgpu::ErrorFilter::Validation);
+    dev.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gpu_skin_self_test(dev, q)));
+    let oom = pollster::block_on(dev.pop_error_scope());
+    let val = pollster::block_on(dev.pop_error_scope());
+    if let Some(e) = val {
+        return Err(format!("validation error: {}", e.to_string().lines().next().unwrap_or("")));
+    }
+    if let Some(e) = oom {
+        return Err(format!("out of memory: {}", e.to_string().lines().next().unwrap_or("")));
+    }
+    r.map_err(|_| "self-test panicked".to_string())?
+}
+
+/// One real dispatch through `SkinCs` (pipeline, arena, job table) over 512 vertices of random bones, weights, normals
+/// and tangents, read back and compared word for word with `skin_vertex`.
+fn gpu_skin_self_test(dev: &wgpu::Device, q: &wgpu::Queue) -> Result<(), String> {
+    let mut r = 0x2545_f491u32;
+    let mut f = move || {
+        r ^= r << 13;
+        r ^= r >> 17;
+        r ^= r << 5;
+        (r as f32 / u32::MAX as f32) * 2.0 - 1.0
+    };
+    let skin: Vec<Mat4> = (0..92).map(|_| Mat4::from_cols(glam::Vec4::new(f(), f(), f(), 0.0), glam::Vec4::new(f(), f(), f(), 0.0), glam::Vec4::new(f(), f(), f(), 0.0), glam::Vec4::new(f() * 3000.0, f() * 50.0, f() * 3000.0, 1.0))).collect();
+    let n = 256usize;
+    let mut verts_of = || -> Vec<SkinVert> {
+        (0..n)
+        .map(|i| {
+            let w = if i % 7 == 0 { [1.0, 0.0, 0.0, 0.0] } else { [f().abs(), f().abs(), f(), f()] };
+            SkinVert { pos: Vec3::new(f(), f() * 2.0, f()), nrm: if i % 13 == 0 { Vec3::ZERO } else { Vec3::new(f(), f(), f()) }, uv: [f(), f()], w, b: std::array::from_fn(|k| ((i * 7 + k * 13) % 92) as u16), tan: [f(), f(), if i % 11 == 0 { -0.0 } else { f() }, [1.0, -1.0, 0.0][i % 3]], col: [i as u8, 3, 7, 200] }
+        })
+        .collect()
+    };
+    let fill = [10u8, 20, 30, 0];
+    let pa = Part { verts: verts_of(), indices: Vec::new(), tex: 0, alpha: false, mat: CharMat::default(), uid: next_part_uid() };
+    let pb = Part { verts: verts_of(), indices: Vec::new(), tex: 0, alpha: true, mat: CharMat::default(), uid: next_part_uid() };
+    let mut cs = SkinCs::new(dev);
+    let (oa, ob) = (cs.src_of(&pa).ok_or("self-test: arena")?, cs.src_of(&pb).ok_or("self-test: arena")?);
+    let fw = u32::from_le_bytes(fill);
+    let jobs = [GpuSkinJob { count: n as u32, src_off: oa, dst: 0, mat_off: 0, flags: 1, fill: fw }, GpuSkinJob { count: n as u32, src_off: ob, dst: n as u32, mat_off: 0, flags: 2, fill: fw }];
+    cs.write(dev, q, &skin, &jobs);
+    let size = (2 * n * std::mem::size_of::<Vertex>()) as u64;
+    let vb = dev.create_buffer(&wgpu::BufferDescriptor { label: Some("skin self-test"), size, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
+    let rb = dev.create_buffer(&wgpu::BufferDescriptor { label: Some("skin self-test read"), size, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+    let mut enc = dev.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("skin self-test") });
+    cs.encode(dev, &mut enc, &vb, 0);
+    enc.copy_buffer_to_buffer(&vb, 0, &rb, 0, size);
+    q.submit([enc.finish()]);
+    let sl = rb.slice(..);
+    let mapped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let m2 = mapped.clone();
+    sl.map_async(wgpu::MapMode::Read, move |res| m2.store(res.is_ok(), std::sync::atomic::Ordering::Release));
+    let _ = dev.poll(wgpu::Maintain::Wait);
+    if !mapped.load(std::sync::atomic::Ordering::Acquire) {
+        return Err("self-test: read-back failed".into());
+    }
+    let mut want: Vec<Vertex> = Vec::with_capacity(2 * n);
+    for (chars, alpha, p) in [(true, false, &pa), (false, true, &pb)] {
+        want.extend(p.verts.iter().map(|v| skin_vertex(&skin, v, v.pos, chars, alpha, fill, None)));
+    }
+    let bad = {
+        let m = sl.get_mapped_range();
+        let got: &[u32] = bytemuck::cast_slice(&m);
+        let w: &[u32] = bytemuck::cast_slice(&want);
+        got.iter().zip(w).filter(|(a, b)| a != b).count()
+    };
+    rb.unmap();
+    if bad > 0 {
+        return Err(format!("self-test: {bad} of {} words differ from the CPU's", want.len() * std::mem::size_of::<Vertex>() / 4));
+    }
+    Ok(())
+}
+
 /// MCLA_SKIN_CHECK=1: the GPU skinning's vertices read back each frame and compared word for word with the CPU's
 /// `skin_vertex` of the same parts and matrices (the game's own figures; a total is logged every 300 frames)
 fn skin_check() -> bool {
@@ -1614,8 +1744,7 @@ impl SkinCs {
         Some(o)
     }
 
-    fn write(&mut self, gpu: &Gpu, mats: &[Mat4], jobs: &[GpuSkinJob]) {
-        let dev = &gpu.device;
+    fn write(&mut self, dev: &wgpu::Device, q: &wgpu::Queue, mats: &[Mat4], jobs: &[GpuSkinJob]) {
         if self.arena_cap < self.arena_len {
             let cap = (self.arena_len * 2).max(1 << 16).min(ARENA_MAX_VERTS);
             let new = dev.create_buffer(&wgpu::BufferDescriptor { label: Some("skin sources"), size: cap * SRC_BYTES, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
@@ -1630,7 +1759,7 @@ impl SkinCs {
         }
         let arena = self.arena.as_ref().unwrap();
         for (o, w) in self.pending.drain(..) {
-            gpu.queue.write_buffer(arena, o as u64 * SRC_BYTES, bytemuck::cast_slice(&w));
+            q.write_buffer(arena, o as u64 * SRC_BYTES, bytemuck::cast_slice(&w));
         }
         self.committed = self.arena_len;
         let msize = (mats.len() * 64) as u64;
@@ -1643,16 +1772,16 @@ impl SkinCs {
             self.jobs = Some(dev.create_buffer(&wgpu::BufferDescriptor { label: Some("skin jobs"), size: (jsize * 2).max(4096), usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }));
             self.gen += 1;
         }
-        gpu.queue.write_buffer(self.mats.as_ref().unwrap(), 0, bytemuck::cast_slice(mats));
+        q.write_buffer(self.mats.as_ref().unwrap(), 0, bytemuck::cast_slice(mats));
         let mut rec = Vec::with_capacity(jobs.len() * 8);
         let mut vstart = 0u32;
         for j in jobs {
             rec.extend_from_slice(&[vstart, j.count, j.src_off, j.dst, j.mat_off, j.flags, j.fill, 0]);
             vstart += j.count;
         }
-        gpu.queue.write_buffer(self.jobs.as_ref().unwrap(), 0, bytemuck::cast_slice(&rec));
+        q.write_buffer(self.jobs.as_ref().unwrap(), 0, bytemuck::cast_slice(&rec));
         self.total = vstart;
-        gpu.queue.write_buffer(&self.params, 0, bytemuck::cast_slice(&[vstart, jobs.len() as u32, 0u32, 0u32]));
+        q.write_buffer(&self.params, 0, bytemuck::cast_slice(&[vstart, jobs.len() as u32, 0u32, 0u32]));
     }
 
     fn encode(&mut self, dev: &wgpu::Device, enc: &mut wgpu::CommandEncoder, vb: &wgpu::Buffer, vb_gen: u64) {
@@ -1715,6 +1844,33 @@ mod tests {
     /// Then 1,000 each of the DOFs' Blend (F-97455, F-53163, F-50451, the track sample as the case's input), 400 each of
     /// the take-overs (F-45588, F-77946 with the rotation angle F-88592, F-75044) and 200 each of Scale, Mirror, Reset,
     /// Set and Swap. Every flag byte and value word must be equal bit for bit.
+    /// The GPU skinning's fallback: wgpu's WebGL2 limits (no storage buffers in the compute stage) fail the limit check,
+    /// so such a device skins on the CPU; wgpu's downlevel limits (what any Vulkan / DX12 card has, a GTX 970 above them)
+    /// pass, and on a device made with only those limits the self-test (pipeline, arena, a real dispatch, read back word
+    /// for word against `skin_vertex`) passes too.
+    #[test]
+    fn gpu_skin_falls_back_below_its_limits() {
+        let e = gpu_skin_limits_ok(&wgpu::Limits::downlevel_webgl2_defaults()).unwrap_err();
+        assert!(e.contains("max_storage_buffers_per_shader_stage"), "{e}");
+        gpu_skin_limits_ok(&wgpu::Limits::downlevel_defaults()).unwrap();
+        gpu_skin_limits_ok(&wgpu::Limits::default()).unwrap();
+        let ran = pollster::block_on(async {
+            let inst = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+                backends: wgpu::Backends::from_env().unwrap_or(wgpu::Backends::PRIMARY),
+                backend_options: wgpu::BackendOptions { dx12: wgpu::Dx12BackendOptions { shader_compiler: wgpu::Dx12Compiler::StaticDxc }, ..Default::default() },
+                ..Default::default()
+            });
+            let ad = inst.request_adapter(&wgpu::RequestAdapterOptions::default()).await?;
+            let (dev, q) = ad.request_device(&wgpu::DeviceDescriptor { required_limits: wgpu::Limits::downlevel_defaults(), ..Default::default() }, None).await.ok()?;
+            assert_eq!(gpu_skin_probe(&dev, &q, &dev.limits()), Ok(()));
+            assert!(gpu_skin_probe(&dev, &q, &wgpu::Limits::downlevel_webgl2_defaults()).is_err());
+            Some(())
+        });
+        if ran.is_none() {
+            eprintln!("no GPU adapter: only the limit checks ran");
+        }
+    }
+
     /// `skin_cs.wgsl` on this machine's GPU against `skin_vertex`, word for word (both layouts; random bones placed up to
     /// 3 km out, weights, normals and tangents, zero vectors, negative zeros): prints the words that differ per field.
     #[test]

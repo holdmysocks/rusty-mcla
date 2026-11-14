@@ -99,6 +99,8 @@ impl Runner {
                 let t = Instant::now();
                 let gpu = render::Gpu::build(base);
                 log::info!("startup: renderer programs made in {} ms (loading thread)", t.elapsed().as_millis());
+                // (which path skins the figures - D59.gpu-skin: the GPU where this device passes its checks, else the CPU)
+                crate::skin::decide_gpu_skinning(&gpu.device, &gpu.queue);
                 app.load_game(gpu, root.as_deref(), Some(&ctx));
                 log::info!("startup: loading thread done in {} ms", t.elapsed().as_millis());
                 SendBox(app)
