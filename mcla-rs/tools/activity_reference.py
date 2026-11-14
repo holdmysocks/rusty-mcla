@@ -35,8 +35,7 @@ int main(int argc,char**argv){setvbuf(stdout,nullptr,_IONBF,0);std::ifstream bin
   store(D+160,D+0x100); store(D+0x100+12,dv); store(G0+20,sc); store(G0+24,ss); store(G0+28,nu);
   for(uint32_t i=0;i<nu;i++){ uint32_t side,hb,cmd,w; in>>side>>hb>>cmd>>w; uint32_t u=U+i*0x1000u;
    for(uint32_t a=u+864;a<u+1088;a+=4) store(a,0); sb(u+872,side); store(u+876,hb?u+0x800u:0u); store(u+0x800u+568,cmd); store(u+1076,w); }
-  Context c=fresh(); c.r3.u32=arg; ACT(c,nullptr);
-  printf("%d\n",(int)c.r3.u32); }
+  CALL }
  printf("end\n");
 }
 '''
@@ -72,8 +71,11 @@ def main():
     ap.add_argument('--out', type=Path, required=True, help='build dir')
     ap.add_argument('--ref', type=Path, required=True)
     ap.add_argument('--tool', default='mcla-tool')
+    ap.add_argument('--handler', action='store_true',
+                    help='call the native handler F-80270 (PoliceManager_CheckPoliceActivity) with a native context instead '
+                         'of F-35540: an argument of 1 becomes a random non-zero word; --ref is then compared with, not written')
     a = ap.parse_args()
-    ids = ['F-35540', 'F-10826', 'F-63053', 'F-77780', 'F-53190', 'F-45180', 'F-86113', 'F-57281']
+    ids = ['F-80270', 'F-35540', 'F-10826', 'F-63053', 'F-77780', 'F-53190', 'F-45180', 'F-86113', 'F-57281']
     r = subprocess.run([a.tool, 'registry', 'addr', *ids], capture_output=True, text=True, check=True).stdout
     addr = {l.split()[0]: int(l.split()[1], 16) for l in r.splitlines() if l.startswith('F-')}
     assert len(addr) == len(ids), addr
@@ -86,13 +88,25 @@ def main():
         name('F-53190'): 'ctx.r3.u64=load(0x40A0001Cu);',
         name('F-45180'): 'ctx.r3.u64=0x40B00000u+ctx.r4.u32*0x1000u;',
     }
-    src = MAIN.replace('ACT', name('F-35540')).replace('MGRG', '0x%08Xu' % MGRG)
-    exe = rdisp.build(rdisp.index(a.recomp), [name('F-35540'), name('F-86113'), name('F-57281')], src, a.out, 'activity', image=img, stubs=stubs)
+    if a.handler:
+        # (the native context: +0 the return slot's address, +8 the arguments' address; the handler writes F-35540(arg != 0)
+        # to the slot - a marker there first, so a missing write shows)
+        call = ('const uint32_t H=0x40C00000u; store(H+0x40,0xDEADBEEFu); store(H+0x80,arg); store(H,H+0x40); store(H+8,H+0x80);'
+                ' Context c=fresh(); c.r3.u32=H; %s(c,nullptr); printf("%%d\\n",(int)load(H+0x40));' % name('F-80270'))
+        roots = [name('F-80270'), name('F-35540')]
+    else:
+        call = 'Context c=fresh(); c.r3.u32=arg; %s(c,nullptr); printf("%%d\\n",(int)c.r3.u32);' % name('F-35540')
+        roots = [name('F-35540')]
+    src = MAIN.replace('CALL', call).replace('MGRG', '0x%08Xu' % MGRG)
+    exe = rdisp.build(rdisp.index(a.recomp), roots + [name('F-86113'), name('F-57281')], src, a.out,
+                      'activity_h' if a.handler else 'activity', image=img, stubs=stubs)
     cs = cases()
+    g = random.Random(80270)
+    words = [(g.choice((1, 2, 0x80000000, 0xFFFFFFFF, g.getrandbits(32) | 1)) if c[1] else 0) for c in cs]
     cf = a.out / 'activity_cases.txt'
     with cf.open('w') as f:
-        for mgr, arg, dsp, dv, sc, ss, held, z, types, units in cs:
-            f.write('case %d %d %d %d %d %d %d %d %d %d %s\n' % (mgr, arg, dsp, dv, sc, ss, held, z, types, len(units),
+        for (mgr, arg, dsp, dv, sc, ss, held, z, types, units), w in zip(cs, words):
+            f.write('case %d %d %d %d %d %d %d %d %d %d %s\n' % (mgr, w if a.handler else arg, dsp, dv, sc, ss, held, z, types, len(units),
                                                              ' '.join('%d %d %d %d' % u for u in units)))
         f.write('stop\n')
     r = subprocess.run([str(exe), str(a.image), str(cf)], capture_output=True, text=True, timeout=120)
@@ -105,6 +119,14 @@ def main():
     for (mgr, arg, dsp, dv, sc, ss, held, z, types, units), l in zip(cs, lines):
         us = ' '.join('%d:%s:%d' % (side, s32(cmd) if hb else '-', s32(w)) for side, hb, cmd, w in units) or '.'
         rows.append('%s%d d%s %d %d %d %d t%d %s -> %s' % ('' if mgr else 'x', arg, s32(dv) if dsp else '-', sc, ss, held, s32(z), types, us, l))
+    if a.handler:
+        ref = a.ref.read_text().splitlines()
+        bad = [i for i, (x, y) in enumerate(zip(rows, ref)) if x != y]
+        print('handler: cases', len(rows), 'reference rows', len(ref), 'differ', len(bad), 'non-zero words',
+              sum(1 for w in words if w), 'of them not 1', sum(1 for w in words if w > 1))
+        for i in bad[:10]:
+            print('  ', i, rows[i], '| ref', ref[i])
+        sys.exit(1 if bad or len(ref) != len(rows) else 0)
     a.ref.write_text('\n'.join(rows) + '\n')
     print('cases', len(rows), '->', a.ref)
 
