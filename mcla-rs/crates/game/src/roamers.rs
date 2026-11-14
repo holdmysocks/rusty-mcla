@@ -119,6 +119,15 @@ pub struct Man {
 }
 
 impl Man {
+    /// mcHookman_IsHidden (handler F-30864): 0 without a hookman, or while the career block's unlock-all byte
+    /// (+27785, F-47441; no code writes it - only a save block could, and the port has none) is set; else the
+    /// hookman's +196, the byte mcHookman_Hide (F-55720) writes as arg != 0 - `hidden` here (D57: the port keeps
+    /// the hookman's state in this struct). CruisingHookmanCore (0x0d18ab57) reads it at 0x0f6 / 0x392 / 0x60c:
+    /// not hidden -> his map element (mcHudMapServer_AddElement 0x14d / 0x3cc / 0x63b / 0x715) and icon; hidden -> none.
+    pub fn is_hidden(m: Option<&Man>) -> bool {
+        m.is_some_and(|m| m.hidden)
+    }
+
     /// The car is his: the one put down for him (`CarInstance::roam_key`), in his set-up as it is now. Two men can
     /// share a set-up (GH_04 a Hollywood slot man and the freeway man 300 at once, GH_06 two districts' slot men),
     /// each with a racer and a car of his own in the original: the set-up's name alone gave both men one car, the
@@ -897,7 +906,7 @@ impl Roamers {
     pub fn marks(&self, vehicles: &Vehicles) -> Vec<(Vec3, Vec3, usize)> {
         self.men
             .iter()
-            .filter(|m| !m.hidden && m.kind == ManKind::Slot)
+            .filter(|m| !Man::is_hidden(Some(m)) && m.kind == ManKind::Slot)
             .map(|m| {
                 let (p, d) = self.shown(m, vehicles);
                 (p, d, m.difficulty.clamp(0, 3) as usize)
@@ -1857,6 +1866,29 @@ impl Roamers {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn is_hidden_is_the_originals_rule() {
+        // (F-30864 as read: no hookman -> 0; the unlock-all byte set -> 0; else +196, which F-55720 writes as arg != 0)
+        fn original(man: Option<u8>, unlock_all: u8) -> u32 {
+            match man {
+                Some(b196) if unlock_all == 0 => b196 as u32,
+                _ => 0,
+            }
+        }
+        let man = |key: &str, hidden: bool| Man { key: key.into(), kind: ManKind::Slot, district: 0, name: String::new(), car: String::new(), config: String::new(), difficulty: 0, mission: String::new(), event: String::new(), hidden, pts: vec![Vec3::ZERO, Vec3::X * 10.0, Vec3::new(10.0, 0.0, 10.0)], at: 0.0, mod_value: -1, uid: 0, heading: None, start: None, fresh: false, reset: false, parked: false, met: false, off: false, no_driver: false };
+        // (the scripts' Hide arguments are 1 and 0; any non-zero word hides; the port's unlock-all byte is always 0)
+        for hide in [1u32, 0, 2, 0xFFFF_FFFF] {
+            let m = man("slot:0:0", hide != 0);
+            assert_eq!(Man::is_hidden(Some(&m)) as u32, original(Some((hide != 0) as u8), 0), "Hide({hide})");
+        }
+        assert_eq!(Man::is_hidden(None) as u32, original(None, 0));
+        // (the core's branch: only a man not hidden gets a map mark)
+        let mut r = Roamers::new();
+        r.men = vec![man("slot:0:0", true), man("slot:0:1", false)];
+        let v = Vehicles::new();
+        assert_eq!(r.marks(&v).len(), 1);
+    }
 
     #[test]
     fn a_man_goes_round_his_loop() {
