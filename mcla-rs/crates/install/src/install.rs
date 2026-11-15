@@ -191,8 +191,18 @@ fn run_stages(opts: &InstallOptions, ctx: &Ctx, l: &Layout, disc: &mut Disc, sta
     ctx.check()?;
 
     // 4. ffmpeg
-    let need_audio = !state.is_done("audio");
-    let need_video = !state.is_done("video");
+    // a finished flag is not enough: the state file can outlive the folders (a copied or moved install, a cleaned data folder), and
+    // a game on an empty audio_pc has no sound; a stage whose folder holds no file is built again
+    let empty = l.empty_media_dirs();
+    let need_audio = !state.is_done("audio") || empty.contains(&"audio_pc");
+    let need_video = !state.is_done("video") || empty.contains(&"video_pc");
+    for (need, stage, dir) in [(need_audio, "audio", "audio_pc"), (need_video, "video", "video_pc")] {
+        if need && state.is_done(stage) {
+            ctx.message(Stage::Ffmpeg, format!("data/{dir} holds no files although the {stage} stage was marked done; building it again"));
+            state.done.insert(stage.into(), false);
+            state.save(l)?;
+        }
+    }
     let mut note = None;
     let mut ff_path = None;
     if need_audio || need_video {
@@ -250,6 +260,12 @@ fn run_stages(opts: &InstallOptions, ctx: &Ctx, l: &Layout, disc: &mut Disc, sta
         scan(&data, &data.join(dir), &mut v).ctx(dir)?;
         stages.insert(stage.to_string(), StageSummary { files: v.len(), bytes: v.iter().map(|f| f.size).sum() });
         files.extend(v);
+    }
+    // never stamp a complete install without its sound and videos
+    for (stage, what) in [("audio", "sound"), ("video", "video")] {
+        if stages.get(stage).is_none_or(|s| s.files == 0) {
+            return Err(InstallError::new(ErrorKind::DataDamaged, format!("the {what} stage produced no files in data/{stage}_pc, so the install is not complete")));
+        }
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));
     let text = list_text(&files);

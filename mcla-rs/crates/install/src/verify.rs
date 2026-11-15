@@ -67,6 +67,10 @@ pub fn verify(l: &Layout, ctx: &Ctx) -> Result<VerifyReport> {
     })?;
     counter.finish();
     let (mut missing, mut wrong_size) = bad.into_inner().unwrap_or_default();
+    // a media folder with no file at all is damage even when the list (written by a build that skipped it) names none
+    for dir in l.empty_media_dirs() {
+        missing.push(format!("{dir}/ (no files)"));
+    }
     missing.sort();
     wrong_size.sort();
     // the translated shaders are checked by content (a few hundred KB): the same size can hide a changed file

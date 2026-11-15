@@ -118,6 +118,9 @@ fn verify_finds_damage_and_repair_clears_the_stage() {
     std::fs::create_dir_all(l.data().join("audio_pc")).unwrap();
     std::fs::write(l.data().join("cache/a"), b"12345").unwrap();
     std::fs::write(l.data().join("audio_pc/b.wav"), b"123").unwrap();
+    std::fs::write(l.data().join("audio_pc/other.wav"), b"9").unwrap(); // not in the list: the folder still holds a file
+    std::fs::create_dir_all(l.data().join("video_pc")).unwrap();
+    std::fs::write(l.data().join("video_pc/v.mp4"), b"1").unwrap();
     let files = vec![mcla_install::extract::FileRecord { path: "audio_pc/b.wav".into(), size: 3 }, mcla_install::extract::FileRecord { path: "cache/a".into(), size: 5 }];
     std::fs::create_dir_all(l.install_dir()).unwrap();
     write_file_atomic(&l.files_list(), list_text(&files).as_bytes()).unwrap();
@@ -137,6 +140,40 @@ fn verify_finds_damage_and_repair_clears_the_stage() {
     let st = State::load(&l);
     assert!(!st.is_done("audio") && !st.is_done("extract") && st.is_done("video"));
     assert!(!l.data().join("cache/a").exists(), "the wrong-size file is removed so it is written again");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_finished_flag_with_no_media_files_is_damage_and_not_complete() {
+    // the state file outlived the folders (issue 56): audio_pc missing, video_pc empty, files.tsv names none of their files
+    let root = temp("nomedia");
+    let l = Layout::new(&root);
+    std::fs::create_dir_all(l.data().join("cache")).unwrap();
+    std::fs::create_dir_all(l.data().join("video_pc/sub")).unwrap();
+    std::fs::write(l.data().join("cache/a"), b"12345").unwrap();
+    std::fs::write(l.data().join("video_pc/sub/x.part"), b"unfinished").unwrap(); // a work file is not a media file
+    let files = vec![mcla_install::extract::FileRecord { path: "cache/a".into(), size: 5 }];
+    std::fs::create_dir_all(l.install_dir()).unwrap();
+    write_file_atomic(&l.files_list(), list_text(&files).as_bytes()).unwrap();
+    write_file_atomic(&l.local_manifest(), b"{}").unwrap();
+    assert_eq!(l.empty_media_dirs(), vec!["audio_pc", "video_pc"]);
+    assert!(!l.is_complete(), "a manifest without the media is not an install");
+    let mut st = State::default();
+    for s in ["extract", "audio", "video"] {
+        st.done.insert(s.into(), true);
+    }
+    st.save(&l).unwrap();
+    let rep = mcla_install::verify::verify(&l, &Ctx::silent()).unwrap();
+    assert!(!rep.ok());
+    assert_eq!(rep.damaged_stages(), vec!["audio", "video"]);
+    mcla_install::verify::prepare_repair(&l, &rep).unwrap();
+    let st = State::load(&l);
+    assert!(st.is_done("extract") && !st.is_done("audio") && !st.is_done("video"), "repair clears exactly the stages without files");
+    // once a file is there the folders count
+    std::fs::write(l.data().join("video_pc/sub/x.mp4"), b"1").unwrap();
+    std::fs::create_dir_all(l.data().join("audio_pc/bank")).unwrap();
+    std::fs::write(l.data().join("audio_pc/bank/w.wav"), b"1").unwrap();
+    assert!(l.empty_media_dirs().is_empty() && l.is_complete());
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -229,6 +266,10 @@ fn shader_files_are_their_own_stage_and_a_changed_file_is_found() {
     std::fs::create_dir_all(l.install_dir()).unwrap();
     std::fs::write(dir.join("xs_sky.wgsl"), b"fn xs_sky_vs() {}").unwrap();
     std::fs::write(l.cache().join("other"), b"12345").unwrap();
+    for f in ["audio_pc/w.wav", "video_pc/v.mp4"] {
+        std::fs::create_dir_all(l.data().join(f).parent().unwrap()).unwrap();
+        std::fs::write(l.data().join(f), b"1").unwrap(); // the media folders must hold a file
+    }
     let files = vec![
         mcla_install::extract::FileRecord { path: "cache/other".into(), size: 5 },
         mcla_install::extract::FileRecord { path: "cache/shaders_wgsl/xs_sky.wgsl".into(), size: 17 },

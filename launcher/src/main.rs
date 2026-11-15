@@ -97,7 +97,7 @@ fn boot(state: tauri::State<AppState>) -> Boot {
         os: platform::os_name(),
         arch: std::env::consts::ARCH,
         settings,
-        installed: state.root.join("manifest.local.json").is_file(),
+        installed: mcla_install::layout::Layout::new(&state.root).is_complete(),
         folders: Value::Object(folders),
         log_file: logging::path().map(|p| p.to_string_lossy().into_owned()),
         selftest: state.selftest_out.is_some(),

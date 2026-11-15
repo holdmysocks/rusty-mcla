@@ -42,6 +42,41 @@ impl Layout {
     pub fn local_manifest(&self) -> PathBuf {
         self.root.join("manifest.local.json")
     }
+    /// The converted-media folders (`audio_pc`, `video_pc`) that hold no file at all: missing, or empty. A game started on such a
+    /// folder plays without sound or videos, so neither the build nor the launcher may count the data as complete.
+    pub fn empty_media_dirs(&self) -> Vec<&'static str> {
+        let mut v = Vec::new();
+        for (name, dir) in [("audio_pc", self.audio_pc()), ("video_pc", self.video_pc())] {
+            if !dir_has_files(&dir) {
+                v.push(name);
+            }
+        }
+        v
+    }
+    /// `manifest.local.json` is there and the converted media are too: what "installed" means to the launcher.
+    pub fn is_complete(&self) -> bool {
+        self.local_manifest().is_file() && self.empty_media_dirs().is_empty()
+    }
+}
+
+/// Whether `dir` holds at least one file anywhere below it (unfinished `.part` work files do not count).
+pub fn dir_has_files(dir: &Path) -> bool {
+    let Ok(rd) = std::fs::read_dir(dir) else { return false };
+    for e in rd.flatten() {
+        let Ok(ft) = e.file_type() else { continue };
+        if ft.is_dir() {
+            if dir_has_files(&e.path()) {
+                return true;
+            }
+        } else if ft.is_file() {
+            let n = e.file_name();
+            let n = n.to_string_lossy();
+            if !(n.ends_with(".part") || n.ends_with(".part.mp3")) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Work in progress, in `data/.install/state.json` (the launcher treats only `manifest.local.json` as "installed").

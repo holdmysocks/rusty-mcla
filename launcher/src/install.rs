@@ -225,7 +225,7 @@ pub fn info(r: &Runner, root: &Path) -> Info {
     let dl = mcla_install::ffmpeg::pinned(&m);
     Info {
         root: root.to_string_lossy().into_owned(),
-        installed: layout.local_manifest().is_file(),
+        installed: layout.is_complete(),
         free_bytes: free,
         required_bytes: need,
         data_bytes: m.space.data_bytes,
@@ -238,7 +238,7 @@ pub fn info(r: &Runner, root: &Path) -> Info {
         validated_iso: s.validated.as_ref().map(|v| v.0.clone()),
         identity: s.validated.as_ref().map(|v| v.1.clone()),
         hash: s.hash.as_ref().map(|(_, h)| HashView { sha256: h.sha256.clone(), verified: h.state == DumpState::Verified }),
-        has_partial: layout.state_file().is_file() && !layout.local_manifest().is_file(),
+        has_partial: layout.state_file().is_file() && !layout.is_complete(),
     }
 }
 

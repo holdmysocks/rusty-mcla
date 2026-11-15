@@ -166,7 +166,7 @@ pub struct PlayInfo {
 pub fn play_info(env: &Env, updating: bool) -> PlayInfo {
     let prev = env.root.join(package::OLD_DIR);
     PlayInfo {
-        installed: env.root.join("manifest.local.json").is_file(),
+        installed: mcla_install::layout::Layout::new(env.root).is_complete(),
         exe: launch::game_exe(env.root).is_file(),
         updating,
         game_running: saves::game_running(env.root),
