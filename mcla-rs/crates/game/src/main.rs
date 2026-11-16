@@ -16634,6 +16634,10 @@ impl App {
         // (test runs - a screenshot, a frame limit, the self-driving and test hooks - never
         // write the player's save)
         self.game.no_save = self.opt.shot.is_some() || self.opt.auto || ["MCLA_ROAM_TEST", "MCLA_CAREER_TEST", "MCLA_SIM_TEST", "MCLA_WAGER_TEST"].iter().any(|v| std::env::var(v).is_ok());
+        // (test hook MCLA_SAVE_OK=1: a scripted run writes its save as a player's game does - SAVE GAME, the round trip)
+        if std::env::var("MCLA_SAVE_OK").is_ok() {
+            self.game.no_save = false;
+        }
         // (MCLA_SAVE_FILE: a test run on a save of its own, read whatever the run is)
         let test_save = std::env::var("MCLA_SAVE_FILE").is_ok();
         if self.opt.car_dir.is_none() || self.opt.shot.is_none() || test_save {
