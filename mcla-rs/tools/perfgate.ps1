@@ -36,6 +36,8 @@ $scenArgs = @{
   race    = "--race-name hl_ordered_ts_01 --auto";
   garage  = "--garage";
   hangout = "--drive --pos 728.0,8.0,-300.0 --time 21 --traffic 110";
+  # (the save's current car replaces --car: give this one a save whose car is the bike, -Save; releasegate.ps1 does)
+  bike    = "--drive --auto --traffic 110 --time 13 --car $Data/resources/vehicle/vp_kaw_ninja_zx14_06";
   old     = "--auto --traffic 20"
 }
 $settings = "schema = 1`n`n[display]`nfps_cap = 0`nfps_monitor = `"frame_time`"`nresolution = `"1920x1080`"`nvsync = false`nwindow_mode = `"windowed`"`n`n[game]`nintro = `"fast`"`n"
@@ -59,6 +61,7 @@ function Invoke-Run([string]$exe, [int]$k, [string]$scen, [int]$rep) {
   $ud = "$Out\user_b${k}_$Backend"
   New-Item -ItemType Directory "$ud\saves" -Force | Out-Null
   if (Test-Path $Save) { Copy-Item $Save "$ud\saves\mcla_save.json" -Force }
+  elseif ($PSBoundParameters.ContainsKey('Save')) { throw "-Save $Save does not exist" }
   Set-Content -Path "$ud\settings.toml" -Value $settings -Encoding ascii -NoNewline
   $q = Wait-Quiet
   # (never a third game on the machine: wait while two run)
@@ -67,6 +70,9 @@ function Invoke-Run([string]$exe, [int]$k, [string]$scen, [int]$rep) {
   $psi.WorkingDirectory = $repo; $psi.UseShellExecute = $false; $psi.RedirectStandardError = $true; $psi.RedirectStandardOutput = $true
   $env1 = @{ MCLA_SETTINGS = "$ud\settings.toml"; RUSTY_MCLA_USER_DIR = $ud; WGPU_BACKEND = $Backend; MCLA_FRAMELOG = "50";
              MCLA_FRAMETIMES = "$Out\runs\$tag.ft.csv"; MCLA_SLOWTICK = "30" }
+  # (the game reads %LOCALAPPDATA%\RustyMCLA\saves whatever RUSTY_MCLA_USER_DIR says: MCLA_SAVE_FILE makes it read the
+  # run's copy, so -Save counts and the player's own save is never written by a run)
+  if (Test-Path "$ud\saves\mcla_save.json") { $env1.MCLA_SAVE_FILE = "$ud\saves\mcla_save.json" }
   foreach ($kv in $env1.GetEnumerator()) { $psi.EnvironmentVariables[$kv.Key] = $kv.Value }
   $p = [System.Diagnostics.Process]::Start($psi)
   if ($Affinity) { try { $p.ProcessorAffinity = [IntPtr]$Affinity } catch {} }

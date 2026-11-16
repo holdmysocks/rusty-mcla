@@ -1,4 +1,4 @@
-# soak.py <runs dir> <tag> [--minutes 30] [--ref <runs dir> <tag>]: PASS / FAIL of a long free-roam run made by tools/perfgate.ps1
+# soak.py <runs dir> <tag> [--minutes 30] [--ref <runs dir> <tag>] [--vehicle <name>]: PASS / FAIL of a long free-roam run made by tools/perfgate.ps1
 # (docs/PERFORMANCE.md "Release gate"). It reads the run's <tag>.ft.csv (MCLA_FRAMETIMES), <tag>.res.csv (samples every 2 s)
 # and <tag>.err (the log), and checks:
 #   - the game ran to the end (samples up to the last minute) and logged no panic / ERROR line;
@@ -12,7 +12,10 @@
 #   - frame rate: the last five minutes within FPS_DROP of minutes 5 - 10 (a session that slows down as it goes on);
 #   - the car kept driving: at least MOVING licence plates made (the perf line's count: new traffic about the player) in
 #     every 5 minutes after minute 5, in the run and in the --ref run. `--auto` can stick (from the default start at
-#     ~12 min, both v0.21.0 and v0.22.0): such a run measures a parked car and is void (good runs >= 1,323, stuck 76 - 225).
+#     ~12 min, both v0.21.0 and v0.22.0): such a run measures a parked car and is void (good runs >= 1,323, stuck 76 - 225);
+#   - the vehicle driven: the game's `driven: player vehicle <name>` lines are printed; with --vehicle the run must have
+#     driven only that one (a save's current car replaces `--car`: the v0.22.0 soak's "bike" legs drove the R8). The
+#     --ref run is checked too when its build writes the line (builds before 2026-11-16 do not).
 import os, re, statistics as st, sys
 
 PRIV_MB, VRAM_MB, SLOPE_MB = 300.0, 200.0, 6.0
@@ -61,6 +64,11 @@ def least_moving(d, tag):
         if t >= 600 and before:
             w.append((n - before[-1][1], t))
     return min(w) if w else None
+
+
+def driven(d, tag):
+    """the player vehicles the log names, in order (`driven: player vehicle <name>`)"""
+    return re.findall(r'driven: player vehicle (\S+)', open(os.path.join(d, tag + '.err'), encoding='utf-8', errors='replace').read())
 
 
 def main():
@@ -116,6 +124,17 @@ def main():
         rows.append(f'{who}: at least {mv[0]} plates made in 5 min (the fewest by {mv[1] / 60:.1f} min)')
         if mv[0] < MOVING:
             fails.append(f'{who} stopped moving (only {mv[0]} plates made in the 5 min to {mv[1] / 60:.1f} min, limit {MOVING}): void, run again')
+
+    want = sys.argv[sys.argv.index('--vehicle') + 1].lower() if '--vehicle' in sys.argv else None
+    for dd, tt, who in [(d, tag, 'the run')] + ([(sys.argv[sys.argv.index('--ref') + 1], sys.argv[sys.argv.index('--ref') + 2], 'the reference run')] if '--ref' in sys.argv else []):
+        names = driven(dd, tt)
+        rows.append(f'{who} drove: {", ".join(dict.fromkeys(names)) if names else "not logged"}')
+        if want is None:
+            continue
+        if not names and who == 'the run':
+            fails.append(f'{who} logged no `driven:` line (an exe from before 2026-11-16?), cannot check it drove {want}')
+        elif names and any(n.lower() != want for n in names):
+            fails.append(f'{who} drove {", ".join(dict.fromkeys(names))}, not {want}: void, run again with a save whose car is {want}')
 
     slow = []
     for l in err:

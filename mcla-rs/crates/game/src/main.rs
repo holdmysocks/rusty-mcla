@@ -946,6 +946,8 @@ struct App {
     hyd_on: bool,
     hyd_toggle_was: bool,
     auto_last_speed: f32,
+    /// the player's vehicle last named in the log (`driven:` line; soak.py checks a leg drove what it asked for)
+    driven_logged: String,
     /// the city drawn from above for the map screen: being made, and on the GPU
     citymap_rx: Option<std::sync::mpsc::Receiver<citymap::CityMap>>,
     citymap: Option<CityMapGpu>,
@@ -1853,6 +1855,7 @@ impl App {
             hyd_on: false,
             hyd_toggle_was: false,
             auto_last_speed: 0.0,
+            driven_logged: String::new(),
             citymap_rx: None,
             citymap: None,
             map_target: Vec3::ZERO,
@@ -9376,6 +9379,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         }
         self.sim_time += dt;
         heapcensus::tick();
+        if let Some(p) = self.vehicles.player() {
+            if p.model.name != self.driven_logged {
+                log::info!("driven: player vehicle {}", p.model.name);
+                self.driven_logged = p.model.name.clone();
+            }
+        }
         if self.tick_no % 240 == 0 {
             // (and what is in video memory: the textures alive, the car models and their vertex / index buffers - GitHub #48)
             let tex_mb = render::TEX_BYTES.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1048576.0;
