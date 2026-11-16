@@ -401,10 +401,11 @@ pub struct CarIn {
     pub sst: Option<(f32, bool)>,
     /// performance stages: intake, turbo, nitrous (mcCar+132 +30, +31, +34)
     pub parts: [u8; 3],
-    /// the engine sound's smoothed rpm and load volume (this+204, +148), the limiter's rpm
+    /// the engine sound's smoothed rpm and load volume (this+204, +148)
     pub rpm_s: f32,
     pub load_vol: f32,
-    pub max_rpm: f32,
+    /// the engine's speed of best power as the turbo whine reads it (F-82568: vehEngine +72 x 9.549296), in rpm
+    pub best_rpm: f32,
     /// throttle input (this+188), pedal (this+180), the transmission's shift state
     pub throttle: f32,
     pub pedal: f32,
@@ -585,6 +586,8 @@ pub struct CarSounds {
     chirp_at: f32,
     upshift_at: f32,
     prev_shift: i8,
+    /// this+252: the shift state when it changed in the last update, else 0 (the turbo's blow-off reads it)
+    shift_flag: i8,
     damper: [Option<Handle>; 4],
     bottom: [Option<Handle>; 4],
     hyd_prev: [i8; 4],
@@ -689,6 +692,7 @@ impl CarSounds {
             chirp_at: 0.0,
             upshift_at: -10.0,
             prev_shift: 0,
+            shift_flag: 0,
             damper: [None; 4],
             bottom: [None; 4],
             hyd_prev: [0; 4],
@@ -787,7 +791,7 @@ impl CarSounds {
     /// The base update's parts in the original's order (tyres, suspension, hydraulics, turbo, horn, nitrous, damage).
     pub fn update(&mut self, lib: &mut SoundLib, mats: &Materials, c: &CarIn, cam_mode: i32, dt: f32) {
         self.clock += dt;
-        if c.shift > 0 && self.prev_shift == 0 {
+        if c.shift > 0 && c.shift != self.prev_shift {
             // the upshift's start (this+260, F-33101 @A-66878)
             self.upshift_at = self.clock;
         }
@@ -804,6 +808,9 @@ impl CarSounds {
         self.tyres(lib, mats, c, dt);
         self.suspension(lib, c);
         self.hydraulics(lib, c, dt);
+        // the gear-shift scheduler F-33101: +252 = the transmission's shift state (+24) in an update where it changed
+        // (+248 the last seen), else 0
+        self.shift_flag = if c.shift != self.prev_shift { c.shift } else { 0 };
         // (the base update calls vt+132 after the gear shift F-33101, before the horn F-21226 and the nitro vt+68)
         self.slipstream(lib, mats, c);
         self.horn(lib, c);
@@ -966,14 +973,10 @@ impl CarSounds {
                 stop(lib, &mut self.damper[i]);
                 continue;
             }
-            let (bit, at) = if v < be_f32(&s, 27) {
-                (1, 11)
-            } else if v < be_f32(&s, 31) {
-                (2, 15)
-            } else {
-                (4, 19)
-            };
-            if s[10] & bit != 0 && !c.hyd_on {
+            let (bit, at) = damper_size(&s, v);
+            // a flagged size (+10: the shipped LIGHT) only while the hydraulics run (mcCarHydraulics +16) or the car is
+            // wiped out (chassis +592 & 0x10)
+            if s[10] & bit != 0 && !c.hyd_on && !c.wiped {
                 continue;
             }
             if free(lib, &self.damper[i]) {
@@ -1287,10 +1290,12 @@ impl CarSounds {
         // blow-off and boost (F-32506)
         let thr = be_f32(t, r + 20);
         let fall = (c.throttle - self.prev_throttle) / dt.max(1e-6);
-        let shift_event = c.shift != 0 && self.prev_shift == 0;
-        if self.boost > thr && self.spool >= be_f32(t, r + 28) && (shift_event || fall <= be_f32(t, r + 32)) {
+        // (this+252, the gear-shift scheduler's: a shift that started in the previous update - the scheduler F-33101
+        // runs after the turbo, recorded: the blow-off one update after the build stopped for the shift)
+        if self.boost > thr && self.spool >= be_f32(t, r + 28) && (self.shift_flag != 0 || fall <= be_f32(t, r + 32)) {
             let (a, b) = (be_u16(t, r + 36), be_u16(t, r + 38));
-            let start_ms = ((1.0 - (self.boost - thr) / (1.0 - thr).max(1e-6)) * (b - a) + a).trunc();
+            // (fmadds: one rounding)
+            let start_ms = (1.0 - (self.boost - thr) / (1.0 - thr)).mul_add(b - a, a).trunc();
             let h = be_u32(t, r + 12);
             if !is_null(h) {
                 lib.play_hash(h, Req { start_ms, ..self.req(c.pos) });
@@ -1319,7 +1324,7 @@ impl CarSounds {
             stop(lib, &mut self.turbo_v);
             return;
         }
-        let x = ((s - start) / (c.max_rpm - start).max(1.0)).clamp(0.0, 1.0);
+        let x = whine_t(s, start, c.best_rpm);
         let g = lib.curve_eval(be_u32(t, 27), x).unwrap_or(x) * c.load_vol;
         let req = Req { volume: lin2db(g), pitch: cents(s / start), ..self.req(c.pos) };
         keep(lib, &mut self.turbo_v, hash, req);
@@ -1764,7 +1769,7 @@ pub fn car_in(c: &CarInstance) -> CarIn {
         throttle: c.input.throttle,
         pedal: vs.map_or(c.input.throttle, |v| v.engine_pedal),
         shift: vs.map_or(0, |v| if v.gear_change.active { v.gear_change.direction } else { 0 }),
-        max_rpm: tune.map_or(7000.0, |t| t.t.engine.s.max_rpm),
+        best_rpm: tune.map_or(7000.0, |t| t.best_power_speed() * f32::from_bits(0x4118_C9EB)),
         torque: vs.map_or(0.0, |v| v.engine_torque),
         full_torque: match (vs, tune) {
             (Some(v), Some(t)) => t.torque_at(v.engine_w),
@@ -1797,6 +1802,26 @@ pub(crate) fn mixer_rpm_frac(c: &CarInstance) -> f32 {
 /// The first input: the chassis speed (m/s) x 2.237, in mph.
 pub(crate) fn mixer_mph(speed: f32) -> f32 {
     speed * f32::from_bits(0x400F_2B02)
+}
+
+/// The damper one-shot's size for a normalised damper speed at or above TUNERS_SUSPENSION +23 (F-61593): below +27 LIGHT
+/// (flag bit 1, the sound at +11), below +31 MED (bit 2, +15), else HARD (bit 4, +19).
+pub(crate) fn damper_size(s: &[u8], v: f32) -> (u8, usize) {
+    if v < be_f32(s, 27) {
+        (1, 11)
+    } else if v < be_f32(s, 31) {
+        (2, 15)
+    } else {
+        (4, 19)
+    }
+}
+
+/// The turbo whine's curve input (F-19395): (S - start) / (best power rpm - start), clamped by two fsel, so a negative
+/// or NaN share is 0 and 1 and above is 1.
+pub(crate) fn whine_t(s: f32, start: f32, best_rpm: f32) -> f32 {
+    let q = (s - start) / (best_rpm - start);
+    let q = if q >= 0.0 { q } else { 0.0 };
+    if q - 1.0 >= 0.0 { 1.0 } else { q }
 }
 
 /// (rpm - idle) / (max - idle) with idle / max = the tune's rpm x 0.10471976 x 9.549296, as F-99947 has them.
@@ -3263,6 +3288,57 @@ mod tests {
             let nm = |h: u32| lib.game.name_of(h).map(|s| s.to_string()).unwrap_or(format!("{h:08x}"));
             println!("{name:24} {obj:28} len {:3} +230 {:02x} +231 {} +235 {:02x} +236 {}", o.len(), o.get(230).copied().unwrap_or(0), nm(be_u32(o, 231)), o.get(235).copied().unwrap_or(0), nm(be_u32(o, 236)));
         }
+    }
+
+    /// The damper ladder against the original's R8 (work/audio2/cap/eng3.txt, 9,980 damper checks): 402 at or above +23, of
+    /// them 390 under +27 started nothing (LIGHT is flagged, no hydraulics, not wiped out), and the 12 at or above +27
+    /// started these sounds (the recorded speed and hash, in order).
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR"]
+    fn damper_one_shots_match_the_recording() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let lib = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
+        let s = CarSounds::new(&lib, "vp_aud_r8_08", false, true).susp;
+        let rec: [(f32, u32); 12] = [(26.182745, 0x1b156530), (25.2258606, 0x1b156530), (24.6501389, 0x7aeac9c1), (14.3619041, 0x7aeac9c1),
+            (20.5942211, 0x7aeac9c1), (12.586484, 0x7aeac9c1), (23.4271393, 0x7aeac9c1), (23.4065647, 0x7aeac9c1), (21.9091434, 0x7aeac9c1),
+            (21.0628338, 0x7aeac9c1), (21.2076015, 0x7aeac9c1), (11.0769787, 0x7aeac9c1)];
+        for (v, h) in rec {
+            let (bit, at) = damper_size(&s, v);
+            assert_eq!((s[10] & bit, be_u32(&s, at)), (0, h), "speed {v}");
+        }
+        // the recorded checks under +27 (1.0 .. 10): LIGHT, flagged, so nothing starts
+        assert_eq!((be_f32(&s, 23), be_f32(&s, 27), s[10] & damper_size(&s, 5.0).0), (1.0, 10.0, 1));
+        assert_eq!(be_u32(&s, 41), 0x9a6f5ebb, "the recorded bottom-out SUSPENSION_MASTER");
+    }
+
+    /// The turbo whine's curve input and linear volume against 427 updates of the original (an R8 with turbo level 2,
+    /// work/audio2/cap/eng3.txt): t from the engine's speed of best power (vehEngine +72), then LINEAR_RISE(t) x the load
+    /// volume, every value bit-equal. +72 is the one float that gives all 427 recorded t: 0x444473AA (785.80725 rad/s,
+    /// the upgraded R8's, as the vehicle sim's burn-out floor recorded it, gjk_exact.md); the base tune's 6,892 rpm or the
+    /// tune's MaxRPM (8,500) give none of the t inside (0, 1).
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR"]
+    fn whine_matches_the_recording() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let lib = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
+        let s = CarSounds::new(&lib, "vp_aud_r8_08", false, true);
+        let best = f32::from_bits(0x4444_73AA) * f32::from_bits(0x4118_C9EB);
+        let (r, curve) = (19 + 40 * 2, be_u32(&s.turbo, 27));
+        assert_eq!(be_f32(&s.turbo, r + 4), 3000.0);
+        let (mut n, mut bad) = (0, Vec::new());
+        for l in include_str!("whine_cases.txt").lines().filter(|l| !l.starts_with('#')) {
+            let v: Vec<f32> = l.split_whitespace().map(|h| f32::from_bits(u32::from_str_radix(h, 16).unwrap())).collect();
+            let t = whine_t(v[0], 3000.0, best);
+            let g = lib.curve_eval(curve, t).unwrap() * v[1];
+            n += 1;
+            if t.to_bits() != v[2].to_bits() || g.to_bits() != v[3].to_bits() {
+                bad.push((v[0], t, v[2], g, v[3]));
+            }
+        }
+        assert!(bad.is_empty(), "best {best} rpm: {} of {n} differ, first {:?}", bad.len(), &bad[..bad.len().min(4)]);
+        assert_eq!(n, 427);
     }
 
     #[test]
