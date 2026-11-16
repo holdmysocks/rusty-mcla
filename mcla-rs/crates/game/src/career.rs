@@ -1711,6 +1711,15 @@ impl Career {
         self.index.get(id).map(|&i| self.title(i))
     }
 
+    /// Objective `k` of mission `i` satisfied (requirement +116): every objective of a COMPLETE mission (the
+    /// mission completes when all are met, and the original's saved missions load with +116 = 1 - a save
+    /// converted from the original carries no progress for them), else its progress at `target`. Compared
+    /// with the original's mission manager after loading three original saves (CAREER_RACES.md, 2026-11-13
+    /// log): 145 of 145 objectives equal in each.
+    pub fn obj_met(&self, i: usize, k: usize, target: u32) -> bool {
+        self.state[i].stage == Stage::Complete || self.state[i].progress.get(k).copied().unwrap_or(0) >= target
+    }
+
     /// The lines of mission `id`'s objectives (those it shows), whatever its stage.
     ///
     /// A satisfied objective (requirement +116: its progress at the target, as `pulse_objective`
@@ -1723,7 +1732,7 @@ impl Career {
             .enumerate()
             .filter(|(_, r)| !r.hidden)
             .map(|(k, r)| {
-                let met = self.state[i].progress.get(k).copied().unwrap_or(0) >= r.conds.first().map_or(1, |c| self.target(m, c));
+                let met = self.obj_met(i, k, r.conds.first().map_or(1, |c| self.target(m, c)));
                 (met, self.text(&r.desc))
             })
             .filter(|(_, t)| !t.is_empty())
@@ -3636,6 +3645,17 @@ pub fn percent_of(done: usize, total: usize) -> i64 {
 
 #[cfg(test)]
 mod tests {
+    /// A COMPLETE mission loaded with no progress (a save converted from the original) has every objective satisfied
+    /// (+116 = 1, as the original's loaded missions); an active one keeps its progress.
+    #[test]
+    fn a_loaded_complete_mission_has_its_objectives_met() {
+        use super::{Career, MState, Stage};
+        let mut c = Career::default();
+        c.state = vec![MState { stage: Stage::Complete, ..Default::default() }, MState { stage: Stage::Active, progress: vec![0, 3], ..Default::default() }];
+        assert!(c.obj_met(0, 0, 5) && c.obj_met(0, 1, 1));
+        assert!(!c.obj_met(1, 0, 1) && c.obj_met(1, 1, 3) && !c.obj_met(1, 1, 4));
+    }
+
     /// The three reward scripts that make a call append `reward_call`'s line and title (the
     /// disassemblies of `work/career2/re/dis`, MCLA_SCRIPT_DIS to override), and the missions'
     /// files name them as mcRewardScript.
@@ -4685,7 +4705,7 @@ impl MissionDump {
                     // each objective's bytes +116 (satisfied), +117 (always hidden), +118 (hidden)
                     let ext = c.ext.get(i).filter(|_| c.ext_ok(i));
                     for (k, r) in m.objectives.iter().enumerate() {
-                        let met = c.state[i].progress.get(k).copied().unwrap_or(0) >= r.conds.first().map_or(1, |cd| c.target(m, cd));
+                        let met = c.obj_met(i, k, r.conds.first().map_or(1, |cd| c.target(m, cd)));
                         let (al, hi) = ext.map_or((r.hidden, r.hidden), |e| (e.obj_always[k], e.obj_hidden[k]));
                         let _ = writeln!(o, "O {} {} {} {} {}", m.id, k, met as u8, al as u8, hi as u8);
                     }
