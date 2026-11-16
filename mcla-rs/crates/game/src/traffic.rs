@@ -6273,6 +6273,26 @@ mod verify_lanes_tests {
         assert_eq!((n, d178.len(), d360.len()), (17031, 0, 0), "the port's lane_state is the original's");
     }
 
+    /// Every traffic type the spawner can draw (the `va_` types of the distribution tree, and every `va_` tune folder) has
+    /// its physics tune, wheel tune and bound, so with its model's own wheel hubs (checked live: every rider of a
+    /// traffic run in the level, docs/reference/people/traffic_drive_rule.md 7.1) every rider enters the physics level
+    /// (`Vehicles::ambient_into_level`) and rests by the level's sleep rule as in the original, where every traffic car is
+    /// a body of the level: the port's own rest rule for a rider without a collider (`!in_level` in `ride_traffic`) is
+    /// reached only without the data. Skipped without the extracted data.
+    #[test]
+    fn every_traffic_type_enters_the_level() {
+        let root = std::path::PathBuf::from(std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into()));
+        let Ok(dirs) = std::fs::read_dir(root.join("tune/ambients/traffic")) else { return };
+        let mut names: Vec<String> = dirs.flatten().filter_map(|e| e.file_name().into_string().ok()).filter(|n| n.starts_with("va_")).collect();
+        let d = crate::ambient::Distribution::load(&root, "va_");
+        names.extend(d.all.iter().cloned());
+        names.sort();
+        names.dedup();
+        assert!(names.len() >= 40, "{} traffic types", names.len());
+        let missing: Vec<&String> = names.iter().filter(|n| amb_tune(&root, n, Some([Some(Vec3::new(0.8, 0.3, -1.3)), Some(Vec3::new(-0.8, 0.3, -1.3)), Some(Vec3::new(0.8, 0.3, 1.3)), Some(Vec3::new(-0.8, 0.3, 1.3)), Some(Vec3::new(0.8, 0.3, 4.0)), Some(Vec3::new(-0.8, 0.3, 4.0))]), &AmbType::load(&root, n)).is_none()).collect();
+        assert!(missing.is_empty(), "no level body for {missing:?}");
+    }
+
     /// `snap_to_lane` is the original's F-59579 without a heading: on the city's lanes (as parsed and as `rail_nav`
     /// curves them) it answers as `railroute::snap`, which equals the original's code run offline (20,000 of 20,000,
     /// railroute's tests): 20,000 points round control points, 5 / 30 / 50 m, lane, phase, squared distance, point and
