@@ -5386,6 +5386,11 @@ impl Game {
 
     fn ui_screens(&mut self, ctx: &egui::Context, vehicles: &Vehicles, world: &World, hud: HudInfo) -> MenuAction {
         let race_dt = std::mem::take(&mut self.ui_sim_dt);
+        // (the forms shown stand in the main form's list - F-16332 appends each form shown at its tail, Form_GetTopMost F-59894 reads
+        // the tail -, so the ARRESTED / TICKETED panel (form 46/47, shown after the scene) stands over a tutorial box still up from
+        // the pursuit's start (form 103, F-24639): the tutorial waits under it, not drawn, its time held, and the panel's A is
+        // the panel's alone - also in the frame it closes the panel)
+        let tut_under = self.arrest_panel.is_some();
         self.load_ui(ctx);
         crate::uiprof::mark("load_ui");
         // (the start-up movie, boot.rs: once the UI's shared textures are there)
@@ -10821,7 +10826,7 @@ impl Game {
                         self.tip = None;
                     }
                     // a tutorial's box over the cruise
-                    if let Some((title, text, wait, left)) = self.tutorial_box.clone() {
+                    if let Some((title, text, wait, left)) = self.tutorial_box.clone().filter(|_| !tut_under) {
                         // (a box with CONTINUE stays until it is answered)
                         // (form 78, the slipstream's, has the target form's prompt list 0x82906EBC: CONTINUE)
                         let left = if (title.contains("target") || title == "tutorial_slipstream_title" || self.mc4_tut_continue(&title)) && wait <= 0.0 && enter { 0.0 } else { left };
@@ -16867,9 +16872,10 @@ impl Game {
     /// man): the place picked on the map; for a mission its man while he is the one on the map (`rival_mark`), else the
     /// start of its first race still to win.
     /// The hookman set as the GPS target (`gps_man`) where he is now: `gps_pick` follows him while he is on the map
-    /// (F-83952: the arrow reads the target object's own position). Gone from the map, the target stays where he was
-    /// last (approx.: what the original does with a target whose man is removed is not decoded). Once a tick, after
-    /// `map_men` is filled.
+    /// (F-83952: the arrow reads the target object's own position). Gone from the map - removed or hidden - the target
+    /// goes: the UI manager's dispatcher F-50334 hands the events TargetRemoved / TargetHidden to the nav map's F-54921,
+    /// which clears its target when it is that object (F-26916: the arrow off, nothing selected, +616 / +628 cleared).
+    /// Once a tick, after `map_men` is filled (the men not hidden).
     pub fn follow_gps_man(&mut self) {
         let Some(key) = self.gps_man.as_deref() else { return };
         if self.gps_pick.is_none() {
@@ -16877,9 +16883,11 @@ impl Game {
             self.gps_man = None;
             return;
         }
-        if let Some(i) = self.map_men_key.iter().position(|k| k == key) {
-            if let Some(m) = self.map_men.get(i) {
-                self.gps_pick = Some(m.0);
+        match self.map_men_key.iter().position(|k| k == key).and_then(|i| self.map_men.get(i)) {
+            Some(m) => self.gps_pick = Some(m.0),
+            None => {
+                log::info!("gps: the target {} is gone from the map - the target cleared", key);
+                self.set_gps_target(None, None);
             }
         }
     }

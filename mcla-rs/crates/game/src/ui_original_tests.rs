@@ -73,7 +73,7 @@ fn one_gps_target() {
 }
 
 /// F-83952 (GitHub #55): a hookman set as the target is the target himself - the arrow (+612) reads his own position,
-/// so it follows him as he drives; another target set ends it, and a man gone from the map leaves it where he was last
+/// so it follows him as he drives; another target set ends it, and a man gone from the map (removed or hidden) clears it - F-54921
 #[test]
 fn a_hookman_target_follows_him() {
     let mut g = Game::new(Vec::new(), 0);
@@ -88,17 +88,20 @@ fn a_hookman_target_follows_him() {
     g.map_men[1].0 = b2;
     g.follow_gps_man();
     assert_eq!(g.gps_target_pos(), Some(b2));
-    // (he leaves the map: the target stays where he was last)
-    g.map_men.remove(1);
-    g.map_men_key.remove(1);
-    g.follow_gps_man();
-    assert_eq!(g.gps_target_pos(), Some(b2));
     // (a place set takes his place; the man is no longer followed)
     g.set_gps_target(Some(a), None);
     g.map_men = vec![(b, glam::Vec3::Z, 4, 7, 2, false)];
     g.map_men_key = vec!["tour:2".into()];
     g.follow_gps_man();
     assert_eq!((g.gps_target_pos(), g.gps_man), (Some(a), None));
+    // (F-54921: the man removed or hidden - gone from `map_men` - takes the target with him: arrow off, nothing selected)
+    g.gps_pick = Some(b);
+    g.gps_man = Some("tour:2".into());
+    g.gps_armed = true;
+    g.map_men.clear();
+    g.map_men_key.clear();
+    g.follow_gps_man();
+    assert_eq!((g.gps_target_pos(), g.gps_man.clone(), g.gps_pick, g.map_target_selected()), (None, None, None, false));
 }
 
 /// F-64065 -> F-94071: a race script's teardown takes the HUD arrow's target away; the map keeps its selection

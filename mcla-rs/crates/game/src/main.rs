@@ -3636,7 +3636,10 @@ impl App {
         let mut gpu = self.gpu.take().unwrap();
         self.vehicles.auto_player = self.drive && self.opt.auto;
         let frozen_now = self.vehicles.frozen || self.vehicles.grid_hold.is_some();
-        if self.drive && self.opt.auto {
+        // (the test driver --auto drives only a car that answers its pad: a deactivated one - the arrest's Racer_Deactivate
+        // to its Racer_Activate, the garage, the start warp - keeps the deactivated input, else it crept on under the
+        // arrest's black and form)
+        if self.drive && self.opt.auto && !player_input.deactivated {
             if let (Some(nav), Some(car)) = (world.nav.as_ref(), self.vehicles.player_mut()) {
                 let route = self.game.race.as_ref().map(|r| r.route.clone());
                 let drv = car.ai.get_or_insert_with(|| {
