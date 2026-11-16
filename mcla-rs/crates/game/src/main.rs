@@ -5140,6 +5140,12 @@ impl App {
                 self.game.dive_k = 1.0;
             }
         }
+        // (the HUD's predicate F-25537 takes its "off" exit, as for loading / replay / a cinematic, while the warper holds
+        // the camera, UILogic +0x51382 - `camera_held`: the climb's hold and a story cut's wait at its matrix; recorded,
+        // the garage entry work/garage-intro/capE f0026..f0050, no HUD through the wait at the sign)
+        if self.camera_held() {
+            self.game.dive_k = 1.0;
+        }
         if let Some((front, yaw, grid)) = self.game.prerace.clone() {
             self.prerace_wait += 1;
             if let Some(r) = self.game.race.as_mut() {
@@ -15785,10 +15791,11 @@ impl App {
     /// up: state 17 once the scene's time is >= 0 (F-31347: F-62707, then F-98849 / F-48345 -> F-70736), state 15
     /// (the far case) at its cinematic flight (state 26, F-18267). So FIND_SH_02C's UnPauseCamera after its fade finds
     /// the hold clear (Warper_SetPauseAtEndOfCut, F-97499 -> F-30425, sets the request's +8, which nothing reads).
-    /// Port: the camera held after the climb until the race warp's flight (`climb_end`, `climb_wait`). The warps'
+    /// Port: the camera held after the climb until the race warp's flight (`climb_end`, `climb_wait`), and a garage
+    /// entry's wait camera until its story scene plays (`garage_view_held`). The warps'
     /// flights are hold-free; the ones out of Cruising_Offline are `out_of_cruise_warp`.
     fn camera_held(&self) -> bool {
-        self.climb_end.is_some() || self.climb_wait.is_some()
+        self.climb_end.is_some() || self.climb_wait.is_some() || self.garage_view_held
     }
 
     /// The warps whose script has left Cruising_Offline before it warps: the race scripts throw their race event
@@ -15802,7 +15809,7 @@ impl App {
     /// ease and flight. The garage's way out runs in the garage's menu mode (mc.cruising at 0x1b99).
     fn out_of_cruise_warp(&self) -> bool {
         self.game.start_warp_on || self.warp.is_some() || self.climb.is_some() || self.climb_end.is_some() || self.climb_wait.is_some()
-            || self.garage_in.is_some() || self.payback_in.is_some()
+            || self.garage_in.is_some() || self.garage_view_held || self.payback_in.is_some()
     }
 
     fn pause_allowed(&self) -> bool {
