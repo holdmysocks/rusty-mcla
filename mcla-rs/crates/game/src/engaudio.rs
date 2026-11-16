@@ -1541,6 +1541,42 @@ mod tests {
         assert!(n > 200 && same == n && ws_same == n && xf_ok);
     }
 
+    /// The opponents' load volume F-57529 against the running original (work/audio2/cap81/r4.txt LM lines, made into
+    /// load_cases.txt by lm82.py): one entry's inputs - reverse byte +1946, racing byte +1951, +148, +168, +172, the car's
+    /// +136 (the pedal) and +224 (speed), the transmission's shift word, the step, XF+18 .. +34 - and the same entity's
+    /// +148 / +196 at its next entry.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR"]
+    fn opponent_load_volume_matches_the_recording() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let lib = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
+        let mut e = EngineSound::new_opponent(&lib, "vp_aud_r8_08", false).expect("engine");
+        let (mut n, mut bad) = (0, Vec::new());
+        let mut branches: std::collections::BTreeMap<&str, u32> = Default::default();
+        for l in include_str!("load_cases.txt").lines() {
+            let w: Vec<&str> = l.split_whitespace().collect();
+            let h = |i: usize| f32::from_bits(u32::from_str_radix(w[i], 16).unwrap());
+            let (rev, racing, shift) = (w[0] != "0", w[1] != "0", w[7].parse::<i32>().unwrap() as i8);
+            e.load_vol = h(2);
+            e.load_smooth = h(4);
+            (e.load_brake, e.load_floor, e.load_rate, e.load_slow, e.load_rev) = (h(9), h(10), h(11), h(12), h(13));
+            let (pedal, speed) = (h(5), h(6));
+            // the port's reverse test is gear -1 above 1 m/s; the original's is the byte it sets from that
+            let inp = EngineIn { throttle_in: pedal, pedal, speed: if rev { speed.max(2.0) } else { speed }, shift, racing, gear: if rev { -1 } else { 1 }, ..Default::default() };
+            let branch = if rev { "reverse" } else if e.load_smooth > 0.0 { "load" } else if speed < e.load_slow { "slow" } else if pedal < 0.5 { "lifted" } else if shift != 0 { "shift" } else { "drive" };
+            *branches.entry(branch).or_default() += 1;
+            e.step_load_vol(&inp, h(3), h(8));
+            n += 1;
+            if e.load_vol.to_bits() != h(14).to_bits() || e.ws_in.to_bits() != h(15).to_bits() {
+                bad.push((branch, l, e.load_vol, e.ws_in));
+            }
+        }
+        assert!(bad.is_empty(), "{} of {n} differ, first {:?}", bad.len(), &bad[..bad.len().min(4)]);
+        println!("opponent load steps {n}, per branch {branches:?}");
+        assert!(n > 1000);
+    }
+
     /// F-10725's rpm slew and start boost against the running original (cap2 ES lines, one per entity update: state +1928,
     /// slewed rpm +204, target +200 or the idle rpm with byte +1950, boost +152, the tick dt, XF+38): in state 4 the next
     /// update's +204 / +152 are the port's step from this one's. Also the rpm rate the opponents' `active` test reads

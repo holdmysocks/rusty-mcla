@@ -841,7 +841,8 @@ impl CarSounds {
             self.wheel(lib, i, w.speed_mph, w.slide, m, w.pos, c.burnout && w.driven, c.wet, dt);
             max_slide = max_slide.max(w.slide);
             let o = lib.game.get(m).map(|o| o.to_vec()).unwrap_or_default();
-            if w.slide > thr && (w.slide - prev) / dt.max(1e-6) > 10.0 && self.clock >= self.chirp_at + 1.0 && self.clock <= self.upshift_at + 0.5 && c.load >= 0.75 {
+            // the rise times the time object's 1 / step (G+12, written as 1.0 / step by the frame tick), not a divide
+            if w.slide > thr && (w.slide - prev) * (1.0 / dt) > 10.0 &&self.clock >= self.chirp_at + 1.0 && self.clock <= self.upshift_at + 0.5 && c.load >= 0.75 {
                 let h = be_u32(&o, if self.player { 182 } else { 186 });
                 if !is_null(h) {
                     lib.play_hash(h, self.req(w.pos));
