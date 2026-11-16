@@ -10647,10 +10647,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             }
                         }
                         // (a change of view blends or cuts, a look back cuts - mcPlayerCamera; the
-                        // CINEMATIC CAMERA option turns the look back of a moving car to one side)
+                        // CINEMATIC CAMERA option turns the look back of a car in the air to one side:
+                        // F-39925 tests the chassis' air time vt+52 > 0.0, not the speed)
                         let cinematic = self.game.mc4.as_ref().map_or(true, |m| m.options.idle_camera);
                         self.cam_switch.ability_on = self.ability.running();
-                        self.cam_switch.frame(&set, mode, self.look_back, cinematic, render_state.speed() > 0.0, &mut self.boom, dt);
+                        let airborne = render_state.veh.as_ref().map_or(render_state.airborne_time, |v| v.air584()) > 0.0;
+                        self.cam_switch.frame(&set, mode, self.look_back, cinematic, airborne, &mut self.boom, dt);
                         // (the camera that runs: a change pushed while blending is queued or turns the blend
                         // round - the director's queue F-43758 / finish F-70013)
                         let (tune, rev) = boomcam::tune_for(&set, self.cam_switch.shown(mode), self.look_back);

@@ -1882,10 +1882,11 @@ impl Switch {
     }
 
     /// Each frame before the view runs. `cinematic`: the CINEMATIC CAMERA option (+88);
-    /// `moving`: the car's speed above zero. On a change of view or of the look back the
+    /// `airborne`: the chassis' air time (vt+52, +584) above 0.0 - F-39925 reads that, not the
+    /// speed, so a car on its wheels looks straight back. On a change of view or of the look back the
     /// camera's history goes (the new camera is started afresh, vt+36), the old view is
     /// blended out or the mask is put up.
-    pub fn frame(&mut self, set: &BoomSet, view: u8, back: bool, cinematic: bool, moving: bool, cam: &mut BoomCam, dt: f32) {
+    pub fn frame(&mut self, set: &BoomSet, view: u8, back: bool, cinematic: bool, airborne: bool, cam: &mut BoomCam, dt: f32) {
         self.look_off = false;
         // (a blend that ended with a camera queued: the director cut to it - F-70013)
         if let Some(q) = self.blend.finished.take() {
@@ -1912,9 +1913,9 @@ impl Switch {
             self.mask.start(0.01, 0.1, 0.01);
             cam.reset();
             self.pan = (0.0, 0.0);
-            if back && chase && cinematic && moving {
-                // the look back of the cinematic camera stands off to one side: 22.5 .. 67.5
-                // degrees either way (A-94637..A-37192)
+            if back && chase && cinematic && airborne {
+                // the look back of the cinematic camera in the air stands off to one side: 22.5 ..
+                // 67.5 degrees either way (A-94637..A-37192); on the ground the turn and pitch are 0
                 let sign = if self.rand23() * 2.384_185_8e-7 - 1.0 >= 0.0 { 1.0 } else { -1.0 };
                 self.pan.0 = sign * (0.392_699 + self.rand23() * 9.362_68e-8);
             }
@@ -6721,6 +6722,29 @@ mod director_blend_tests {
         let (tune, _) = tune_for(set, sw.shown(view), false);
         let out = cam.update(tune, &car, dt);
         sw.blend.apply(&car, out, &[], dt);
+    }
+
+    /// F-39925's on with the CINEMATIC CAMERA option: the turn to one side (22.5 .. 67.5 degrees) only while the chassis'
+    /// air time is above 0 (vt+52), never on the ground however fast; the pitch is 0 either way.
+    #[test]
+    fn the_cinematic_look_back_turns_only_in_the_air() {
+        let set = views();
+        let dt = 1.0 / 30.0;
+        for view in 0u8..5 {
+            let chase = VIEW_OF_PORT[view as usize] >= 2;
+            for air in [false, true] {
+                let (mut sw, mut cam) = (Switch::default(), BoomCam::default());
+                sw.frame(&set, view, false, true, air, &mut cam, dt);
+                sw.frame(&set, view, true, true, air, &mut cam, dt);
+                let turned = sw.pan.0.abs();
+                if chase && air {
+                    assert!((0.392_699..=1.178_1).contains(&turned), "view {view}: {turned}");
+                } else {
+                    assert_eq!(sw.pan, (0.0, 0.0), "view {view} air {air}");
+                }
+                assert_eq!(sw.pan.1, 0.0);
+            }
+        }
     }
 
     /// F-39925's off while the ability runs: from a chase view's reverse camera it cuts to the ability camera with the
