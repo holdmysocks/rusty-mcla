@@ -3904,13 +3904,17 @@ impl Game {
         self.hud_map_big = !self.hud_map_big;
     }
 
-    /// The pause manager's paused byte (+4, set by `game.pause()` F-23567, cleared by `game.resume()`
-    /// F-35144) as the audio reads it - F-99037: timer 0 (the speech lines) held and the PAUSE scene, and the speech
-    /// line's hold (F-89113). The pause menu and the race list (the arcade race-type menu calls game.pause(); the
-    /// telephone list's leave hook F-20561 resumes the game), so the call's line waits under RACE SELECT.
-    /// *(approx.)* the other game.pause() screens (the GPS map, the repair and fine panels, the garage) are not counted yet.
+    /// The pause manager's paused byte (+4) as the audio reads it - F-99037: timer 0 (the speech lines) held and the
+    /// PAUSE scene, and the speech line's hold (F-89113). `game.pause()` (F-23567) queues the manager's action 1, which
+    /// sets +4, and `game.resume()` (F-35144) action 8, which clears it (the manager's action step F-37614, vtable
+    /// +12); F-23567 also sets the menu flag of `ui_msaa4`, F-35144 clears it, so the byte is up on the same screens:
+    /// the pause menu, the race list (the telephone list's leave hook F-20561 resumes), the service station's and the
+    /// payback menus, the cop fine / arrest panels, the photo album, the end-of-race form from 1.0 s after it shows,
+    /// and the GPS map and mission log scenes (their charts call game.pause(): F-50459). *(open)* the garage:
+    /// none of F-23567's 13 callers is a garage form and the garage scripts never call UILogic_PauseGame, so a
+    /// garage driven into is not counted (one entered by the pause menu's GO TO GARAGE may keep the byte).
     pub fn audio_paused(&self) -> bool {
-        matches!(self.mode, Mode::Paused | Mode::RaceSelect)
+        self.show_map || (self.ui_msaa4() && self.mode != Mode::Garage)
     }
 
     /// The original's menu flag (renderer +373; UI.md "UI edge smoothing", `work/ui-sharp/agent_menu/notes.md`):
