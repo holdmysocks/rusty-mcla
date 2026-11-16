@@ -88,6 +88,9 @@ struct Mover {
     anim: Arc<Animation>,
 }
 
+/// The animations of a pack decoded on the read-ahead thread, by their offset in it (`None`: does not decode).
+type Decoded = HashMap<usize, Option<Arc<Animation>>>;
+
 pub struct Scene {
     pub name: String,
     camera: Option<Arc<Animation>>,
@@ -438,7 +441,8 @@ pub struct Cine {
     /// character sets read ahead on worker threads (`read_ahead_ambient`): the file and what it holds
     reading: HashMap<String, std::thread::JoinHandle<Option<(PathBuf, mcla_formats::rage::character::Character)>>>,
     /// a story scene's animation packs read ahead on a worker thread (`read_ahead_scene`), taken by `start`
-    packs: HashMap<PathBuf, std::thread::JoinHandle<Option<mcla_formats::rsc::Resource>>>,
+    /// with the scene's animations in it decoded there too (by their offset in the pack: the same decode `start` runs)
+    packs: HashMap<PathBuf, std::thread::JoinHandle<Option<(mcla_formats::rsc::Resource, Decoded)>>>,
     pub playing: Option<Scene>,
     buf: SkinBuffer,
     /// people of the hangout nearby: each loops at its own length
@@ -864,12 +868,15 @@ impl Cine {
         let short = key.rsplit('/').next().unwrap_or("").to_string();
         let mut movers = Vec::new();
         let mut sets = Vec::new();
-        let mut files: Vec<PathBuf> = Vec::new();
+        let mut files: Vec<(PathBuf, Vec<String>)> = Vec::new();
         let aux = aux_pack(&key).map(str::to_string);
         for (part, faces) in [(key.clone(), false), (format!("hangout/{short}_peds"), false), (format!("{key}_im"), true)].into_iter().chain(aux.map(|a| (a, true))) {
             for (name, f) in self.index.get(&part).cloned().unwrap_or_default() {
-                if !files.contains(&f) && !self.packs.contains_key(&f) {
-                    files.push(f);
+                if !self.packs.contains_key(&f) {
+                    match files.iter_mut().find(|e| e.0 == f) {
+                        Some(e) => e.1.push(name.clone()),
+                        None => files.push((f, vec![name.clone()])),
+                    }
                 }
                 let l = name.to_ascii_lowercase();
                 let ent = l.rsplit('/').next().unwrap_or("").to_string();
@@ -900,9 +907,14 @@ impl Cine {
                 }
             }
         }
-        for f in files {
+        for (f, names) in files {
             let p = f.clone();
-            if let Ok(h) = std::thread::Builder::new().name("scene read".into()).spawn(move || load_resource_file(&p).ok()) {
+            if let Ok(h) = std::thread::Builder::new().name("scene read".into()).spawn(move || {
+                let res = load_resource_file(&p).ok()?;
+                let rd = Rd::new(&res);
+                let anims = pack_entries(&res).into_iter().filter(|(_, n)| names.contains(n)).map(|(o, _)| (o, animation_named(&rd, o).map(Arc::new))).collect();
+                Some((res, anims))
+            }) {
                 self.packs.insert(f, h);
             }
         }
@@ -921,9 +933,14 @@ impl Cine {
 
     /// An animation pack: the one read ahead (`read_ahead_scene`), else read now.
     fn pack(&mut self, f: &Path) -> Option<mcla_formats::rsc::Resource> {
+        self.pack_decoded(f).map(|r| r.0)
+    }
+
+    /// An animation pack and the animations decoded with it on the read-ahead thread (none when read now).
+    fn pack_decoded(&mut self, f: &Path) -> Option<(mcla_formats::rsc::Resource, Decoded)> {
         match self.packs.remove(f) {
             Some(h) => h.join().ok().flatten(),
-            None => load_resource_file(f).ok(),
+            None => load_resource_file(f).ok().map(|r| (r, Decoded::new())),
         }
     }
 
@@ -960,10 +977,15 @@ impl Cine {
         let short = key.rsplit('/').next().unwrap_or("").to_string();
         let parts = [(key.clone(), false), (format!("hangout/{short}_peds"), false), (format!("{key}_im"), true)];
         let mut got: HashMap<PathBuf, Arc<mcla_formats::rsc::Resource>> = HashMap::new();
+        // (the animations the read-ahead thread decoded, by pack and offset: taken instead of decoding them here)
+        let mut decoded: HashMap<PathBuf, Decoded> = HashMap::new();
         // (each character's slot name, the set before its cutscene copy: the face fallback matches it)
         let mut slot_sets: Vec<(String, String)> = Vec::new();
         // (the scene script's AssignBoyToSlot / AssignGirlToSlot calls, run once at its start in their order)
         let cast = cast_scene(&key, |set| self.racer_sets.iter().any(|r| r == set));
+        // (MCLA_SLOWTICK: where the start's time goes - the packs read or joined, the animations decoded, the people made)
+        let (mut t_pack, mut t_anim, mut t_model) = (0.0f64, 0.0f64, 0.0f64);
+        let t_all = std::time::Instant::now();
         for (part, faces) in parts {
             let Some(entries) = self.index.get(&part).cloned() else { continue };
             let mut by_file: HashMap<PathBuf, Vec<String>> = HashMap::new();
@@ -975,7 +997,10 @@ impl Cine {
                 let res = match got.get(&f) {
                     Some(r) => r.clone(),
                     None => {
-                        let Some(r) = self.pack(&f) else { continue };
+                        let t = std::time::Instant::now();
+                        let Some((r, d)) = self.pack_decoded(&f) else { continue };
+                        t_pack += t.elapsed().as_secs_f64() * 1000.0;
+                        decoded.insert(f.clone(), d);
                         let r = Arc::new(r);
                         got.insert(f.clone(), r.clone());
                         r
@@ -986,11 +1011,13 @@ impl Cine {
                     if !names.contains(&name) {
                         continue;
                     }
-                    let Some(anim) = animation_named(&rd, o) else {
+                    let t = std::time::Instant::now();
+                    let pre = decoded.get_mut(&f).and_then(|d| d.remove(&o));
+                    let Some(anim) = pre.unwrap_or_else(|| animation_named(&rd, o).map(Arc::new)) else {
                         log::warn!("cine: {} does not decode", name);
                         continue;
                     };
-                    let anim = Arc::new(anim);
+                    t_anim += t.elapsed().as_secs_f64() * 1000.0;
                     let l = name.to_ascii_lowercase();
                     // ".../Entity/<entity>/<entity>"
                     let ent = l.rsplit('/').next().unwrap_or("").to_string();
@@ -1031,7 +1058,10 @@ impl Cine {
                     // character takes its set's cutscene copy - LookupDriverToCutscenePath / Name)
                     slot_sets.push((label.to_string(), set.clone()));
                     let set = cutscene_set(&set, self.player_bike);
-                    let Some(model) = self.model(gpu, &set) else { continue };
+                    let t = std::time::Instant::now();
+                    let model = self.model(gpu, &set);
+                    t_model += t.elapsed().as_secs_f64() * 1000.0;
+                    let Some(model) = model else { continue };
                     let clip = Clip::bind(&anim, &model.ids, false, false);
                     sc.actors.push(Actor { label: label.to_string(), model, clip, t0: 0.0, face: None, shapes: None, root_add: None, fade: None, face_in: None });
                 }
@@ -1072,6 +1102,7 @@ impl Cine {
             return false;
         }
         sc.actors.sort_by(|a, b| a.label.cmp(&b.label));
+        log::info!("cine start: {} {:.1} ms - packs {:.1}, animations {:.1}, people {:.1}", key, t_all.elapsed().as_secs_f64() * 1000.0, t_pack, t_anim, t_model);
         log::info!("cine: {} ({:.1} s): camera {}, {} characters [{}] ({} with faces, {} with blend shapes: {} weight tracks), cars [{}]", key, sc.duration, sc.camera.is_some(), sc.actors.len(), sc.actors.iter().map(|a| a.label.as_str()).collect::<Vec<_>>().join(" "), sc.actors.iter().filter(|a| a.face.is_some()).count(), sc.actors.iter().filter(|a| a.shapes.is_some()).count(), sc.actors.iter().filter_map(|a| a.shapes.as_ref()).map(|s| s.1.iter().flatten().count()).sum::<usize>(), sc.movers.iter().map(|m| m.label.as_str()).collect::<Vec<_>>().join(" "));
         self.playing = Some(sc);
         true
@@ -1508,6 +1539,39 @@ mod tests {
         }
         assert_eq!(story_ped("hangout/cut_story_bestof_sh_05_peds", "f_ped01_loop"), Some("ped_fb_002_set"));
         assert_eq!(story_ped("hangout/cut_story_hangout_pinkslip_downtown_peds", "m_ped00_loop"), None);
+    }
+
+    /// D59.story-read-ahead: the animations decoded on the read-ahead worker are the ones `start` decodes itself, the
+    /// same function on the same bytes, at the offsets `start` looks them up by - each scene's every entry, in every pack.
+    #[test]
+    fn animations_decoded_ahead_are_the_ones_decoded_at_the_start() {
+        let data = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        if !Path::new(&data).join("cine_index.tsv").exists() {
+            eprintln!("no disc data, skipped");
+            return;
+        }
+        for scene in ["story/cut_story_payback_intro", "story/cut_story_hangout_pinkslip_downtown", "story/cut_story_hollywood_garage_intro", "story/cut_story_beat_sh_02_exotic"] {
+            let mut c = Cine::load(&data);
+            c.read_ahead_scene(scene);
+            let wanted: Vec<(String, PathBuf)> = c.index.iter().filter(|(k, _)| k.as_str() == scene || k.starts_with(&format!("{scene}_im"))).flat_map(|(_, v)| v.clone()).collect();
+            assert!(!c.packs.is_empty(), "{scene}: nothing read ahead");
+            let (mut n, files): (usize, Vec<PathBuf>) = (0, c.packs.keys().cloned().collect());
+            for f in files {
+                let (res, decoded) = c.pack_decoded(&f).expect("read");
+                let rd = Rd::new(&res);
+                for (o, name) in pack_entries(&res) {
+                    if !wanted.iter().any(|w| w.0 == name && w.1 == f) {
+                        continue;
+                    }
+                    let ahead = decoded.get(&o).unwrap_or_else(|| panic!("{scene}: {name} not decoded ahead"));
+                    let here = animation_named(&rd, o).map(Arc::new);
+                    assert_eq!(format!("{ahead:?}"), format!("{here:?}"), "{scene}: {name}");
+                    n += 1;
+                }
+            }
+            assert!(n > 0, "{scene}: no animations compared");
+            eprintln!("{scene}: {n} animations equal");
+        }
     }
 
     #[test]

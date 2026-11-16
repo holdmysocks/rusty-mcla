@@ -497,6 +497,8 @@ struct App {
     find_sh01_road: bool,
     /// (test hook MCLA_CUT_LIST="A,B,..": these story scenes played one after another, each once the last is over)
     cut_list: Option<std::collections::VecDeque<String>>,
+    /// (D59.story-read-ahead) scene cars whose set-up build waits for their read: (car folder, set-up)
+    scene_preps: Vec<(std::path::PathBuf, vehicle_model::CarConfig)>,
     /// the arrest scene's hands-up has been given (police::arrest_hands_up)
     arrest_hands: bool,
     /// the pull-over scene playing and how many of its acts (police::pullover_acts) have been given
@@ -1635,6 +1637,7 @@ impl App {
             scene_posed: Vec::new(),
             find_sh01_road: false,
             cut_list: None,
+            scene_preps: Vec::new(),
             arrest_hands: false,
             pullover_acts: (String::new(), 0),
             arrest_form: None,
@@ -4668,12 +4671,22 @@ impl App {
                 self.story_warp_for = None;
                 self.cuts.drop_front();
                 self.begin_story_warp(k, i);
+                // (its scene's packs, people and cars read on workers over the warp's flight - D59.story-read-ahead; what is
+                // made, and when, is unchanged)
+                let scene = format!("story/{}", self.cuts.scenes[i].name.to_ascii_lowercase());
+                if self.story_read.insert(scene.clone()) {
+                    log::info!("story: {} read ahead (story warp)", scene);
+                    self.read_scene_ahead(&world, &scene);
+                }
             } else if let Some(stream) = self.cuts.start_pending() {
                 self.speech.stop();
                 // the scene's own animation (camera, characters, cars), if the disc has it
                 let scene = self.cuts.playing.as_ref().map(|p| format!("story/{}", p.def.name.to_ascii_lowercase())).unwrap_or_default();
+                crate::ticktimes::pt("scene: start");
                 if std::env::var("MCLA_NO_CINE").is_err() && self.cine.start(&mut gpu, &scene, glam::Mat4::IDENTITY) {
+                    crate::ticktimes::pt("scene: cine made");
                     self.cine_spawn_cars(&mut gpu, &mut world);
+                    crate::ticktimes::pt("scene: cars made");
                     // the scene lasts as long as its animation
                     if let (Some(p), Some(sc)) = (self.cuts.playing.as_mut(), self.cine.playing.as_ref()) {
                         p.def.length = sc.duration;
@@ -4685,6 +4698,7 @@ impl App {
                     // (after the story warp the place is in view: the scene's sound at once)
                     if std::mem::take(&mut self.story_warp_start) {
                         self.start_scene_audio(stream.as_deref());
+                        crate::ticktimes::pt("scene: audio");
                     } else {
                         self.cine_hold = Some((stream, 0));
                     }
@@ -5067,6 +5081,19 @@ impl App {
                 // (the story scene a garage / hangout near the player would play: its cars read ahead - D59.story-read-ahead)
                 if self.tick_no % 30 == 0 && self.game.race.is_none() && self.cuts.playing.is_none() {
                     self.story_read_ahead(&world);
+                }
+                if self.tick_no % 30 == 15 && !self.scene_preps.is_empty() {
+                    self.scene_preps_step();
+                }
+                // (test hook MCLA_CUT_READ=1 with MCLA_CUT_LIST: the list's next scene read ahead while the one before plays,
+                // as a garage's or hangout's scene is on the approach)
+                if self.tick_no % 30 == 0 && std::env::var_os("MCLA_CUT_READ").is_some() {
+                    let next = self.cut_list.as_ref().and_then(|l| l.front()).map(|n| format!("story/{}", n.to_ascii_lowercase()));
+                    if let Some(scene) = next.filter(|sc| !self.story_read.contains(sc)) {
+                        self.story_read.insert(scene.clone());
+                        log::info!("cut list: {} read ahead", scene);
+                        self.read_scene_ahead(&world, &scene);
+                    }
                 }
             }
             crate::ticktimes::mark(crate::ticktimes::S::Other);
@@ -16336,21 +16363,39 @@ impl App {
                 continue;
             }
             log::info!("story: {} read ahead ({} due)", scene, id);
-            for label in self.cine.read_ahead_scene(&scene) {
+            self.read_scene_ahead(world, &scene);
+        }
+    }
+
+    /// A story scene's packs, people and moved cars read on workers before it starts (`story_read_ahead`).
+    fn read_scene_ahead(&mut self, world: &world::World, scene: &str) {
+        {
+            for label in self.cine.read_ahead_scene(scene) {
                 if cine::is_player_car(&label) {
                     continue;
                 }
-                let Some((car, _, _, config)) = self.cine_car_of(&scene, &label) else { continue };
-                if !self.vehicles.models.iter().any(|m| m.name.eq_ignore_ascii_case(&car)) {
-                    if let Some(d) = self.game.car_dirs.iter().find(|d| d.file_name().map_or(false, |f| f.to_string_lossy().eq_ignore_ascii_case(&car))).cloned() {
-                        self.vehicles.prefetch(world, &d);
-                    }
+                let Some((car, _, _, config)) = self.cine_car_of(scene, &label) else { continue };
+                let dir = self.game.car_dirs.iter().find(|d| d.file_name().map_or(false, |f| f.to_string_lossy().eq_ignore_ascii_case(&car))).cloned();
+                if let Some(d) = dir.as_ref().filter(|_| !self.vehicles.models.iter().any(|m| m.name.eq_ignore_ascii_case(&car))) {
+                    self.vehicles.prefetch(world, d);
                 }
                 if let Some(d) = self.game.mc4_dress_of(&car, &config) {
                     vehicles::warm_dress(&world.assets.root, &d);
+                    // (`cine_spawn_cars` builds the plain car, then dresses it in its set-up: that build's CPU part made
+                    // ahead too, once the car is read - `scene_preps`)
+                    if let Some(dir) = dir {
+                        self.scene_preps.push((dir, d.cfg.clone()));
+                    }
                 }
             }
         }
+    }
+
+    /// The scene cars' set-up builds asked for once their cars are read (`read_scene_ahead`, every 30 ticks).
+    fn scene_preps_step(&mut self) {
+        let mut left = std::mem::take(&mut self.scene_preps);
+        left.retain(|(dir, cfg)| !self.vehicles.prepare_after_read(dir, cfg));
+        self.scene_preps = left;
     }
 
     fn cine_car_of(&mut self, scene: &str, label: &str) -> Option<(String, [f32; 4], String, String)> {
@@ -16461,10 +16506,12 @@ impl App {
             if !self.vehicles.models.iter().any(|m| m.name.eq_ignore_ascii_case(&car)) {
                 if let Some(d) = dirs.iter().find(|d| d.file_name().map_or(false, |f| f.to_string_lossy().eq_ignore_ascii_case(&car))) {
                     let _ = self.vehicles.load_model(gpu, world, d);
+                    crate::ticktimes::pt("scene: car model");
                 }
             }
             let Some(model) = self.vehicles.models.iter().find(|m| m.name.eq_ignore_ascii_case(&car)).cloned() else { continue };
             let idx = self.vehicles.spawn(gpu, model, pos, 0.0, color, false);
+            crate::ticktimes::pt("scene: car spawned");
             self.vehicles.cars[idx].driver = format!("cine:{label}");
             // (the hookman's racer carries his character set - mcCareer_GetHookmanCharacterSet, cinedriver::HOOKMAN_SETS)
             if let Some(set) = self.cine_hookman_of(&label).as_deref().and_then(cinedriver::hookman_set) {
@@ -16486,6 +16533,7 @@ impl App {
                     break;
                 }
             }
+            crate::ticktimes::pt("scene: car dressed");
             log::info!("cine car: {} is {} in set-up {:?} (dressed {})", label, car, self.vehicles.cars[idx].vinyl_name, self.vehicles.cars[idx].dressed);
         }
     }

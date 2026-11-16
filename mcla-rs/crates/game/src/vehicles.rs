@@ -2649,6 +2649,31 @@ impl Vehicles {
         }
     }
 
+    /// A build in `cfg` other than the one its read-ahead made (a scene car's set-up after its plain build): once the
+    /// car's worker has finished reading, its read car is taken over as `car_asset` takes it (and its plain build's CPU
+    /// part kept), and the CPU part of `cfg` is made on a worker (`prepare_ahead`). False while the car is still being
+    /// read - ask again later; true once it is asked for (or nothing was read ahead).
+    pub fn prepare_after_read(&mut self, dir: &Path, cfg: &CarConfig) -> bool {
+        let key = parsed_key(dir);
+        match self.parsed.get(&key) {
+            Some(Parsed::Reading(h, _)) if !h.is_finished() => return false,
+            Some(Parsed::Reading(..)) => {
+                let Some(Parsed::Reading(h, stamp)) = self.parsed.remove(&key) else { return true };
+                match h.join() {
+                    Ok(Ok((c, p, pcfg))) => {
+                        self.keep_prep(key.clone(), pcfg, PrepSlot::Ready(p));
+                        self.parsed.insert(key, Parsed::Read(Arc::new(c), stamp));
+                    }
+                    _ => return true,
+                }
+            }
+            Some(Parsed::Read(..)) => {}
+            None => return true,
+        }
+        self.prepare_ahead(dir, cfg);
+        true
+    }
+
     /// The car in `dir` as read: from `parsed` (waiting for its worker if it is still reading), else read now.
     fn car_asset(&mut self, world: &World, dir: &Path) -> Result<Arc<CarAsset>> {
         self.parsed_stamp += 1;
