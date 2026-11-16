@@ -151,10 +151,6 @@ const CARSELECT_MUSIC: &str = "MUSIC_CARSELECT_MASTER";
 /// two ending together - the film's time of the scene's first frame (the close-up's cut: film 66.30 s, scene 8.1 s;
 /// CUTSCENES.md "The opening scenes' audio (session `cut-audio`, 2026-10-23)")
 const FILM_CUT_INTRO_AT: f32 = 58.2;
-/// Where the pause cameras' frame (the HUD frame 14, F-32331) stands: the car's composite box's top
-/// centre, turned by the car (`racemark::pause_origin`); the frame's axes the heading only. The race-end
-/// fit on the S281 (CAREER_RACES.md "Race end: second run": (0, 1.42, 0.08 rear)) is this to 1 cm.
-/// (approx.: the port's car origin taken as the original's matrix origin)
 /// MCLA_SCENE_WORLD=1 (default off, under test): a story scene does not stop the world, as in the original
 /// (docs/reference/people/scene_world_rule.md: the frame tick F-75502 freezes only for the pause object, which no
 /// scene sets; the cine core script stops the pad, the police's normal update, the day clock and the automatic weather).
@@ -169,6 +165,10 @@ fn scene_pad(_pad: CarInput) -> CarInput {
     CarInput { deactivated: true, ..Default::default() }
 }
 
+/// Where the pause cameras' frame (the HUD frame 14, F-32331) stands: the car's composite box's top
+/// centre, turned by the car (`racemark::pause_origin`); the frame's axes the heading only. The race-end
+/// fit on the S281 (CAREER_RACES.md "Race end: second run": (0, 1.42, 0.08 rear)) is this to 1 cm.
+/// (approx.: the port's car origin taken as the original's matrix origin)
 fn pause_origin(car: &vehicles::CarInstance, s: &physics::CarState) -> Vec3 {
     let (hi, lo) = racemark::bound_box(car);
     racemark::pause_origin(s.pos, s.rot, hi, lo, car.model.bike)
@@ -176,6 +176,10 @@ fn pause_origin(car: &vehicles::CarInstance, s: &physics::CarState) -> Vec3 {
 /// The point RACE_GH_06_READY_TO_START_ON_ENTER.sco gives AmbientMgr_SetRoadDensity (0x8be .. 0x8dc, 0xab1): the
 /// road of CUT_STORY_RACE_GH_06 (F-86195 finds it), index 0 for the scene, -1 after it.
 const GH_06_SCENE_ROAD: Vec3 = Vec3::new(-234.0, 21.0, -733.0);
+/// FIND_SH_01's CORE (game/career/Story/0xdcae2a38) before CUT_STORY_FIND_SH_04: AmbientMgr_Reset (0x7eb) and
+/// AmbientMgr_SetRoadDensity(this point - set at 0x211 .. 0x21e -, 0) at 0x7f7, after the cars are put in the scene's
+/// slots; -1 at 0x911 once the scene's script is over. The only ambient flush before a scene in any script.
+const FIND_SH_01_SCENE_ROAD: Vec3 = Vec3::new(1772.0, -3.0, 90.0);
 mod rivals;
 mod rubber;
 mod rumble;
@@ -489,6 +493,10 @@ struct App {
     cine_kept: Vec<(u32, String, Option<ai::AiDriver>)>,
     /// (MCLA_SCENE_WORLD) a story scene's posed cars this tick: posed after the physics step (index, place, turn)
     scene_posed: Vec<(usize, Vec3, glam::Quat)>,
+    /// FIND_SH_01's scene road cleared (`FIND_SH_01_SCENE_ROAD`), given back when the scene is over
+    find_sh01_road: bool,
+    /// (test hook MCLA_CUT_LIST="A,B,..": these story scenes played one after another, each once the last is over)
+    cut_list: Option<std::collections::VecDeque<String>>,
     /// the arrest scene's hands-up has been given (police::arrest_hands_up)
     arrest_hands: bool,
     /// the pull-over scene playing and how many of its acts (police::pullover_acts) have been given
@@ -1625,6 +1633,8 @@ impl App {
             cine_free: false,
             cine_kept: Vec::new(),
             scene_posed: Vec::new(),
+            find_sh01_road: false,
+            cut_list: None,
             arrest_hands: false,
             pullover_acts: (String::new(), 0),
             arrest_form: None,
@@ -4034,6 +4044,18 @@ impl App {
                 self.cuts.queue(i);
             }
         }
+        // diagnostics: play a list of scenes, one after another (MCLA_CUT_LIST="CUT_STORY_A,CUT_STORY_B")
+        if self.tick_no == 5 {
+            self.cut_list = std::env::var("MCLA_CUT_LIST").ok().map(|v| v.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect());
+        }
+        if self.tick_no > 5 && self.tick_no % 30 == 0 && self.cuts.idle() && !self.cuts.has_pending() && self.cine.playing.is_none() {
+            if let Some(n) = self.cut_list.as_mut().and_then(|l| l.pop_front()) {
+                log::info!("cut list: {} next", n);
+                if let Some(i) = self.cuts.by_name(&n) {
+                    self.cuts.queue(i);
+                }
+            }
+        }
         // diagnostics: leave the garage at a given frame
         if let Some(n) = std::env::var("MCLA_GARAGE_EXIT").ok().and_then(|v| v.parse::<u64>().ok()) {
             if self.tick_no as u64 == n && self.game.mode == Mode::Garage {
@@ -5018,6 +5040,11 @@ impl App {
                     self.place_view = None;
                     self.game.place_title = None;
                 }
+            }
+            if self.find_sh01_road && self.cuts.idle() {
+                // (FIND_SH_01's CORE 0x911: the scene's road given back once its script is over)
+                self.find_sh01_road = false;
+                self.vehicles.set_road_density(FIND_SH_01_SCENE_ROAD, -1);
             }
             // (a garage entry's held wait camera, until its story scene plays - or none is coming)
             if self.garage_view_held && (self.cuts.playing.is_some() || !self.cuts.has_pending()) {
@@ -7006,6 +7033,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 self.cuts.queue(si.scene);
                                 self.story_warp_start = true;
                                 si.stage = storywarp::Stage::Scene;
+                                self.story_scene_ambient(si.scene);
                             }
                             si.t = 0.0;
                         }
@@ -7022,6 +7050,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                     self.cuts.queue(si.scene);
                                     self.story_warp_start = true;
                                     si.stage = storywarp::Stage::Scene;
+                                    self.story_scene_ambient(si.scene);
                                     si.t = 0.0;
                                 }
                             }
@@ -15891,6 +15920,16 @@ impl App {
     /// Port: the camera held after the climb until the race warp's flight (`climb_end`, `climb_wait`), and a garage
     /// entry's wait camera until its story scene plays (`garage_view_held`). The warps'
     /// flights are hold-free; the ones out of Cruising_Offline are `out_of_cruise_warp`.
+    /// A story warp's scene is started: FIND_SH_01's CORE clears the ambient cars and the scene's road first
+    /// (`FIND_SH_01_SCENE_ROAD`); no other story script (game/career/Story) calls either.
+    fn story_scene_ambient(&mut self, scene: usize) {
+        if self.cuts.scenes.get(scene).is_some_and(|s| s.name.eq_ignore_ascii_case("CUT_STORY_FIND_SH_04")) {
+            self.vehicles.ambient_reset();
+            self.vehicles.set_road_density(FIND_SH_01_SCENE_ROAD, 0);
+            self.find_sh01_road = true;
+        }
+    }
+
     fn camera_held(&self) -> bool {
         self.climb_end.is_some() || self.climb_wait.is_some() || self.garage_view_held
     }
