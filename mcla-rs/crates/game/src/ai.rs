@@ -39,14 +39,15 @@ pub enum GridPhase {
 pub struct Overrides {
     pub throttle: Option<f32>,
     pub brake: Option<f32>,
-    pub handbrake: Option<bool>,
+    /// the handbrake's share (F-88118: only a share above 0 is put over the driver's: it can switch the handbrake on only)
+    pub handbrake: Option<f32>,
     pub steer: Option<f32>,
 }
 
 impl Overrides {
     /// The merge over the driver's input (F-88118): a throttle override is taken first and, above 0, zeroes the brake;
-    /// only without one a brake override applies and, above 0, zeroes the throttle; the handbrake can only be switched
-    /// on; the steer replaces the driver's.
+    /// only without one a brake override applies and, above 0, zeroes the throttle; a handbrake share above 0 replaces the
+    /// driver's (so it can only switch it on); the steer replaces the driver's (test cop_input_merge_matches_the_recording).
     pub fn apply(&self, inp: &mut CarInput) {
         if let Some(t) = self.throttle.filter(|t| *t >= 0.0) {
             inp.throttle = t;
@@ -59,8 +60,8 @@ impl Overrides {
                 inp.throttle = 0.0;
             }
         }
-        if self.handbrake == Some(true) {
-            inp.set_handbrake(true);
+        if let Some(h) = self.handbrake.filter(|h| *h > 0.0) {
+            inp.set_hand(h);
         }
         if let Some(s) = self.steer {
             inp.steer = s;

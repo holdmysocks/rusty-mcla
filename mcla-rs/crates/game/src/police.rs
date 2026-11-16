@@ -969,7 +969,7 @@ fn squad_swipes(sq: &mut Squad, arrow: bool, dt: f32, a: Option<usize>, b: Optio
     for (k, x) in g.iter().enumerate() {
         if let (Some(x), true) = (x, head_on.get(k).copied().unwrap_or(false)) {
             if x.dsq < head_on_dist * head_on_dist {
-                ovr[k].handbrake = Some(true);
+                ovr[k].handbrake = Some(1.0);
                 ovr[k].steer = Some(if x.on_right { 1.0 } else { -1.0 });
             }
         }
@@ -5421,7 +5421,7 @@ impl Police {
                     let mut v = crate::ai::Overrides {
                         throttle: (o[0] != -1.0).then_some(o[0]),
                         brake: (o[1] != -1.0).then_some(o[1]),
-                        handbrake: (o[2] != -1.0).then_some(o[2] > 0.0),
+                        handbrake: (o[2] != -1.0).then_some(o[2]),
                         steer: (o[3] != -1000.0).then_some(o[3]),
                     };
                     if !pull && st == Tac::Halt && halt_steer0 != 0.0 {
@@ -7388,7 +7388,7 @@ mod tests {
                     let bits = |o: Option<f32>| o.map_or(0xDEADBEEF, f32::to_bits);
                     let mut got = String::new();
                     for o in &ovr {
-                        got += &format!("{:08x} {:08x} {:08x} ", bits(o.steer), bits(o.brake), bits(o.handbrake.map(|_| 1.0)));
+                        got += &format!("{:08x} {:08x} {:08x} ", bits(o.steer), bits(o.brake), bits(o.handbrake));
                         swiped += o.brake.is_some() as u32;
                     }
                     got += &format!("{:08x} {} {}", sq.swipe_t.to_bits(), sq.latch as u8, lines);
@@ -7432,7 +7432,7 @@ mod tests {
             let mut got = format!("W {:08X} {:02X}", sq.swipe_t.to_bits(), sq.latch as u8);
             for (c, o) in cops.iter().zip(&ovr) {
                 let word = |v: Option<f32>, i: usize| v.map_or(hex(c[i]), f32::to_bits);
-                got += &format!(" {:08X} {:08X} {:08X}", word(o.steer, 14), word(o.brake, 15), word(o.handbrake.map(|_| 1.0), 16));
+                got += &format!(" {:08X} {:08X} {:08X}", word(o.steer, 14), word(o.brake, 15), word(o.handbrake, 16));
                 swiped += o.brake.is_some() as u32;
             }
             assert_eq!(got, w.join(" "), "update {checked}");
@@ -7839,7 +7839,7 @@ mod tests {
                 for (k, c) in cops.iter().enumerate() {
                     let word = |v: Option<f32>, i: usize| v.map_or(hex(c[i]), f32::to_bits);
                     got.push(format!("{} {} {:08X} {:08X} {:08X}", brains[k].0, brains[k].1 as u8, word(ovr[k].steer, 20), word(ovr[k].brake, 21),
-                                     word(ovr[k].handbrake.map(|_| 1.0), 22)));
+                                     word(ovr[k].handbrake, 22)));
                     want.push(w[10 + 5 * k..15 + 5 * k].join(" "));
                     swiped += ovr[k].brake.is_some() as u32;
                 }
@@ -8122,6 +8122,36 @@ mod tests {
             runs += (s == SearchStep::Stay && started) as u32;
         }
         assert!(n == 8_484 && either == 9_099 && seen == 104 && founds == 22 && reports == 1 && runs == 2_441, "{n} {either} {seen} {glimpses} {founds} {reports} {runs}");
+    }
+
+    /// The cop brain's output F-88118 per frame in the running original (testdata/cop_input_rec.txt: the e5 recording's
+    /// 4,705 frames of a Pursuit - CatchUp, Search, Halt, Arrest): the racing brain's record with the police overrides
+    /// (+744 throttle, +748 brake, +752 handbrake, +756 steer, mapped to `Overrides` as the cop update does) merged by
+    /// `Overrides::apply` gives the recorded record, bit for bit. Recorded overrides: the brake (Halt / Pursue, 3,280 frames)
+    /// and the Halt's steer (3,225); no throttle or handbrake override (no Block in it).
+    #[test]
+    fn cop_input_merge_matches_the_recording() {
+        let h = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+        let (mut n, mut brakes, mut steers) = (0, 0, 0);
+        for line in include_str!("testdata/cop_input_rec.txt").lines().filter(|l| !l.starts_with('#')) {
+            let w: Vec<f32> = line.split_whitespace().map(h).collect();
+            let mut inp = crate::physics::car::CarInput { steer: w[0], throttle: w[1], brake: w[2], ..Default::default() };
+            inp.set_hand(w[3]);
+            let o = crate::ai::Overrides {
+                throttle: (w[4] != -1.0).then_some(w[4]),
+                brake: (w[5] != -1.0).then_some(w[5]),
+                handbrake: (w[6] != -1.0).then_some(w[6]),
+                steer: (w[7] != -1000.0).then_some(w[7]),
+            };
+            o.apply(&mut inp);
+            let got = [inp.steer, inp.throttle, inp.brake, inp.hand()].map(f32::to_bits);
+            let want = [w[8], w[9], w[10], w[11]].map(f32::to_bits);
+            assert_eq!(got, want, "frame {n}: {line}");
+            n += 1;
+            brakes += o.brake.is_some() as u32;
+            steers += o.steer.is_some() as u32;
+        }
+        assert!(n == 4_705 && brakes == 3_280 && steers == 3_225, "{n} {brakes} {steers}");
     }
 
     /// The arrest timers of the running original, per tactic update (work/hookmen2/ar/arrest_testdata.py over the
