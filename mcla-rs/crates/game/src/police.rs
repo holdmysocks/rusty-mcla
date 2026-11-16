@@ -1528,6 +1528,46 @@ pub(crate) fn law_score(r: &mut LawRec, score: &mut i32, watched: bool, dt: f32,
     }
 }
 
+/// F-52240's ladder, after the fall and the climb, only with a score above 0: the tactic type it asks StartTactic (F-33550)
+/// for. With the tactic's cop as the watcher (`tac_cop`, r21; `tac` the type of that cop's tactic, F-72241's r29): at
+/// iMaxLawBreakingScore an Arrow Trap (4) unless the tactic is one already or above (no tactic: the default report; a
+/// pull-over: REPORT_PULL_OVER_PURSUIT; types 0, 2, 3: no report), from iPursuitLawBreakScore a Pursuit (2) only from no
+/// tactic or a pull-over, from iPullOverLawBreakScore a pull-over (1) only from no tactic or type 0. With only a detecting
+/// cop (r19): 4 / 2 / 1 at the same three scores. StartTactic then keeps, refuses or replaces the tactic (`start_rule`).
+/// (test law_ladder_matches_the_recordings)
+pub(crate) fn law_ladder(score: i32, tac_cop: bool, detecting: bool, tac: Option<i32>, pull: i32, pursuit: i32, max: i32) -> Option<i32> {
+    if score <= 0 {
+        return None;
+    }
+    if tac_cop {
+        if score == max {
+            return match tac {
+                Some(t) if t >= 4 => None,
+                _ => Some(4),
+            };
+        }
+        if score >= pursuit {
+            return matches!(tac, None | Some(1)).then_some(2);
+        }
+        if score >= pull {
+            return tac.map_or(true, |t| t < 1).then_some(1);
+        }
+        return None;
+    }
+    if detecting {
+        return if score == max {
+            Some(4)
+        } else if score >= pursuit {
+            Some(2)
+        } else if score >= pull {
+            Some(1)
+        } else {
+            None
+        };
+    }
+    None
+}
+
 /// AddPoints (F-19359): with a tactic on the target whose may-escalate byte is 0 the points are dropped (None). The cap is
 /// iMaxLawBreakingScore; a Pull Over's iPursuitLawBreakScore - 1 unless its bullhorn has sounded and its vt+24 holds; a Pursuit's /
 /// Double Pursuit's iMax - 1 unless its vt+24 holds. The sum is clamped to 0 .. cap (a score above the cap comes down to it).
@@ -4503,14 +4543,15 @@ impl Police {
                 // (the ladder is F-52240's: none for a player in a police car)
                 let detected = detected && !self.player_police;
                 let tt = t("fTrackTgtTime", 25.0);
-                let kind = if detected && self.score >= max_score {
+                let ladder = law_ladder(self.score as i32, false, detected, None, pull as i32, pursuit_i, max_i);
+                let kind = if ladder == Some(4) {
                     TacKind::ArrowTrap
                 } else if zone {
                     // (the zone's start, F-71212 -> StartTactic type 4: the Arrow Trap, its floor 1000 on the player)
                     TacKind::ArrowTrap
-                } else if detected && self.score >= t("iPursuitLawBreakScore", 600.0) {
+                } else if ladder == Some(2) {
                     TacKind::Pursuit
-                } else if detected && self.score >= pull {
+                } else if ladder == Some(1) {
                     TacKind::PullOver
                 } else {
                     TacKind::None
@@ -4566,9 +4607,10 @@ impl Police {
                         self.ticketing = true;
                         event = Some(Event::Ticket(self.law_fines() as i64));
                     }
-                } else if hit_cop || self.score >= t("iPursuitLawBreakScore", 600.0) {
-                    // (the pull-over's cop is the request cop; at 1000 an Arrow Trap)
-                    let kind = if self.score >= max_score { TacKind::ArrowTrap } else { TacKind::Pursuit };
+                } else if let Some(k) = law_ladder(self.score as i32, true, detected, Some(1), pull as i32, pursuit_i, max_i).or(hit_cop.then_some(2)) {
+                    // (the ladder from a pull-over: a Pursuit from iPursuitLawBreakScore, at 1000 an Arrow Trap; a police car
+                    // hit, F-22530's pull-over block, a Pursuit at once. The pull-over's cop is the request cop)
+                    let kind = if k == 4 { TacKind::ArrowTrap } else { TacKind::Pursuit };
                     let first = self.cops.first().copied();
                     let cops = self.engage(gpu, world, vehicles, kind.cops(), first, ppos, pfwd).or_else(|| self.engage(gpu, world, vehicles, 1, first, ppos, pfwd));
                     if let Some(cops) = cops {
@@ -4679,7 +4721,7 @@ impl Police {
                 // escalate; at iMaxLawBreakingScore the ladder makes it an Arrow Trap with its own cop 0)
                 // (the port's detecting cop is the player's: none for an AI racer's tactic, an Arrow Trap already)
                 if self.heat == Heat::Pursuit && self.may_escalate && !goons && !ai_target {
-                    let up = if self.score >= max_score && self.kind != TacKind::ArrowTrap {
+                    let up = if law_ladder(self.score as i32, true, detected, Some(self.kind.ty()), pull as i32, pursuit_i, max_i) == Some(4) {
                         Some((TacKind::ArrowTrap, self.cops.first().copied()))
                     } else if let Some((_, u)) = detector.filter(|_| matches!(self.kind, TacKind::Pursuit | TacKind::PursuitDbl)) {
                         Some((if self.kind == TacKind::Pursuit { TacKind::PursuitDbl } else { TacKind::ArrowTrap }, Some(u)))
@@ -6194,7 +6236,7 @@ mod tests {
 
     #[test]
     fn law_score_matches_the_recordings() {
-        // (work/hookmen2/dp/cap/L1 .. L4, the law step F-52240 in the running original, every update with a score or a
+        // (work/hookmen2/dp/cap/L1 .. L6, the law step F-52240 in the running original, every update with a score or a
         // watcher: the record after the offence pass F-88545 (LO) and after the ladder (LX). `law_score` with AddPoints
         // runs from the LO record, watched when a watcher was recorded (LW), with the recorded dt; AddPoints' tactic is
         // the one whose update ran in the frame before, with its +28 byte: a pull-over's may-escalate F-98647 from its +92
@@ -6263,7 +6305,52 @@ mod tests {
             }
         }
         eprintln!("law_score: {n} updates, {watched_n} watched, {paid_n} with a change of score, {lifted_n} pursuit cap lifts; watched bits {kinds:x?}");
-        assert_eq!(n, 6295);
+        assert_eq!(n, 9481);
+    }
+
+    #[test]
+    fn law_ladder_matches_the_recordings() {
+        // (the same updates of L1 .. L6: the ladder with the score after the fall / climb (LX), the watcher - r21 the tactic's
+        // cop, r19 a detecting cop - and the tactic of the frame before (its type and +28); then StartTactic's rule. Its
+        // result must be the tactic whose update ran after this law step: a new tactic of that type, or the same one. The
+        // last row of each recording has no frame after it; a pull-over turned into a pursuit by a police-car hit is
+        // F-22530's block, not the ladder)
+        let h = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let ty = |k: &str| match k {
+            "V" => Some(1),
+            "P" => Some(2),
+            "D" => Some(3),
+            "A" => Some(4),
+            _ => None,
+        };
+        let rows: Vec<Vec<&str>> = include_str!("testdata/law_steps_ref.txt").lines().filter(|l| !l.starts_with('#')).map(|l| l.split('\t').collect()).collect();
+        let (mut n, mut starts) = (0, Vec::new());
+        for (i, v) in rows.iter().enumerate() {
+            if rows.get(i + 1).map_or(true, |w| w[0] != v[0]) {
+                continue;
+            }
+            let score = h(v[26]) as i32;
+            let (r21, r19) = (v[38] == "1", v[39] == "1");
+            let before = ty(v[4]);
+            let mut want = law_ladder(score, r21, r19, before, 250, 600, 1000);
+            if let Some(k) = want {
+                if start_rule(k, before.map(|t| (t, v[5] != "0"))) != (StartRule::Start { end_old: before.is_some(), carry: before.map_or(false, |t| t > 1 && k > t) }) {
+                    want = None;
+                }
+            }
+            let new = v[42] != v[40] && v[41] != "N";
+            let got = if new { ty(v[41]) } else { None };
+            let hit = v[4] == "V" && got == Some(2) && h(v[10]) & 0x40 != 0;
+            if !hit {
+                assert_eq!(want, got, "{} {}: score {score} r21 {r21} r19 {r19} before {:?}", v[0], v[1], before);
+            }
+            if let Some(k) = got {
+                starts.push(format!("{} {} {}->{}", v[0], v[1], v[4], k));
+            }
+            n += 1;
+        }
+        eprintln!("law_ladder: {n} updates, starts {starts:?}");
+        assert_eq!((n, starts.len()), (9475, 10));
     }
 
     #[test]
