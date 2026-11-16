@@ -8077,7 +8077,7 @@ mod tests {
         assert!(cases == 40 && compared > 1500 && fires > 8 && cop_in_ticks > 3000 && timer_ticks > 3000, "{cases} {ticks} {fires} {compared} {cop_in_ticks} {timer_ticks}");
     }
 
-    /// The Search's tick as the running original ran it (work/hookmen2/ar/search_testdata.py over work/hookmen2/dp/cap: 17,583
+    /// The Search's tick as the running original ran it (work/hookmen2/ar/search_testdata.py over work/hookmen2/dp/cap: 21,733
     /// Pursuit state-6 and Arrow Trap state-3 updates): from each cop's brain (+773, +596, +604, +576 == 2) and the clock at
     /// entry, `search_step` must keep the Search with the recorded clock or leave it. Found is "some cop not lost": cop 0's alone
     /// differs in 47 Arrow Trap updates. A cop with no search goals that sees the target within fVisionDist also finds it - the
@@ -8121,7 +8121,7 @@ mod tests {
             reports += (s == SearchStep::Found { report: true }) as u32;
             runs += (s == SearchStep::Stay && started) as u32;
         }
-        assert!(n == 8_484 && either == 9_099 && seen == 104 && founds == 22 && reports == 1 && runs == 2_441, "{n} {either} {seen} {glimpses} {founds} {reports} {runs}");
+        assert!(n == 12_634 && either == 9_099 && seen == 104 && founds == 30 && reports == 2 && runs == 3_102, "{n} {either} {seen} {glimpses} {founds} {reports} {runs}");
     }
 
     /// The cop brain's output F-88118 per frame in the running original (testdata/cop_input_rec.txt: the e5 recording's
