@@ -1568,10 +1568,14 @@ fn tire_fric_update(vs: &mut VehState, t: &SimTune, input: CarInput, gear: i32, 
                 && melt_gear <= tf.gear_threshold_bits.to_bits() as i32
                 && vs.burn <= 0.0
                 && !(input.throttle < 0.5 && input.brake > 0.1)
-                && !(input.throttle < 0.1 && input.handbrake)
+                // (the chassis' handbrake +144 as a float over 0.1, F-67816)
+                && !(input.throttle < 0.1 && input.hand() > 0.1)
                 // (chassis +572: the drive shaft's speed of the tick before at its first wheel's
                 // radius, not the road speed - a car spinning its wheels from rest melts them)
-                && (vs.omega[0] * if drive == 0 { t.wheel_back.radius } else { t.wheel_front.radius }).abs() >= 5.0;
+                && (vs.omega[0] * if drive == 0 { t.wheel_back.radius } else { t.wheel_front.radius }).abs() >= 5.0
+                // (and not while the car's ability runs Agro: mcCar +72 with +52 == 1 (Agro) and +48 == 3 (running), the
+                // gate the head-on and the aero damping have too)
+                && !vs.agro.agro_run;
             let pedal = ((input.throttle - 0.5) * 2.0).clamp(0.0, 1.0);
             if eligible && pedal * slide > tf.skidding_threshold {
                 vs.melt = tf.melt_rate.mul_add(dt, vs.melt).min(1.0);
@@ -1598,9 +1602,9 @@ fn tire_fric_update(vs: &mut VehState, t: &SimTune, input: CarInput, gear: i32, 
             if vs.melt < 0.0 && !dbg_flag("MCLA_DBG_OLDMELT") {
                 vs.melt = 0.0;
             }
-        } else {
-            vs.melt = 0.0;
         }
+        // (a tune without the melt - no SpinningFric, MeltRate or a SkiddingThreshold of 1 or more: F-67816 returns at
+        // once and leaves the melt as it is)
     }
 }
 
@@ -9052,5 +9056,51 @@ mod vec_small_tests {
             n += 1;
         }
         assert_eq!(n, 6504);
+    }
+}
+
+#[cfg(test)]
+mod tire_fric_tests {
+    use super::*;
+
+    /// mcCarTireFric::Update F-67816 run offline on the generated code (tools/tire_fric_reference.py): 6,000 cases of melt,
+    /// gear, the tune's thresholds and rates, pedals, the handbrake float, shaft speed, burnout, layouts, the ability
+    /// (Agro running or not) and the driven wheels' slides. The melt after, the layout after and the setter's call (one, with
+    /// the new layout, when the layout changes) are equal on every case.
+    #[test]
+    fn tire_fric_matches_the_original() {
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let f = f32::from_bits;
+        let mut n = 0;
+        for line in include_str!("../testdata/tire_fric_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let c: Vec<u32> = i.split(' ').map(h).collect();
+            let w: Vec<u32> = o.split(' ').map(h).collect();
+            let mut t = SimTune::default();
+            t.tire_fric.gear_threshold_bits = f(c[2]);
+            (t.tire_fric.skidding_threshold, t.tire_fric.melt_rate, t.tire_fric.recover_rate, t.tire_fric.spinning_fric) = (f(c[3]), f(c[4]), f(c[5]), f(c[6]));
+            t.drivetrain_type = c[12];
+            t.wheel_front.radius = 1.0;
+            t.wheel_back.radius = 1.0;
+            let mut vs = VehState::default();
+            (vs.melt, vs.gear, vs.burn, vs.drive) = (f(c[0]), c[1] as i32 - 1, f(c[11]), c[13] as u8);
+            vs.omega[0] = f(c[10]);
+            for k in 0..4 {
+                vs.wheels[k].slide = f(c[15 + k]);
+            }
+            vs.agro.agro_run = c[14] == 0x103;
+            let hand = f(c[9]);
+            let input = CarInput { throttle: f(c[7]), brake: f(c[8]), handbrake: hand != 0.0, hand_share: (hand != 0.0).then_some(hand), ..Default::default() };
+            let drive_in = vs.drive;
+            let gear = vs.gear;
+            tire_fric_update(&mut vs, &t, input, gear, f(c[20]));
+            assert_eq!(vs.melt.to_bits(), w[0], "melt: {line}");
+            assert_eq!(vs.drive as u32, w[1], "layout: {line}");
+            let switched = vs.drive != drive_in;
+            // (the harness keeps the last argument word from an earlier case when there is no call: read it only with one)
+            assert_eq!((switched as u32, if switched { vs.drive as u32 } else { 0 }), (w[2], if w[2] > 0 { w[3] } else { 0 }), "setter: {line}");
+            n += 1;
+        }
+        assert_eq!(n, 6000);
     }
 }
