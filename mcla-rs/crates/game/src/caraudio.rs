@@ -2202,6 +2202,9 @@ pub struct Fleet {
     player_siren: bool,
     /// a player line the cars' sounds ask for this frame (the game says it if no speech plays)
     pub want_speech: Option<&'static str>,
+    /// seconds since the pass-by scan last found a car within GLOBAL_WHOOSHES +14 of the player (the entity's +2204,
+    /// the frame of that find, F-11431), for the horn's PLAYER_HORN request
+    near_t: f32,
     /// each car's occluder slot plus one by `uid` (sound.rs: the cars with a car audio entity, `Fleet::opponent` and
     /// the player), handed to their sounds' requests
     pub occ: HashMap<u32, u16>,
@@ -2359,6 +2362,7 @@ impl Fleet {
                 std::fs::read_to_string(p).ok().map(|t| (sst_replay_load(&t), -wait))
             }),
             want_speech: None,
+            near_t: f32::MAX,
             occ: HashMap::new(),
         }
     }
@@ -2434,6 +2438,7 @@ impl Fleet {
             if d > far {
                 continue;
             }
+            self.near_t = 0.0;
             let rel = (o.state.vel - p.state.vel).length() * MPH;
             if rel < lo {
                 continue;
@@ -2555,7 +2560,15 @@ impl Fleet {
             }
             if let Some(s) = &mut e.sounds {
                 s.loop_place = ctl.loop_place;
+                // the player's horn play F-57788 (vt+16, 0.001 s per held frame): when no horn plays yet, no speech line
+                // plays and the pass-by scan found a car within its far distance in the last 2 frames (+2204 >= frame - 2,
+                // the original's frames are 1/30 s), PLAYER_HORN / PLAYER is asked of the speech manager first
+                let horn_start = c.horn && s.horn.is_none();
                 s.update(lib, &self.mats, &c, ctl.cam_mode, dt);
+                if horn_start && !pol.speech_busy && self.near_t <= 2.0 / 30.0 + 1e-4 {
+                    sst_log(format_args!("SPEECHREQ name=PLAYER_HORN"));
+                    self.want_speech = Some("PLAYER_HORN");
+                }
                 // the slipstream / nitrous burn's PLAYER_NITROUS request when no speech line plays (F-58518 @A-83150,
                 // F-68821): the speech manager's gate (Frequency, Probability, the script) is `Speech::request`
                 if (s.sst_speech || s.nitro_speech) && !pol.speech_busy {
@@ -2869,6 +2882,7 @@ impl Fleet {
             }
         }
         // the player's pass-by scan (F-11431)
+        self.near_t = (self.near_t + dt).min(f32::MAX);
         if let Some(pi) = v.cars.iter().position(|c| c.is_player) {
             self.pass_by(lib, v, pi);
         }
