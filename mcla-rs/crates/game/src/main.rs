@@ -11098,9 +11098,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         let mut up = self.boom_up.unwrap_or(Vec3::Y);
                         let (mut pos, mut look) = (self.chase.pos, self.chase.look);
                         let share = self.cam_switch.blend.share.unwrap_or(1.0);
-                        // (the frame's game time, real time on the wipeout camera: the port's slow motion spaces its game
-                        // frames out, so a game frame there is 1/30 s over the time scale)
-                        let step = if self.crash_cam.active(&self.cam_switch.blend) && sim_dt > 0.0 && dt > 0.0 { boomcam::GAME_FRAME * dt / sim_dt } else { boomcam::GAME_FRAME };
+                        // (the frame's real time on every camera: F-76427 gives the unscaled frame time to a camera whose +184
+                        // is set, and every camera has it - the base constructor F-11840 sets 1, the one clearing bracket
+                        // in F-36289 runs only with the player camera's +93, which nothing sets; the port's game frames
+                        // come every second fixed tick, so in slow motion too a game frame is 1/30 s of real time)
+                        let step = boomcam::GAME_FRAME;
                         sh.apply_framed(shake_frames, step, share, &mut pos, &mut look, &mut up, render_state.pos);
                         if !boom_corrected {
                             (self.chase.pos, self.chase.look) = (pos, look);

@@ -2135,8 +2135,8 @@ impl CamShake {
 
     /// The shake as the original runs it, once a 30 Hz game frame (F-36289 ends with F-10707 on the frame time), drawn above
     /// 30 fps between the last two game frames. `frames` game frames have passed since the last drawn frame: each runs
-    /// F-10707 on the camera with the frame's `step` (the game frame's 1/30 s; real time on a camera flagged +184, the
-    /// wipeout camera: F-76427's choice, shake_rule.md section 3) (its timers, phases and random draws once a game frame, as the
+    /// F-10707 on the camera with the frame's `step` (the game frame's 1/30 s of real time: F-76427's choice on a camera
+    /// flagged +184, and every camera is; shake_rule.md section 3) (its timers, phases and random draws once a game frame, as the
     /// original's) and keeps what it did to the camera in the camera's own frame; the drawn camera then gets the turn and move
     /// `share` of the way from the frame before the last to the last (the boom's share, `BoomCam::draw_at`). At share 1 it is
     /// F-10707's own result on the camera it is given; between game frames it is the port's interpolation (the original draws
