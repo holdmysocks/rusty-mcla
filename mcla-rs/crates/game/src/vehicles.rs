@@ -5356,17 +5356,34 @@ if keep || c.state.pos.distance(center) < 450.0 {
         let phys_t0 = std::time::Instant::now();
         // (test hook MCLA_RAM_CAR=secs: at that time on the vehicles' clock the player's car is put 2.6 m to the right of the
         // nearest other placed car with the original's body, at its speed and 6 m/s towards it - a car x car contact for the
-        // level step; MCLA_RAM_SIDE=<m> another distance, MCLA_RAM_WIPE=1 the player's wipeout blow with it)
-        if let Some(at) = std::env::var("MCLA_RAM_CAR").ok().and_then(|v| v.parse::<f32>().ok()) {
-            static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-            if self.clock >= at && !DONE.load(std::sync::atomic::Ordering::Relaxed) {
+        // level step; MCLA_RAM_SIDE=<m> another distance, MCLA_RAM_WIPE=1 the player's wipeout blow with it;
+        // "secs,every": again every that many seconds; MCLA_RAM_SEMI=1: the nearest semi's cab or trailer instead)
+        if let Some(v) = std::env::var("MCLA_RAM_CAR").ok() {
+            let mut it = v.split(',').map(|x| x.trim().parse::<f32>().ok());
+            let at = it.next().flatten().unwrap_or(f32::INFINITY);
+            let every = it.next().flatten().filter(|e| *e > 0.0);
+            let semi = std::env::var("MCLA_RAM_SEMI").is_ok_and(|v| v == "1");
+            // (the next ram's time on the vehicles' clock, as f32 bits; infinity once done)
+            static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            static ARMED: std::sync::Once = std::sync::Once::new();
+            ARMED.call_once(|| NEXT.store(at.to_bits(), std::sync::atomic::Ordering::Relaxed));
+            if self.clock >= f32::from_bits(NEXT.load(std::sync::atomic::Ordering::Relaxed)) {
                 let me = self.cars.iter().position(|c| c.is_player);
                 let target = me.and_then(|m| {
                     let p = self.cars[m].state.pos;
-                    (0..self.cars.len()).filter(|&j| j != m && self.cars[j].placed && self.cars[j].state.veh.is_some() && self.cars[j].rail.is_none() && self.cars[j].parked.is_none()).min_by(|&a, &b| (self.cars[a].state.pos - p).length().total_cmp(&(self.cars[b].state.pos - p).length()))
+                    let want = |j: usize| {
+                        let c = &self.cars[j];
+                        if semi {
+                            c.placed && c.parked.is_none() && c.model.name.contains("semitruck")
+                        } else {
+                            c.placed && c.state.veh.is_some() && c.rail.is_none() && c.parked.is_none()
+                        }
+                    };
+                    (0..self.cars.len()).filter(|&j| j != m && want(j)).min_by(|&a, &b| (self.cars[a].state.pos - p).length().total_cmp(&(self.cars[b].state.pos - p).length()))
                 });
                 if let (Some(m), Some(j)) = (me, target) {
-                    DONE.store(true, std::sync::atomic::Ordering::Relaxed);
+                    NEXT.store(every.map_or(f32::INFINITY, |e| self.clock + e).to_bits(), std::sync::atomic::Ordering::Relaxed);
+                    RAM_LEFT.store(90, std::sync::atomic::Ordering::Relaxed);
                     let (tp, tr, tv) = (self.cars[j].state.pos, self.cars[j].state.rot, self.cars[j].state.vel);
                     let r = tr * Vec3::X;
                     let c = &mut self.cars[m];
@@ -5378,15 +5395,17 @@ if keep || c.state.pos.distance(center) < 450.0 {
                     }
                     c.state.ang_vel = Vec3::ZERO;
                     c.pose_history.reset();
-                    log::info!("MCLA_RAM_CAR: player put beside car {} (uid {})", j, self.cars[j].uid);
+                    log::info!("MCLA_RAM_CAR: player put beside car {} (uid {}, {}) at {:.1} s", j, self.cars[j].uid, self.cars[j].model.name, self.clock);
                     RAM_TARGET.store(j * 1000 + m, std::sync::atomic::Ordering::Relaxed);
                 }
             }
             let t = RAM_TARGET.load(std::sync::atomic::Ordering::Relaxed);
             if t != usize::MAX {
-                static LEFT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(90);
-                if LEFT.fetch_sub(1, std::sync::atomic::Ordering::Relaxed) > 0 {
-                    let (j, m) = (t / 1000, t % 1000);
+                // (90 lines, then quiet: the count stops at 0 instead of wrapping; a car list that shrank since the ram - an
+                // arrest, a removed car - ends the lines)
+                let (j, m) = (t / 1000, t % 1000);
+                let live = j < self.cars.len() && m < self.cars.len();
+                if live && RAM_LEFT.fetch_update(std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed, |n| n.checked_sub(1)).is_ok() {
                     let (a, b) = (&self.cars[m].state, &self.cars[j].state);
                     log::info!("MCLA_RAM_CAR: distance {:.2} speeds {:.1} {:.1} player placed {}", (a.pos - b.pos).length(), a.vel.length(), b.vel.length(), self.cars[m].placed);
                 }
@@ -9491,6 +9510,8 @@ static ISLANDS_OF_CARS: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomic
 
 /// (MCLA_RAM_CAR) the rammed car and the player's car, target x 1000 + player
 static RAM_TARGET: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(usize::MAX);
+/// (MCLA_RAM_CAR) the distance lines left after the last ram
+static RAM_LEFT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(90);
 
 #[cfg(test)]
 mod brake_tests {

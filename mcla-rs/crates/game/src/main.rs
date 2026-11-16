@@ -4169,13 +4169,20 @@ impl App {
                     // (a motorcycle in the step's own sim keeps the wipeout there - physics::vehsim::wipe_owned)
                     let owned = c.params().veh.as_ref().zip(c.state.veh.as_deref()).map_or(false, |(vt, vs)| physics::vehsim::wipe_owned(vs, vt));
                     if let Ok(v) = std::env::var("MCLA_CRASH_TEST") {
-                        // (test hook "secs,w|d|x|h": at that time a wipeout blow, a fatal blow, an
-                        // exploding one, or a head-on)
+                        // (test hook "secs,w|d|x|h[,every]": at that time a wipeout blow, a fatal blow, an
+                        // exploding one, or a head-on; with `every` again that many seconds later, and on)
                         let mut it = v.split(',');
-                        let at = it.next().and_then(|x| x.parse::<f32>().ok()).unwrap_or(5.0);
-                        static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-                        if self.sim_time >= at && !DONE.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                            match it.next().unwrap_or("w") {
+                        let at = it.next().and_then(|x| x.trim().parse::<f32>().ok()).unwrap_or(5.0);
+                        let kind = it.next().unwrap_or("w").trim();
+                        let every = it.next().and_then(|x| x.trim().parse::<f32>().ok()).filter(|e| *e > 0.0);
+                        // (the next blow's time, as f32 bits; infinity once done)
+                        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                        static ARMED: std::sync::Once = std::sync::Once::new();
+                        ARMED.call_once(|| NEXT.store(at.to_bits(), std::sync::atomic::Ordering::Relaxed));
+                        if self.sim_time >= f32::from_bits(NEXT.load(std::sync::atomic::Ordering::Relaxed)) {
+                            NEXT.store(every.map_or(f32::INFINITY, |e| self.sim_time + e).to_bits(), std::sync::atomic::Ordering::Relaxed);
+                            log::info!("MCLA_CRASH_TEST: {kind} at {:.1} s, speed {:.1}", self.sim_time, speed);
+                            match kind {
                                 "d" => {
                                     c.state.damage = 1.0;
                                     c.state.last_hit = dm.fatal_blow + 1.0;
