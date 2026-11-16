@@ -439,6 +439,10 @@ struct App {
     race_end_way: Option<f32>,
     /// the parts the car in the garage was last built with: a change shows at once
     garage_built: Option<(usize, vehicle_model::CarConfig, u8)>,
+    /// the garage's vehicle under the list's cursor whose files were last read ahead (D59: taking it builds it)
+    garage_read: Option<usize>,
+    /// (test hook MCLA_SOAK_CARSWAP: the tick the soak put the garage list's cursor on another vehicle this cycle)
+    soak_swap: Option<u64>,
     /// the story scenes whose cars were read ahead as the player came near their garage / hangout (`story_read_ahead`)
     story_read: std::collections::HashSet<String>,
     /// the player's car (its uid) and the wheel figures its set-up was last fitted from (and whether it got one: a car
@@ -1592,6 +1596,8 @@ impl App {
             race_end_from: None,
             race_end_way: None,
             garage_built: None,
+            garage_read: None,
+            soak_swap: None,
             story_read: Default::default(),
             player_dims: None,
             carpic: Default::default(),
@@ -5967,6 +5973,17 @@ impl App {
                 None => self.game.brake_model(),
             };
             self.vehicles.set_player_brake(&mut gpu, &mut world, brake.as_deref());
+            // (the garage's vehicle under the cursor read on a worker with its parts, ahead of ApplyCar's build of it - taking
+            // a car built it in 155 - 391 ms on the game thread, 3 - 12 ms with this (MCLA_SOAK_CARSWAP); D59.player-read-ahead)
+            if self.game.mode == Mode::Garage && self.game.selected_car != self.game.current_car && self.garage_read != Some(self.game.selected_car) {
+                self.garage_read = Some(self.game.selected_car);
+                if let Some(dir) = self.game.car_dirs.get(self.game.selected_car).cloned() {
+                    let cfg = self.game.cfgs.get(&self.game.dir_name(self.game.selected_car).to_ascii_lowercase()).cloned().unwrap_or_default();
+                    if !self.vehicles.models.iter().any(|m| m.cfg == cfg && dir.file_name().is_some_and(|n| n.to_string_lossy() == m.name)) {
+                        self.vehicles.prefetch_as(&world, &dir, &cfg);
+                    }
+                }
+            }
             // In the garage the part under a list's cursor is on the car at once (the game's
             // Install...OnVehicle as a row is entered): the car is built again when its parts,
             // rim or rim size differ from what it stands in - where it stands.
@@ -7065,7 +7082,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // MCLA_SOAK_RACES (comma list, in turn) from free roam, at 60 % QUIT RACE, at 70 % GO TO GARAGE, at 80 % BACK;
             // with MCLA_SOAK_HANGOUT=1 also at 86 % the car put 10 m outside the entry line of an open hangout (in turn), driven
             // over it, and at 97 % BACK out of its panel; with --drive --auto the car drives itself between -
-            // docs/PERFORMANCE.md 2026-11-11 (5), (6))
+            // docs/PERFORMANCE.md 2026-11-11 (5), (6)); with MCLA_SOAK_CARSWAP=1 in the garage (its first tick between 70 and
+            // 80 %) the vehicle list's cursor on another vehicle (in turn, owned for the run) and 2 s later that vehicle taken (ApplyCar) - CAR_PARTS.md)
             if let Some(per) = std::env::var("MCLA_SOAK").ok().and_then(|v| v.parse::<f32>().ok()).map(|m| ((m * 60.0 / fixed_step::DT) as u64).max(400)) {
                 let (k, n) = (self.tick_no as u64 % per, self.tick_no as u64 / per);
                 let at = |f: f32| k == (per as f32 * f) as u64;
@@ -7087,6 +7105,20 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 } else if at(0.70) && self.game.mode == Mode::FreeRoam {
                     log::info!("soak: cycle {} go to garage", n);
                     self.pending_action = MenuAction::GoToGarage;
+                } else if self.soak_swap.is_none_or(|t| t + per < self.tick_no as u64) && k > (per as f32 * 0.70) as u64 && k < (per as f32 * 0.80) as u64 && self.game.mode == Mode::Garage && std::env::var("MCLA_SOAK_CARSWAP").is_ok_and(|v| v == "1") {
+                    self.soak_swap = Some(self.tick_no as u64);
+                    // (any vehicle in turn, owned for this run - a test run never writes the save)
+                    let others: Vec<usize> = (0..self.game.car_dirs.len()).filter(|&i| i != self.game.current_car).collect();
+                    if let Some(&i) = others.get((n as usize * 7) % others.len().max(1)) {
+                        log::info!("soak: cycle {} garage cursor on {}", n, self.game.dir_name(i));
+                        if !self.game.is_owned(i) {
+                            self.game.owned.push(self.game.dir_name(i).to_string());
+                        }
+                        self.game.selected_car = i;
+                    }
+                } else if self.soak_swap.is_some_and(|t| t + 120 == self.tick_no as u64) && self.game.mode == Mode::Garage && self.game.selected_car != self.game.current_car {
+                    log::info!("soak: cycle {} garage take {}", n, self.game.dir_name(self.game.selected_car));
+                    self.pending_action = MenuAction::ApplyCar;
                 } else if at(0.80) {
                     log::info!("soak: cycle {} back ({:?})", n, self.game.mode);
                     if self.game.mode == Mode::Garage {
