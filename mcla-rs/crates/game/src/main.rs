@@ -3740,8 +3740,12 @@ impl App {
         // (the start screen: the city streamed round its shot's camera - City_DoneStreaming)
         let focus = self.titlecam.eye().unwrap_or(focus);
         // (the ambient manager's cutscene mode, F-97032: a scene playing - AmbientMgr_SetCutscene
-        // from its load to its closing transition - and no replay recorded (the port records a race
-        // as it runs) or played)
+        // from its load to its closing transition - the race timer S+0x64254 >= 0 and no replay recorded
+        // (the port records a race as it runs) or played. The timer term: the cine core script sets
+        // Race_SetTimer(-60000) once its scene has loaded whenever a race is current (0xb25 .. 0xb4c), and at
+        // its end -CineScript_GetTimeToRacestart seconds (0xfe5 .. 0x100b), so a scene with a current race
+        // has the mode off. The port's race-start scenes play only after the race has started (Mode::Race,
+        // `game.race` set), which `recording` already turns off)
         let recording = self.game.mode == Mode::Race && self.game.race.is_some();
         self.vehicles.amb_cutscene = self.cine.camera().filter(|_| self.game.replay.is_none() && !recording).map(|c| (c.0, c.1));
         // (the ambient manager's front-end mode, F-95688: AmbientMgr_SetFrontEnd from the press-start
