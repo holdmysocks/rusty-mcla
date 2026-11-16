@@ -155,6 +155,20 @@ const FILM_CUT_INTRO_AT: f32 = 58.2;
 /// centre, turned by the car (`racemark::pause_origin`); the frame's axes the heading only. The race-end
 /// fit on the S281 (CAREER_RACES.md "Race end: second run": (0, 1.42, 0.08 rear)) is this to 1 cm.
 /// (approx.: the port's car origin taken as the original's matrix origin)
+/// MCLA_SCENE_WORLD=1 (default off, under test): a story scene does not stop the world, as in the original
+/// (docs/reference/people/scene_world_rule.md: the frame tick F-75502 freezes only for the pause object, which no
+/// scene sets; the cine core script stops the pad, the police's normal update, the day clock and the automatic weather).
+/// Off: the port's old rule, the simulation stands while a story scene plays.
+fn scene_world() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("MCLA_SCENE_WORLD").is_ok_and(|v| v == "1"))
+}
+
+/// The player's input in a story scene with the world running (MCLA_SCENE_WORLD): no pad - the car deactivated.
+fn scene_pad(_pad: CarInput) -> CarInput {
+    CarInput { deactivated: true, ..Default::default() }
+}
+
 fn pause_origin(car: &vehicles::CarInstance, s: &physics::CarState) -> Vec3 {
     let (hi, lo) = racemark::bound_box(car);
     racemark::pause_origin(s.pos, s.rot, hi, lo, car.model.bike)
@@ -469,6 +483,8 @@ struct App {
     /// a story man's own car the scene borrowed as its mover (`cinedriver::core_opponent`): uid, his driver tag and
     /// brain, given back when the scene ends
     cine_kept: Vec<(u32, String, Option<ai::AiDriver>)>,
+    /// (MCLA_SCENE_WORLD) a story scene's posed cars this tick: posed after the physics step (index, place, turn)
+    scene_posed: Vec<(usize, Vec3, glam::Quat)>,
     /// the arrest scene's hands-up has been given (police::arrest_hands_up)
     arrest_hands: bool,
     /// the pull-over scene playing and how many of its acts (police::pullover_acts) have been given
@@ -1600,6 +1616,7 @@ impl App {
             cine_audio: None,
             cine_free: false,
             cine_kept: Vec::new(),
+            scene_posed: Vec::new(),
             arrest_hands: false,
             pullover_acts: (String::new(), 0),
             arrest_form: None,
@@ -3438,7 +3455,10 @@ impl App {
             self.vehicles.ambient_disable(2);
         }
         self.vehicles.parked_held = car_selection;
-        if self.opt.time.is_none() && matches!(self.game.mode, Mode::FreeRoam | Mode::Race) && !car_selection {
+        // (MCLA_SCENE_WORLD: the cine core holds the automatic time of day over a story scene -
+        // Graphics_GetAndSetAutoUpdateTimeOfDay(0) at 0x21e, back at 0x18e3; the weather's hold is weather_tick's own)
+        let scene_clock_held = scene_world() && self.cuts.playing.is_some();
+        if self.opt.time.is_none() && matches!(self.game.mode, Mode::FreeRoam | Mode::Race) && !car_selection && !scene_clock_held {
             self.time_of_day = sky::day_clock_step(self.time_of_day, dt);
         }
         self.weather_tick(dt);
@@ -3584,6 +3604,12 @@ impl App {
         }
         if self.arrest_deact {
             player_input = CarInput { deactivated: true, ..Default::default() };
+        }
+        // (MCLA_SCENE_WORLD: the pad does not reach the player's car in a story scene - F-56064 0 hits over CUT_STORY_RACE_GH_06,
+        // the car deactivated by the callers (GH_06's event script 0x76b) or driven by its animated brain. approx.: a player's
+        // car outside the scene is taken as deactivated; not every story caller traced)
+        if scene_world() && self.cuts.playing.is_some() {
+            player_input = scene_pad(player_input);
         }
         // (garage_core's Racer_Deactivate after the warp's end: the car does not answer its pad, F-71660, so its air
         // bags stay off in the garage)
@@ -5316,7 +5342,8 @@ impl App {
                     // mover by its car event and animated brain (cinecar.rs); elsewhere - a story scene stops the
                     // physics, a race start's scene hands its racers to the grid (not ported: posed) - the car is
                     // put where the scene has it. (MCLA_CINE_POSE=1: every scene's cars posed, as before)
-                    let drive = self.cine_free && !self.cine_prerace && std::env::var_os("MCLA_CINE_POSE").is_none();
+                    let story_world = scene_world() && self.cuts.playing.is_some();
+                    let drive = (self.cine_free || story_world) && !self.cine_prerace && std::env::var_os("MCLA_CINE_POSE").is_none();
                     let scene_name = self.cine.playing.as_ref().map(|sc| sc.name.clone()).unwrap_or_default();
                     if self.cine_events.0 != scene_name {
                         self.cine_events = (scene_name, Vec::new());
@@ -5389,7 +5416,10 @@ impl App {
                             }
                             continue;
                         }
-                        if let Some(i) = idx {
+                        if let (Some(i), true) = (idx, story_world) {
+                            // (the physics runs on: put where the scene has it after its step)
+                            self.scene_posed.push((i, pos, rot));
+                        } else if let Some(i) = idx {
                             self.vehicles.pose_car(i, pos, rot);
                             // (a replay's opening: nothing is simulated, the pose drawn is this one)
                             if self.game.replay.is_some() {
@@ -5645,7 +5675,7 @@ impl App {
         self.game.hangout_slow.update(dt);
         // (the bike gyro's T[+84]: the global scale as the main loop leaves it, never under 0.1)
         crate::physics::vehsim::TIME_SCALE84.store(self.game.mc4_time_scale().max(0.1).to_bits(), std::sync::atomic::Ordering::Relaxed);
-        let sim_dt = if self.game.mode == Mode::Paused || self.cuts.playing.is_some() || self.game.movie.is_some() || self.game.show_map || self.game.tutorial_hold() || self.photo.is_some() { 0.0 } else { dt * self.wipe_scale.min(self.ability.time_scale()).max(0.1) * self.game.mc4_time_scale() };
+        let sim_dt = if self.game.mode == Mode::Paused || (self.cuts.playing.is_some() && !scene_world()) || self.game.movie.is_some() || self.game.show_map || self.game.tutorial_hold() || self.photo.is_some() { 0.0 } else { dt * self.wipe_scale.min(self.ability.time_scale()).max(0.1) * self.game.mc4_time_scale() };
         self.vehicles.rescue_fallen(&world, focus);
         // (VEHICLE SELECT: the three starters stand deactivated in the lot - the screen's loop calls no racer native;
         // the traffic and the people about them go on. The player has no car yet - AddVehicleToPlayer comes after
@@ -6581,6 +6611,17 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             self.vehicles.replaying = self.game.replay.is_some();
             crate::ticktimes::mark(crate::ticktimes::S::Vehicles);
             self.vehicles.update(&world, player_input, sim_dt);
+            // (MCLA_SCENE_WORLD: a story scene's car with no brain is posed after the physics step, with the move's velocity,
+            // so the contacts meet a moving body)
+            for (i, pos, rot) in std::mem::take(&mut self.scene_posed) {
+                if i < self.vehicles.cars.len() {
+                    let was = self.vehicles.cars[i].state.pos;
+                    self.vehicles.pose_car(i, pos, rot);
+                    let c = &mut self.vehicles.cars[i];
+                    c.state.vel = if sim_dt > 0.0 && was.distance(pos) < 2.0 { (pos - was) / sim_dt } else { Vec3::ZERO };
+                    c.state.ang_vel = Vec3::ZERO;
+                }
+            }
             crate::ticktimes::mark(crate::ticktimes::S::Other);
             if std::env::var_os("MCLA_STEER_DBG").is_some() && self.tick_no % 30 == 0 {
                 log::info!("steer dbg: tick {} drive {} menu {} mode {:?} in steer {:.2} thr {:.2} -> car input steer {:?} state steer {:?} veh steer {:?}", self.tick_no, self.drive, menu_open, self.game.mode, player_input.steer, player_input.throttle, self.vehicles.player().map(|c| c.input.steer), self.vehicles.player().map(|c| c.state.steer), self.vehicles.player().and_then(|c| c.state.veh.as_ref().map(|v| (v.pad_steer, v.steer))));
@@ -10067,7 +10108,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             Some(t) => if t.nfl > 0.0 || matches!(self.weather, sky::Weather::Stormy | sky::Weather::Foggy) { 1.0 } else { 0.0 },
             None => if self.time_of_day > 18.5 || self.time_of_day < 5.5 { 1.0 } else { 0.0 },
         };
-        let sim_dt = if self.game.mode == Mode::Paused || self.cuts.playing.is_some() || self.game.movie.is_some() || self.game.show_map || self.game.tutorial_hold() || self.photo.is_some() { 0.0 } else { dt * self.wipe_scale.min(self.ability.time_scale()).max(0.1) * self.game.mc4_time_scale() };
+        let sim_dt = if self.game.mode == Mode::Paused || (self.cuts.playing.is_some() && !scene_world()) || self.game.movie.is_some() || self.game.show_map || self.game.tutorial_hold() || self.photo.is_some() { 0.0 } else { dt * self.wipe_scale.min(self.ability.time_scale()).max(0.1) * self.game.mc4_time_scale() };
         if let (Some(path), Some(cfg)) = (self.opt.audio_dump.as_ref(), self.opt.shot.as_ref()) {
             if self.frame_no == cfg.frames {
                 if let Some(a) = self.audio.as_mut() { a.write_capture(path); }
@@ -18901,4 +18942,28 @@ fn slot_swap(held: [i32; 2], b0: i32, b1: i32) -> bool {
 /// waits ~31 ms - two calls per 30 Hz frame, every step exactly one call (log ratio 1.00).
 fn amb_slot_calls() -> f32 {
     2.0
+}
+
+#[cfg(test)]
+mod scene_world_tests {
+    use super::*;
+
+    /// MCLA_SCENE_WORLD: whatever the pad holds, nothing of it reaches the player's car in a story scene
+    /// (F-56064, the pad's read, has 0 hits over CUT_STORY_RACE_GH_06) - the car stands deactivated.
+    #[test]
+    fn the_pad_does_nothing_in_a_scene() {
+        let pads = [
+            CarInput { throttle: 1.0, steer: -1.0, nitro: true, ..Default::default() },
+            CarInput { brake: 1.0, handbrake: true, steer: 0.5, ..Default::default() },
+            CarInput::default(),
+        ];
+        let base = scene_pad(CarInput::default());
+        assert!(base.deactivated);
+        assert_eq!(base.throttle, 0.0);
+        assert_eq!(base.steer, 0.0);
+        for p in pads {
+            let s = scene_pad(p);
+            assert_eq!(format!("{s:?}"), format!("{base:?}"), "pad {p:?}");
+        }
+    }
 }
