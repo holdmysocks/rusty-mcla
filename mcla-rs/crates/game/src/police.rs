@@ -571,6 +571,47 @@ fn search_clock_runs(clock: f32) -> bool {
     f64::from(clock) > 0.0
 }
 
+/// What the Search state's tick (F-40917, the Arrow Trap's F-32025) does with its clock +16 in one update.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum SearchStep {
+    /// still searching (the clock as it is now)
+    Stay,
+    /// found within 2 s of the clock: the lost flags off for a second (F-79519 with 1.0), the clock goes on, still searching
+    Glimpse,
+    /// found: back to CatchUp; `report` - after 2 s or more of the clock, with the reacquire report and the clock zeroed
+    Found { report: bool },
+    /// the clock over fSearchMaxTime: the tactic's result 2, escaped
+    Escaped,
+}
+
+/// The Search tick on the clock: `found` - some searching cop is not lost (+773 and +596 over fLostTgtThresholdTime), or
+/// is lost with no search goals (+576 == 2) and sees the target within fVisionDist; `started` - a searcher is past its
+/// first point (+604), the only time the clock runs. Found with the clock not running: CatchUp at once; under 2 s: a
+/// glimpse; else the report, the clock zeroed and CatchUp. Not found: the clock steps when started, and over `max` the
+/// target has escaped (test search_tick_matches_the_recordings).
+pub(crate) fn search_step(clock: &mut f32, found: bool, started: bool, dt: f32, max: f32) -> SearchStep {
+    if found {
+        if *clock <= 0.0 {
+            SearchStep::Found { report: false }
+        } else if *clock < 2.0 {
+            *clock += dt;
+            SearchStep::Glimpse
+        } else {
+            *clock = 0.0;
+            SearchStep::Found { report: true }
+        }
+    } else {
+        if started {
+            *clock += dt;
+        }
+        if *clock > max {
+            SearchStep::Escaped
+        } else {
+            SearchStep::Stay
+        }
+    }
+}
+
 /// The Search command's (7) block: F-60530 (+0..+8 0, +12 1.0, byte +16 0, +20 0.0), then the sender's byte +16 (search from the
 /// cop's own place with a random turn at every junction: the dispatch's searcher) and +20 (the turn at the first junction).
 /// Respond's block (command 8): F-11391 (+0..+8 0, +12 1.0, +16..+31 a global vector, zero in the image), then the sender
@@ -4804,22 +4845,26 @@ impl Police {
                     // (the clock's first tick: the radio stopped, REPORT_SUSPECT_LOST)
                     self.radio_cue.push("REPORT_SUSPECT_LOST".into());
                 }
+                let clock0 = self.search;
+                let step = search_step(&mut self.search, found, started, dt, t("fSearchMaxTime", 35.0));
                 if found {
-                    if self.search <= 0.0 {
-                        self.heat = Heat::Pursuit;
-                    } else if self.search < 2.0 {
-                        // (F-79519 with 1 s: +773 off for a second; the clock goes on)
-                        self.track_t = 1.0;
-                        self.lost_ok = false;
-                        self.search += dt;
-                    } else {
-                        self.track_t = 20.0;
-                        self.lost_ok = false;
-                        if !self.goons {
-                            self.radio_cue.push(if self.search / t("fSearchMaxTime", 35.0) < 0.5 { "REPORT_SUSPECT_SPOTTED" } else { "REPORT_SUSPECT_REACQUIRE" }.into());
+                    match step {
+                        SearchStep::Glimpse => {
+                            // (F-79519 with 1 s: +773 off for a second; the clock goes on)
+                            self.track_t = 1.0;
+                            self.lost_ok = false;
                         }
-                        self.search = 0.0;
-                        self.heat = Heat::Pursuit;
+                        SearchStep::Found { report } => {
+                            if report {
+                                self.track_t = 20.0;
+                                self.lost_ok = false;
+                                if !self.goons {
+                                    self.radio_cue.push(if clock0 / t("fSearchMaxTime", 35.0) < 0.5 { "REPORT_SUSPECT_SPOTTED" } else { "REPORT_SUSPECT_REACQUIRE" }.into());
+                                }
+                            }
+                            self.heat = Heat::Pursuit;
+                        }
+                        _ => {}
                     }
                     if self.heat == Heat::Pursuit {
                         self.eyes.clear();
@@ -4833,10 +4878,7 @@ impl Police {
                         self.sq = Squad { hyst: 2.0, ..Default::default() };
                     }
                 } else {
-                    if started {
-                        self.search += dt;
-                    }
-                    if self.search > t("fSearchMaxTime", 35.0) {
+                    if step == SearchStep::Escaped {
                         // (result 2, F-22530: for an AI racer the radio's lines alone - no record to clear, no reward, no
                         // grace; in a race SetAllPoliceUnderground(1, 1), F-36452, for any target)
                         if ai_target {
@@ -8033,6 +8075,53 @@ mod tests {
     fn arrest_timers_match_the_original_in_the_other_classes() {
         let (cases, ticks, fires, compared, cop_in_ticks, timer_ticks) = arrest_run(include_str!("testdata/arrest_vt_ref.txt"), true);
         assert!(cases == 40 && compared > 1500 && fires > 8 && cop_in_ticks > 3000 && timer_ticks > 3000, "{cases} {ticks} {fires} {compared} {cop_in_ticks} {timer_ticks}");
+    }
+
+    /// The Search's tick as the running original ran it (work/hookmen2/ar/search_testdata.py over work/hookmen2/dp/cap: 17,583
+    /// Pursuit state-6 and Arrow Trap state-3 updates): from each cop's brain (+773, +596, +604, +576 == 2) and the clock at
+    /// entry, `search_step` must keep the Search with the recorded clock or leave it. Found is "some cop not lost": cop 0's alone
+    /// differs in 47 Arrow Trap updates. A cop with no search goals that sees the target within fVisionDist also finds it - the
+    /// line of sight is not recorded, so those updates take either answer and are counted.
+    #[test]
+    fn search_tick_matches_the_recordings() {
+        let h = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+        let (mut n, mut either, mut seen, mut glimpses, mut founds, mut reports, mut runs) = (0, 0, 0, 0, 0, 0, 0);
+        for line in include_str!("testdata/search_rec.txt").lines().filter(|l| !l.starts_with('#')) {
+            let w: Vec<&str> = line.split('\t').collect();
+            let (dt, clock) = (h(w[3]), h(w[4]));
+            let cops: Vec<(bool, f32, bool, bool)> = w[5]
+                .split(';')
+                .map(|c| {
+                    let v: Vec<&str> = c.split(',').collect();
+                    (v[0] != "0", h(v[1]), v[2] != "0", v[3] == "1")
+                })
+                .collect();
+            let (left, want) = (w[6] == "1", w[7]);
+            let found = cops.iter().any(|&(lost, unseen, _, _)| !(lost && unseen > 1.5));
+            let started = cops.iter().any(|c| c.2);
+            let may_see = !found && cops.iter().any(|c| c.3);
+            let run = |found: bool| {
+                let mut c = clock;
+                let s = search_step(&mut c, found, started, dt, 35.0);
+                let stays = matches!(s, SearchStep::Stay | SearchStep::Glimpse);
+                (s, stays != left && (!stays || format!("{:08X}", c.to_bits()) == want))
+            };
+            let (s, ok) = run(found);
+            if may_see {
+                let (s2, ok2) = run(true);
+                assert!(ok || ok2, "{} update {}: {:?} / {:?}", w[0], w[1], s, s2);
+                either += 1;
+                seen += (!ok) as u32;
+                continue;
+            }
+            assert!(ok, "{} update {}: {:?}, want left {} clock {}", w[0], w[1], s, left, want);
+            n += 1;
+            glimpses += (s == SearchStep::Glimpse) as u32;
+            founds += matches!(s, SearchStep::Found { .. }) as u32;
+            reports += (s == SearchStep::Found { report: true }) as u32;
+            runs += (s == SearchStep::Stay && started) as u32;
+        }
+        assert!(n == 8_484 && either == 9_099 && seen == 104 && founds == 22 && reports == 1 && runs == 2_441, "{n} {either} {seen} {glimpses} {founds} {reports} {runs}");
     }
 
     /// The arrest timers of the running original, per tactic update (work/hookmen2/ar/arrest_testdata.py over the
