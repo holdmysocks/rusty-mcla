@@ -8412,6 +8412,8 @@ impl Game {
                         self.garage_xpart = None;
                         self.garage_cur = 0;
                         went_back = true;
+                        // (the part lists' cancel_pressed: UI_MENU_BACK - garage/Main.sc.xml PartsSubMenu, Wheels.sc.xml)
+                        self.opt_x.s23b.ui_obj = Some("UI_MENU_BACK");
                     }
                 } else if let Some(row) = self.garage_part {
                     part_d = down as isize - up as isize;
@@ -8443,6 +8445,9 @@ impl Game {
                     if back {
                         self.garage_part = None;
                         went_back = true;
+                        if self.flash_garage.is_some() {
+                            self.opt_x.s23b.ui_obj = Some("UI_MENU_BACK");
+                        }
                         if self.flash_garage.is_some() && ring.contains(&self.garage_menu) {
                             self.garage_cur = 0;
                         }
@@ -8454,6 +8459,16 @@ impl Game {
                     let items = &menus[self.garage_menu].1;
                     let ni = items.len();
                     self.garage_cur = self.garage_cur.min(ni - 1);
+                    // (the garage's menus include MenuInput.sc.xml: uinput.up plays UI_MENU_NAV_UP, down
+                    // UI_MENU_NAV_DOWN, by the key and before the wrap; the ring's left / right, garage/Main.sc.xml
+                    // Cust_Wheels and its neighbours: left UI_MENU_NAV_DOWN, right UI_MENU_NAV_UP)
+                    if self.flash_garage.is_some() {
+                        if up || down {
+                            self.opt_x.s23b.ui_obj = Some(if up { "UI_MENU_NAV_UP" } else { "UI_MENU_NAV_DOWN" });
+                        } else if in_ring && (left || right) {
+                            self.opt_x.s23b.ui_obj = Some(if left { "UI_MENU_NAV_DOWN" } else { "UI_MENU_NAV_UP" });
+                        }
+                    }
                     if up {
                         self.garage_cur = (self.garage_cur + ni - 1) % ni;
                     }
@@ -8530,6 +8545,10 @@ impl Game {
                                     self.garage_menu = m;
                                     self.garage_cur = c;
                                     went_back = true;
+                                    // (Garage_customization_menu / Exterior_Cust_Choice_Menu and the other sub-menus' cancel_pressed)
+                                    if self.flash_garage.is_some() {
+                                        self.opt_x.s23b.ui_obj = Some("UI_MENU_BACK");
+                                    }
                                 }
                             }
                         }

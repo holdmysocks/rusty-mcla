@@ -1388,9 +1388,10 @@ impl Sound {
                     let won = game.last_results.first().map_or(false, |r| r.0.starts_with("YOU"));
                     a.play(&format!("{FX}/{}", if won { "end_of_race_01.l" } else { "end_of_race_05.l" }), 0.8);
                 }
-            } else if in_menu && (self.menu_sel != game.menu_sel || self.garage_row != game.garage_row || self.race_sel != game.race_sel || self.selected_car != game.selected_car) {
+            } else if in_menu && (self.menu_sel != game.menu_sel || (self.garage_row != game.garage_row && game.flash_garage.is_none()) || self.race_sel != game.race_sel || self.selected_car != game.selected_car) {
                 // (MenuInput.sc.xml: up -> NAV_UP, down -> NAV_DOWN; MenuHorizontalInput: right -> NAV_DOWN, left -> NAV_UP)
-                let down = game.menu_sel > self.menu_sel || game.garage_row > self.garage_row || game.race_sel > self.race_sel || game.selected_car > self.selected_car;
+                // (the Flash garage's rows are not a cursor - its menus play their sounds by the key, game.rs)
+                let down = game.menu_sel > self.menu_sel || (game.garage_row > self.garage_row && game.flash_garage.is_none()) || game.race_sel > self.race_sel || game.selected_car > self.selected_car;
                 self.ui(a, if down { "UI_MENU_NAV_DOWN" } else { "UI_MENU_NAV_UP" }, &format!("{MENUS}/ui_menu_nav_l"), 0.5);
             }
             // the overhead map up / down (hud.sc.xml: the transitions' playSound UI_MENU_SELECT /
