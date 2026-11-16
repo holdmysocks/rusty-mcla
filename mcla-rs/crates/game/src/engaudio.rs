@@ -287,9 +287,8 @@ pub struct EngineSound {
     amp_left: f32,
     amp_len: f32,
     amp_amount: f32,
-    prev_shift: i8,
-    prev_gear: i32,
-    pending_gear: Option<(f32, u32)>,
+    gear_shift: GearShift,
+    gear_v: Option<Handle>,
     backfire_armed: Option<f32>,
     /// opponents: the RPM_RACE_OPPONENT blend (this+216) and the wobble (this+220 target, +224 rate, +228 value)
     blend: f32,
@@ -458,9 +457,8 @@ impl EngineSound {
             amp_left: 0.0,
             amp_len: 0.0,
             amp_amount: 0.0,
-            prev_shift: 0,
-            prev_gear: 0,
-            pending_gear: None,
+            gear_shift: GearShift::default(),
+            gear_v: None,
             backfire_armed: None,
             eff: eff.to_vec(),
             chain: if eff.is_empty() { 0 } else { NEXT_CHAIN.fetch_add(1, std::sync::atomic::Ordering::Relaxed) },
@@ -894,41 +892,18 @@ impl EngineSound {
     /// the original, run whatever the start machine's state.
     fn end_frame(&mut self, lib: &mut SoundLib, e: &EngineIn, dt: f32) {
         self.step_chain(lib, e, dt);
-        // gear-shift one-shot (F-33101 / F-40912): on the shift's start; upshift a little later
-        if e.shift != 0 && self.prev_shift == 0 && e.gear != self.prev_gear {
-            // original gear indices: reverse 0, neutral 1 - none into those
-            let (old, new) = (self.prev_gear + 1, e.gear + 1);
-            if new >= 2 {
-                let snd = if (new - old).abs() > 1 { self.gear_special } else { self.gear_sound };
-                let delay = if e.shift > 0 { self.gear_delay } else { 0.0 };
-                self.pending_gear = Some((delay, snd));
+        // gear-shift one-shot: the scheduler F-33101 and the play F-40912 (original gear indices: reverse 0, neutral 1)
+        if let Some(special) = self.gear_shift.step(e.gear + 1, e.shift, dt, self.gear_delay) {
+            let snd = if special { self.gear_special } else { self.gear_sound };
+            // (the slot +1352: a new one stops the last)
+            if let Some(h) = self.gear_v.take() {
+                lib.stop(h);
             }
+            self.gear_v = lib.play_hash(snd, Req { pos: Some(e.pos), volume: self.gear_vol, pitch: self.gear_pitch, player: self.player, occluder: self.occ, owner: self.owner, ..Default::default() });
         }
-        if e.shift != 0 || e.gear != self.prev_gear {
-            self.prev_gear = e.gear;
-        }
-        if let Some((t, snd)) = self.pending_gear {
-            if t <= 0.0 {
-                lib.play_hash(snd, Req { pos: Some(e.pos), volume: self.gear_vol, pitch: self.gear_pitch, player: self.player, occluder: self.occ, owner: self.owner, ..Default::default() });
-                self.pending_gear = None;
-            } else {
-                self.pending_gear = Some((t - dt, snd));
-            }
-        }
-        self.prev_shift = e.shift;
         // backfire (F-91044): armed at full throttle, fires after 0.1 s of closed throttle with the revs falling
-        if e.throttle_in >= 1.0 {
-            self.backfire_armed = Some(self.backfire_time);
-        } else if let Some(t) = self.backfire_armed {
-            if e.throttle_in <= 0.0 && e.rpm < self.prev_rpm {
-                let t = t - dt;
-                if t <= 0.0 {
-                    lib.play_hash(self.backfire, Req { player: self.player, occluder: self.occ, owner: self.owner, ..Req::at(e.pos) });
-                    self.backfire_armed = None;
-                } else {
-                    self.backfire_armed = Some(t);
-                }
-            }
+        if backfire_step(&mut self.backfire_armed, e.throttle_in, e.rpm, self.prev_rpm, dt, self.backfire_time) {
+            lib.play_hash(self.backfire, Req { player: self.player, occluder: self.occ, owner: self.owner, ..Req::at(e.pos) });
         }
         self.prev_torque = e.torque;
         self.prev_rpm = e.rpm;
@@ -999,8 +974,120 @@ impl EngineSound {
     }
 }
 
+/// The backfire F-91044 for one update: full throttle (car +136 == 1) arms it (+1952) with the timer +236 = ONESHOT_PARAMS +38
+/// x 0.01; armed, with the throttle closed (== 0) and the revs falling (+200 < +208) the timer runs down by the step and at
+/// or below 0 the backfire plays (true) and disarms. Recorded: 1,309 of 1,309 steps equal, 3 backfires.
+pub(crate) fn backfire_step(armed: &mut Option<f32>, throttle: f32, rpm: f32, prev_rpm: f32, dt: f32, time: f32) -> bool {
+    if throttle == 1.0 {
+        *armed = Some(time);
+    }
+    if let Some(t) = *armed {
+        if throttle == 0.0 && rpm < prev_rpm {
+            let t = t - dt;
+            if t <= 0.0 {
+                *armed = None;
+                return true;
+            }
+            *armed = Some(t);
+        }
+    }
+    false
+}
+
+/// The gear-shift scheduler F-33101 (car audio entity +244 .. +256) and the choice of its play F-40912, in the original's
+/// gear indices (reverse 0, neutral 1, first 2): every update the timer (+256, idle below 0) runs down by the step and plays
+/// when it passes 0; a change of the transmission's shift state (+24, against +248) plays a downshift at once, starts the
+/// timer (ONESHOT_PARAMS +22 ms) for an upshift, and keeps the gear (+244). The play compares the gear then with +244:
+/// more than one apart GEAR_CHANGE_SPECIAL (+14), else first gear or above the normal sound (+10), else nothing. So an
+/// upshift, played after its delay against the gear it started in, is the normal sound. Recorded: 1,310 updates, 11 plays.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct GearShift {
+    timer: f32,
+    seen: i8,
+    gear: Option<i32>,
+}
+
+impl Default for GearShift {
+    fn default() -> Self {
+        GearShift { timer: -1.0, seen: 0, gear: None }
+    }
+}
+
+impl GearShift {
+    /// One update: `Some(special)` when a one-shot plays.
+    pub(crate) fn step(&mut self, gear: i32, shift: i8, dt: f32, delay: f32) -> Option<bool> {
+        let held = *self.gear.get_or_insert(gear);
+        let pick = |held: i32| if (gear - held).abs() > 1 { Some(true) } else if gear >= 2 { Some(false) } else { None };
+        let mut out = None;
+        if self.timer >= 0.0 {
+            self.timer -= dt;
+            if self.timer < 0.0 {
+                out = pick(held);
+            }
+        }
+        if shift != self.seen {
+            if shift < 0 {
+                out = pick(held);
+            } else if shift > 0 {
+                self.timer = delay;
+            }
+            self.seen = shift;
+            self.gear = Some(gear);
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// The gear-shift one-shots against the original (an R8 driven through the gears, down into reverse and back up,
+    /// work/audio2/cap81/r3.txt): the scheduler's every play, its update and its sound (11 plays in 1,310 updates).
+    #[test]
+    fn gear_shift_plays_match_the_recording() {
+        let text = include_str!("gear_cases.txt");
+        let step = f32::from_bits(0x3D08_8889); // 0.0333333351, the recorded step
+        let delay = 60.0 * 0.001f32;
+        let (mut g, mut got, mut want) = (GearShift::default(), Vec::new(), Vec::new());
+        let mut k = 0;
+        for l in text.lines().filter(|l| !l.starts_with('#')) {
+            let v: Vec<i32> = l.split_whitespace().filter_map(|x| x.parse().ok()).collect();
+            if l.starts_with("play") {
+                want.push((v[0], v[1], v[2] != 0));
+            } else {
+                if let Some(sp) = g.step(v[0], v[1] as i8, step, delay) {
+                    got.push((k, v[0], sp));
+                }
+                k += 1;
+            }
+        }
+        assert_eq!((k, want.len()), (1310, 11));
+        assert_eq!(got, want);
+    }
+
+    /// The backfire against the original (same recording): the armed flag and timer after every update.
+    #[test]
+    fn backfire_matches_the_recording() {
+        let rows: Vec<Vec<u32>> = include_str!("backfire_cases.txt").lines().filter(|l| !l.starts_with('#'))
+            .map(|l| l.split_whitespace().map(|x| u32::from_str_radix(x, 16).unwrap()).collect()).collect();
+        let f = f32::from_bits;
+        let step = f32::from_bits(0x3D08_8889);
+        let (mut n, mut fires) = (0, 0);
+        for w in rows.windows(2) {
+            let (a, b) = (&w[0], &w[1]);
+            let mut armed = (a[3] != 0).then(|| f(a[4]));
+            fires += backfire_step(&mut armed, f(a[0]), f(a[1]), f(a[2]), step, 10.0 * 0.01) as u32;
+            assert_eq!(armed.map(f32::to_bits), (b[3] != 0).then_some(b[4]), "update {n}");
+            if b[3] == 0 {
+                // (disarmed: the original keeps 0.0 in +236)
+                assert!(f(b[4]) == 0.0 || armed.is_none());
+            }
+            n += 1;
+        }
+        assert_eq!((n, fires), (1309, 3));
+    }
+
 
     /// The engine sound's start F-44510 against the original's code run offline (tools/engine_start_reference.py: XF+99 and
     /// XF+105 over 3,868 values each, the ignition flag 0 and 1): state +1928 0, the loops stopped once, timer +288 and
@@ -1008,6 +1095,7 @@ mod tests {
     #[test]
     fn engine_start_matches_the_original() {
         use super::*;
+
         let mut n = 0;
         for line in include_str!("testdata/engine_start_ref.txt").lines() {
             let w: Vec<&str> = line.split_whitespace().filter(|w| *w != "->").collect();

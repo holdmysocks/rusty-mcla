@@ -95,7 +95,8 @@ pub(crate) fn map(lib: &SoundLib, curve: u32, lo: f32, hi: f32, x0: f32, x1: f32
     } else {
         (x - x0) / (x1 - x0)
     };
-    lo + (hi - lo) * lib.curve_eval(curve, t).unwrap_or(t)
+    // (fmadds: one rounding)
+    (hi - lo).mul_add(lib.curve_eval(curve, t).unwrap_or(t), lo)
 }
 
 fn cents(ratio: f32) -> i32 {
@@ -930,9 +931,10 @@ impl CarSounds {
             approach_fma(&mut r.s, slide, rate, dt);
         }
         if r.s > thr {
-            r.t = (r.s - thr) / (1.0 - thr).max(1e-6);
+            r.t = (r.s - thr) / (1.0 - thr);
             r.gain = lib.curve_eval(be_u32(&o, 214), r.t).unwrap_or(r.t);
-            r.ratio = f(190) + r.t * (f(194) - f(190));
+            // (fmadds: one rounding; recorded t and ratio 1,750 of 1,750 equal, verify_audio_b1.md batch 81)
+            r.ratio = (f(194) - f(190)).mul_add(r.t, f(190));
             if m != r.mat {
                 stop(lib, &mut r.skid);
             }
@@ -3310,6 +3312,36 @@ mod tests {
         // the recorded checks under +27 (1.0 .. 10): LIGHT, flagged, so nothing starts
         assert_eq!((be_f32(&s, 23), be_f32(&s, 27), s[10] & damper_size(&s, 5.0).0), (1.0, 10.0, 1));
         assert_eq!(be_u32(&s, 41), 0x9a6f5ebb, "the recorded bottom-out SUSPENSION_MASTER");
+    }
+
+    /// The wheel's rolling-loop volume and skid gain against the original (work/audio2/cap81/r3.txt, four surfaces): the
+    /// clamped linear volume map(curve +74, +86, +90, +78, +82, speed) and the skid gain curve(+214, t), bit for bit.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR"]
+    fn wheel_roll_and_skid_gain_match_the_recording() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let lib = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
+        let (mut roll, mut skid, mut bad) = (0, 0, Vec::new());
+        for l in include_str!("wheel_cases.txt").lines().filter(|l| !l.starts_with('#')) {
+            let w: Vec<u32> = l.split_whitespace().skip(1).map(|h| u32::from_str_radix(h, 16).unwrap()).collect();
+            let f = |i: usize| f32::from_bits(w[i]);
+            if l.starts_with("roll") {
+                let got = map(&lib, w[0], f(4), f(5), f(2), f(3), f(1)).max(f(4)).min(f(5));
+                roll += 1;
+                if got.to_bits() != w[6] {
+                    bad.push(format!("roll v {} port {got} orig {}", f(1), f(6)));
+                }
+            } else {
+                let got = lib.curve_eval(w[0], f(1)).unwrap();
+                skid += 1;
+                if got.to_bits() != w[2] {
+                    bad.push(format!("skid t {} port {got} orig {}", f(1), f(2)));
+                }
+            }
+        }
+        assert!(bad.is_empty(), "{} differ of {roll} + {skid}: {:?}", bad.len(), &bad[..bad.len().min(5)]);
+        assert_eq!((roll, skid), (8567, 633));
     }
 
     /// The turbo whine's curve input and linear volume against 427 updates of the original (an R8 with turbo level 2,
