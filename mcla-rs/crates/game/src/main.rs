@@ -3,6 +3,11 @@
 
 mod ability;
 mod cpuset;
+mod heapcensus;
+
+/// (the system allocator; MCLA_HEAP_CENSUS=<s>[,<min KB>] counts the large blocks by call site - heapcensus.rs)
+#[global_allocator]
+static ALLOC: heapcensus::Census = heapcensus::Census;
 mod boot;
 mod bootload;
 mod carpic;
@@ -9269,6 +9274,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             log::info!("record3: {:?} from the camera {:?}", self.record3, self.record3.map(|r| r.0.distance(self.cam.pos)));
         }
         self.sim_time += dt;
+        heapcensus::tick();
         if self.tick_no % 240 == 0 {
             // (and what is in video memory: the textures alive, the car models and their vertex / index buffers - GitHub #48)
             let tex_mb = render::TEX_BYTES.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1048576.0;
@@ -17945,6 +17951,7 @@ fn run_game() -> Result<()> {
     let opt = parse_args();
     // (the worker pool and thread placement on a hybrid CPU, before anything uses the pool - D59.pcores)
     cpuset::init();
+    heapcensus::init();
     game::savedir::init(opt.save_dir.as_deref());
     // (the mods first: the sound library's thread merges their sound objects while the game loads - modfs.rs)
     crate::modcars::init(std::path::Path::new(&opt.data_dir));
