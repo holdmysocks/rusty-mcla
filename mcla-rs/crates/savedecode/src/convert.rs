@@ -179,7 +179,10 @@ fn garage(d: &[u8]) -> Result<Garage> {
             g.plates.insert(name.clone(), json!(latin1(plate)));
         }
         g.wheels.push((name.clone(), [b.u8(rec + 0x844), b.u8(rec + 0x845), b.u8(rec + 0x846)]));
-        let mut parts: Vec<(&'static str, Value)> = PART_BYTES.iter().map(|(k, o)| (*k, json!(b.u8(rec + o)))).collect();
+        // (the side exhaust only while SideExhaustInUse, 0x89c, is set: the exhaust draw F-39836 tests it before it takes 0x878)
+        let mut parts: Vec<(&'static str, Value)> = PART_BYTES.iter()
+            .map(|(k, o)| (*k, json!(if *k == "side_exhaust" && b.u8(rec + 0x89c) == 0 { 0 } else { b.u8(rec + o) })))
+            .collect();
         // (the port's rim finish: 0 painted, 1 chrome, 2 brushed metal, 3 carbon fibre - the record's 0, 1, 3, 2)
         let own_mats: Vec<i64> = (0..3).map(|i| match b.u32(rec + 0x178 + 4 * i) { 0 => 0, 1 => 1, 3 => 2, 2 => 3, _ => 1 }).collect();
         if g.mats.is_none() {

@@ -1992,6 +1992,11 @@ impl Game {
                             have.insert(key.to_string(), c.part(byte) as usize);
                         }
                     }
+                    // (a side exhaust the importer took from 0x878 alone, with the record's SideExhaustInUse off:
+                    // the original draws none - F-39836 tests the switch first)
+                    if c.part("SideExhaustInUse") == 0 && have.get("side_exhaust").is_some_and(|&v| v != 0 && v == c.part("exh_side") as usize) {
+                        have.remove("side_exhaust");
+                    }
                 }
                 // (and what the records own is the player's in the port's shops)
                 for r in m.vehicle_records.iter() {
@@ -6076,7 +6081,8 @@ impl Game {
             }
             // (the side exhaust: its part, and the switch the set-part writes with it)
             if let Some(v) = xp.and_then(|x| x.get("side_exhaust")).copied() {
-                if c.part("exh_side") != v.min(255) as u8 {
+                let fitted = if c.part("SideExhaustInUse") != 0 { c.part("exh_side") } else { 0 };
+                if fitted != v.min(255) as u8 {
                     c.visual.parts.insert("exh_side".into(), v.min(255) as u8);
                     c.visual.parts.insert("SideExhaustInUse".into(), (v != 0) as u8);
                 }
@@ -8625,7 +8631,9 @@ pub fn setup_parts(b: &[u8]) -> Option<(crate::vehicle_model::CarConfig, u32, u3
     cfg.seats = b[0x88d] as usize;
     cfg.body = b[0x89b] as usize;
     for (key, at) in [("headlight", 0x86b), ("taillight", 0x86c), ("steer_whl", 0x894), ("post_gauge", 0x895), ("blower", 0x870), ("side_exhaust", 0x878), ("intercooler", 0x89d), ("bike_tail", 0x871), ("bike_tank", 0x872), ("bike_cowl", 0x873), ("carbon_hood", 0x898)] {
-        if b[at] != 0 {
+        // (the side exhaust is drawn only while SideExhaustInUse, 0x89c, is set - the exhaust draw F-39836
+        // tests it and only then takes slot 24's piece from 0x878)
+        if b[at] != 0 && (key != "side_exhaust" || b[0x89c] != 0) {
             cfg.extra.insert(key.to_string(), b[at] as usize);
         }
     }
@@ -14635,6 +14643,24 @@ mod tests {
 
     fn data_dir() -> String {
         std::env::var("MCLA_DATA").unwrap_or_else(|_| "D:/MCLA/extracted/cache".to_string())
+    }
+
+    /// The exhaust draw F-39836 takes slot 24 (`exh_side<0x878>`) only while SideExhaustInUse (0x89c) is set. The
+    /// pink slip GTO's set-up has 0x878 = 2 with the switch off: no side pipe (as the original's garage shows it,
+    /// work/carparts2/cmp/orig_vpd_pon_gto_66.png); with the switch on the piece is 0x878's. An imported record
+    /// with the switch off loses the side exhaust the importer once took from 0x878 alone; one the port fitted stays.
+    #[test]
+    fn the_side_exhaust_needs_its_switch() {
+        let mut b = vec![0u8; 8176];
+        b[0x878] = 2;
+        assert_eq!(setup_parts(&b).unwrap().0.extra.get("side_exhaust"), None);
+        b[0x89c] = 1;
+        assert_eq!(setup_parts(&b).unwrap().0.extra.get("side_exhaust"), Some(&2));
+        let p = std::path::Path::new(&data_dir()).join("resources/vehicle/configs/SC_pinkslip_vpd_pon_gto_66.xcc");
+        if let Ok(b) = std::fs::read(p) {
+            assert_eq!((b[0x878], b[0x89c]), (2, 0));
+            assert_eq!(setup_parts(&b).unwrap().0.extra.get("side_exhaust"), None);
+        }
     }
 
     /// The set-ups the dev extraction once had under colliding names

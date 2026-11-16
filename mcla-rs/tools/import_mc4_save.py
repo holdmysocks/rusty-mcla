@@ -125,6 +125,9 @@ def garage(d):
             plates[cars[-1]] = plate.decode('latin1')
         wheels[cars[-1]] = (d[rec + 0x844], d[rec + 0x845], d[rec + 0x846])
         parts[cars[-1]] = {k: d[rec + o] for k, o in PART_BYTES.items()}
+        # (the side exhaust only while SideExhaustInUse, 0x89c, is set: the exhaust draw tests it before it takes 0x878)
+        if d[rec + 0x89c] == 0:
+            parts[cars[-1]]['side_exhaust'] = 0
         # (the port's rim finish: 0 painted, 1 chrome, 2 brushed metal, 3 carbon fibre - the record's 0, 1, 3, 2)
         own_mats = [{0: 0, 1: 1, 3: 2, 2: 3}.get(v, 1) for v in struct.unpack('>3I', d[rec + 0x178:rec + 0x184])]
         if mats is None:
