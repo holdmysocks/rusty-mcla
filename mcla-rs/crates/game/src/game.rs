@@ -3910,9 +3910,13 @@ impl Game {
     /// +12); F-23567 also sets the menu flag of `ui_msaa4`, F-35144 clears it, so the byte is up on the same screens:
     /// the pause menu, the race list (the telephone list's leave hook F-20561 resumes), the service station's and the
     /// payback menus, the cop fine / arrest panels, the photo album, the end-of-race form from 1.0 s after it shows,
-    /// and the GPS map and mission log scenes (their charts call game.pause(): F-50459). *(open)* the garage:
-    /// none of F-23567's 13 callers is a garage form and the garage scripts never call UILogic_PauseGame, so a
-    /// garage driven into is not counted (one entered by the pause menu's GO TO GARAGE may keep the byte).
+    /// and the GPS map and mission log scenes (their charts call game.pause(): F-50459). Forms whose open slot
+    /// queues action 1 itself (the tutorial boxes F-18655 / F-93448 / F-18235, the time trial and event menus
+    /// F-17066 / F-17823 / F-10216) count through `ui_msaa4` / their own screens; action 7 comes only from the
+    /// replay's buttons (F-84262). The garage is not paused: its statechart (MenuStyleGarage and garage/*.sc)
+    /// calls no game.pause(), only the test drive's pause options do (a Mode::Paused here); garage_core calls no
+    /// pause native; a warp out of the pause menu (GO TO GARAGE) resumes at its landing (the warper F-31347:
+    /// game.resume() and action 2).
     pub fn audio_paused(&self) -> bool {
         self.show_map || (self.ui_msaa4() && self.mode != Mode::Garage)
     }
