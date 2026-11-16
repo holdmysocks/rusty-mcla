@@ -8035,6 +8035,76 @@ mod tests {
         assert!(cases == 40 && compared > 1500 && fires > 8 && cop_in_ticks > 3000 && timer_ticks > 3000, "{cases} {ticks} {fires} {compared} {cop_in_ticks} {timer_ticks}");
     }
 
+    /// The arrest timers of the running original, per tactic update (work/hookmen2/ar/arrest_testdata.py over the
+    /// recordings work/hookmen2/dp/cap/*.pol.txt: Pursuit, pull-over and Arrow Trap updates in chases, pull-overs, arrests and
+    /// searches): from the tactic's +108 / +140 / +144 / +48 at the update's entry, with the seen timers +124 / +128 / +132
+    /// after its seen update, the target's place and chassis speed +224 and the cops' places, `arrest_step` must give the
+    /// four at its exit. The line of sight of F-43276 is not recorded: a cop within the radius + 1 counts as seeing. Updates in
+    /// or into the Arrest / Ticket state are left out (the port's tactic is over there); so is a frame in which the recorder
+    /// put the car back from under the map (the target moved over 20 m inside the update: the timers saw the old place).
+    #[test]
+    fn arrest_timers_match_the_recordings() {
+        let h = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+        let v3 = |w: &[&str]| Vec3::new(h(w[0]), h(w[1]), h(w[2]));
+        let (mut n, mut grows, mut held, mut zeroed, mut still, mut jumps, mut skipped) = (0, 0, 0, 0, 0, 0, 0);
+        for line in include_str!("testdata/arrest_rec.txt").lines().filter(|l| !l.starts_with('#')) {
+            let w: Vec<&str> = line.split('\t').collect();
+            let (kind, s_in, s_out) = (w[2], w[3].parse::<i32>().unwrap(), w[4].parse::<i32>().unwrap());
+            let (arr_state, search_state, radius) = match kind {
+                "P" => (4, 6, 30.0),
+                "V" => (3, -1, 15.0),
+                _ => (1, 3, 30.0),
+            };
+            if s_in == arr_state || s_out == arr_state {
+                skipped += 1;
+                continue;
+            }
+            let dt = h(w[6]);
+            let prev = v3(&w[10..13]);
+            let pos = v3(&w[17..20]);
+            let want_prev = v3(&w[24..27]);
+            if arrest_d2(prev, want_prev) > 400.0 {
+                jumps += 1;
+                continue;
+            }
+            let cops: Vec<Vec3> = if w[20] == "-" { vec![] } else { w[20].split(';').map(|c| v3(&c.split(',').collect::<Vec<_>>())).collect() };
+            let mut p = Police::new();
+            p.arrest = h(w[7]);
+            p.t_burn = h(w[8]);
+            p.t_still = h(w[9]);
+            p.prev_pos = Some(prev);
+            p.t_seen = h(w[13]);
+            p.t_seen_prev = h(w[14]);
+            p.t_unseen = h(w[15]);
+            let a = ArrestIn {
+                seer_r1: cops.iter().any(|&c| arrest_d2(pos, c) <= (radius + 1.0) * (radius + 1.0)),
+                seer_bike: false,
+                delay: true,
+                leaving: kind == "P" && s_in == 0 && s_out != 0,
+                search: s_out == search_state,
+                lost: w[5] == "1",
+                cop_in: cops.iter().any(|&c| within_sq(pos, c, radius)),
+                refresh: true,
+                slow: h(w[16]) < arrest_ms(10.0),
+                bike_down: false,
+                wrecked: false,
+                burning: false,
+                pos,
+            };
+            let a0 = p.arrest;
+            p.arrest_step(a, radius, 1.0, 50.0, arrest_ms(10.0) * dt, dt);
+            let got = format!("{:08X} {:08X} {:08X} {:?}", p.arrest.to_bits(), p.t_burn.to_bits(), p.t_still.to_bits(), p.prev_pos.map(|q| [q.x.to_bits(), q.y.to_bits(), q.z.to_bits()]));
+            let want = format!("{} {} {} {:?}", w[21], w[22], w[23], Some([want_prev.x.to_bits(), want_prev.y.to_bits(), want_prev.z.to_bits()]));
+            assert_eq!(got, want, "{} update {}", w[0], w[1]);
+            n += 1;
+            grows += (p.arrest > a0) as u32;
+            held += (p.arrest == a0 && a0 > 0.0) as u32;
+            zeroed += (a0 > 0.0 && p.arrest == 0.0) as u32;
+            still += (p.t_still > 0.0) as u32;
+        }
+        assert!(n == 31_059 && grows == 17_497 && held == 5_833 && zeroed == 48 && still == 20_695 && jumps == 89 && skipped == 1_080, "{n} {grows} {held} {zeroed} {still} {jumps} {skipped}");
+    }
+
     fn arrest_run(reference: &str, vt: bool) -> (u32, u32, u32, u32, u32, u32) {
         struct X(u32);
         impl X {
