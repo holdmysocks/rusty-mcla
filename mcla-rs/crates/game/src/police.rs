@@ -1319,6 +1319,22 @@ fn running_arm(timer: f32, current: i32, arms: &[Vec3]) -> Vec3 {
     if g != Vec3::ZERO { g } else { arm_yellow(timer, current, arms) }
 }
 
+/// The pull-over's stage step (F-22530's pull-over block, past its hit-a-cop test): +92 0 -> 1 when no speech line plays
+/// (the chirp), 1 -> 2 when the law score is at iBullhornLawBreakScore (the bullhorn; +112 = fBullhornTime); one step a
+/// frame. True when the bullhorn starts (test pullover_stage_matches_the_recording).
+fn pullover_stage(stage: &mut u8, t112: &mut f32, speech_busy: bool, score: f32, bh_score: f32, bh_time: f32) -> bool {
+    match *stage {
+        0 if !speech_busy => *stage = 1,
+        1 if score >= bh_score => {
+            *stage = 2;
+            *t112 = bh_time;
+            return true;
+        }
+        _ => {}
+    }
+    false
+}
+
 /// The pull-over's may-escalate (its vt+24, F-98647): false while the bullhorn timer +112 > 0 (fcmpu: NaN passes), else the base
 /// test F-38605 on the pull-over's slots - its Search test vt+40 is F-74264 (always false), its vt+36 F-33778 the FSM in
 /// state 3 (Ticket). AddPoints (F-19359) lifts a pull-over's 599 cap only when the bullhorn has sounded (+92 == 2) and this is true.
@@ -2312,9 +2328,10 @@ pub struct Police {
     chase_type: u8,
     /// its racer +208 is the player (BEAT_SH_04B): the zone's target whoever sets it off
     chase_player: bool,
-    /// the pull-over's bullhorn (its tactic +92 = 2 at iBullhornLawBreakScore, F-22530): seconds left of
-    /// fBullhornTime; Some(0) = run out (the 599 cap is lifted)
-    bullhorn: Option<f32>,
+    /// the pull-over's stage (its tactic +92, F-22530; 0 at each pull-over start, F-33550): 0 -> 1 with the siren chirp on
+    /// cop 0 once no speech line plays, 1 -> 2 at iBullhornLawBreakScore with the bullhorn and the tactic's +112 (`rdo_t`)
+    /// = fBullhornTime. AddPoints lifts the pull-over's 599 cap only at 2 (`LawTactic::sounded`)
+    pub po_stage: u8,
     /// the ticket hold (FsmPullOver StateTicket, F-25878 / F-46174): (the state's time, its limit): the tick sets the
     /// result once the time - before this update's dt is added - is over the limit, then COP_PULLOVER
     ticket_hold: Option<(f32, f32)>,
@@ -2340,8 +2357,8 @@ pub struct Police {
     speed_top: u8,
     /// the seconds counters of the per-second points (F-52240: they pay whole seconds): 0 speed,
     /// 1 wrong way, 2 burn-out, 3 two-wheel driving, 4 off-road, 5 the fall below iPullOverLawBreakScore,
-    /// 6 the climb from it
-    sec: [f32; 7],
+    /// 6 the climb from it, 7 blocking traffic (F-52240: the record's +148, apart from the fall's +112)
+    sec: [f32; 8],
     /// the player is off the roads, since the start points were paid
     off_active: bool,
     /// two-wheel driving has been going on since its start points were paid
@@ -2510,7 +2527,7 @@ impl Police {
             tacs: HashMap::new(),
             last_tspeed: 0.0,
             probe_cop: None,
-            bullhorn: None,
+            po_stage: 0,
             ticket_hold: None,
             ticketing: false,
             grace: 0.0,
@@ -2519,7 +2536,7 @@ impl Police {
             flee_ask: false,
             speed_level: 0,
             speed_top: 0,
-            sec: [0.0; 7],
+            sec: [0.0; 8],
             off_active: false,
             two_active: false,
             jump_paid: false,
@@ -3537,6 +3554,8 @@ impl Police {
         // (the manager's +84 on a pull-over start only: the tactic's first cop)
         if kind == TacKind::PullOver {
             self.last_pullover = cops.first().copied();
+            // (StartTactic F-33550 puts a pull-over's stage +92 back to 0)
+            self.po_stage = 0;
         }
         self.kind = kind;
         self.cops = cops;
@@ -4195,16 +4214,16 @@ impl Police {
         }
         // blocking traffic (F-60011; not during a pull-over)
         let block_cond = self.heat != Heat::PullOver && block_traffic_cond(world, vehicles, p, &self.peds, &tun);
-        let block_bit = scoring && offence_gate(block_cond, self.block_active, &mut self.sec[5], t("fBlockTrafficThresholdTime", 1.0), dt);
+        let block_bit = scoring && offence_gate(block_cond, self.block_active, &mut self.sec[7], t("fBlockTrafficThresholdTime", 1.0), dt);
         if watching && block_bit {
             breaking = true;
             self.offences |= LAW_BLOCK_TRAFFIC;
             if !self.block_active {
                 self.block_active = true;
-                self.sec[5] = 0.0;
+                self.sec[7] = 0.0;
                 add += t("iBlockTrafficStartPoints", 50.0);
             } else {
-                add += self.whole_seconds(5, dt) * t("iBlockTrafficPerSecPoints", 25.0);
+                add += self.whole_seconds(7, dt) * t("iBlockTrafficPerSecPoints", 25.0);
             }
         }
         // off the roads (F-90092: no polygon of the mesh with the ai_road material under the car)
@@ -4311,12 +4330,12 @@ impl Police {
         let law_tac = (self.kind != TacKind::None && self.target.is_none()).then(|| LawTactic {
             ty: self.kind.ty(),
             may: self.may_escalate,
-            sounded: self.bullhorn.is_some(),
+            sounded: self.po_stage == 2,
             escalates: match self.kind {
                 TacKind::PullOver => pullover_may_escalate(
                     self.may_escalate,
                     self.arrest,
-                    self.bullhorn.unwrap_or(0.0),
+                    self.rdo_t,
                     self.ticket_hold.is_some() || self.ticketing,
                 ),
                 TacKind::Pursuit => {
@@ -4445,7 +4464,7 @@ impl Police {
                         self.start_tactic(kind, cops, true, tt);
                         if kind == TacKind::PullOver {
                             self.heat = Heat::PullOver;
-                            self.bullhorn = None;
+                            self.po_stage = 0;
                             self.ticket_hold = None;
                             self.reset_arrest();
                             event = Some(Event::PullOver);
@@ -4463,12 +4482,16 @@ impl Police {
                 // (F-22530's pull-over block: at iBullhornLawBreakScore the bullhorn and fBullhornTime; hitting a
                 // police car turns it into a pursuit at once; else the score - held at 599 until the bullhorn has run
                 // out - reaching iPursuitLawBreakScore does)
-                if self.bullhorn.is_none() && self.score >= t("iBullhornLawBreakScore", 500.0) {
-                    self.bullhorn = Some(t("fBullhornTime", 10.0));
+                // (the stage +92, F-22530's pull-over block after its hit-a-cop test: 0 -> 1 when no speech line plays - the
+                // speech manager's +2256 and +2260 not both set; the start's REPORT_PULL_SUSPECT_OVER is one, so it waits
+                // for it - with the chirp on cop 0 (the cars' sounds, `PoliceIn::pull_stage`); 1 -> 2 at
+                // iBullhornLawBreakScore with the bullhorn and +112 = fBullhornTime. +112 is the radio's timer that the
+                // tactic's begin F-82656 set to fMinPerRdoTime (15 s) and the base update counts down (`chatter`): the
+                // pull-over's may-escalate F-98647 reads it, so no escalation in its first 15 s and in the bullhorn's 10 s.
+                // Recorded (work/hookmen2/dp/cap/L1): +112 15.0 at the start, the chirp's stage after 6.6 s of the radio
+                // line, the bullhorn at once (score 599), +112 = 10.0 there, the pursuit 10 s later)
+                if !hit_cop && pullover_stage(&mut self.po_stage, &mut self.rdo_t, self.speech_busy, self.score, t("iBullhornLawBreakScore", 500.0), t("fBullhornTime", 10.0)) {
                     log::info!("police: bullhorn");
-                }
-                if let Some(b) = self.bullhorn.as_mut() {
-                    *b = (*b - dt).max(0.0);
                 }
                 if let Some(hold) = self.ticket_hold.as_mut() {
                     // (StateTicket: the cop halted, fArrestStateTime - 0.5 s more when the car is damaged out -,
@@ -5581,7 +5604,7 @@ impl Police {
         self.wrong_active = false;
         self.burnout_active = false;
         self.block_active = false;
-        self.sec = [0.0; 7];
+        self.sec = [0.0; 8];
         // (and F-88677's other fields: the roof-jump byte +44 (mgr +140), the last junction +56 (+152), the last road +60 and
         // its timer +64 - the radio's road and the freeway test read it)
         self.jump_paid = false;
@@ -5589,7 +5612,7 @@ impl Police {
         self.rdo_road = None;
         self.rdo_fw_t = 0.0;
         self.fw_road = false;
-        self.bullhorn = None;
+        self.po_stage = 0;
         self.ticket_hold = None;
         self.ticketing = false;
         self.flee_hold = 0.0;
@@ -6120,6 +6143,46 @@ mod tests {
             n += 1;
         }
         assert_eq!(n, 6000);
+    }
+
+    #[test]
+    fn pullover_stage_matches_the_recording() {
+        // (work/hookmen2/dp/cap/L1, the original's pull-over of 509 updates, dt 1/30, the manager's block before the
+        // tactic's update that counts +112 down: +112 = fMinPerRdoTime 15.0 at its begin, 14.9667 after update 1; the
+        // start's radio line held the stage at 0 to update 198, 1 in 199 (the chirp), 2 in 200 with +112 = 10.0 (9.9667
+        // after the update; the score 599 >= 500 all along); +112 0 after update 499 - the cap lifted, the pursuit at the
+        // next whole climb second, update 509)
+        let dt = 1.0f32 / 30.0;
+        let (mut stage, mut t112) = (0u8, 15.0f32);
+        let mut horn_at = None;
+        let mut zero_at = None;
+        for k in 1..=509u32 {
+            // (the speech line ended before update 199)
+            let busy = k < 199;
+            if pullover_stage(&mut stage, &mut t112, busy, 599.0, 500.0, 10.0) {
+                horn_at = Some(k);
+            }
+            t112 = (t112 - dt).max(0.0);
+            let want = match k {
+                1 => Some(14.9667),
+                59 => Some(13.0333),
+                198 => Some(8.3999),
+                199 => Some(8.3666),
+                200 => Some(9.9667),
+                498 => Some(0.0333),
+                _ => None,
+            };
+            if let Some(w) = want {
+                assert!((t112 - w).abs() < 2e-4, "update {k}: {t112} against {w}");
+            }
+            assert_eq!(stage, if k < 199 { 0 } else if k < 200 { 1 } else { 2 }, "update {k}");
+            if t112 <= 0.0 && zero_at.is_none() {
+                zero_at = Some(k);
+            }
+            assert_eq!(pullover_may_escalate(true, 0.0, t112, false), t112 <= 0.0);
+        }
+        assert_eq!(horn_at, Some(200));
+        assert_eq!(zero_at, Some(499));
     }
 
     #[test]

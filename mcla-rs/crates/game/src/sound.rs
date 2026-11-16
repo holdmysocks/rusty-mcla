@@ -1668,6 +1668,7 @@ impl Sound {
                 goons: police.goons,
                 score: police.score,
                 speech_busy: self.speech_busy,
+                pull_stage: police.po_stage,
                 siren: crate::caraudio::SirenTune::of(&police.tun),
             };
             crate::ticktimes::pt("car: fleet in");

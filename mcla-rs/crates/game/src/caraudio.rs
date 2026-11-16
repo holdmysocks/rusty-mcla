@@ -2215,6 +2215,8 @@ pub struct PoliceIn {
     pub goons: bool,
     pub score: f32,
     pub speech_busy: bool,
+    /// the pull-over's stage (tactic +92, `Police::po_stage`): the chirp at 1, the bullhorn at 2
+    pub pull_stage: u8,
     pub siren: SirenTune,
 }
 
@@ -2770,7 +2772,7 @@ impl Fleet {
                     // pull-over (F-22530): the chirp on cop 0 once no speech plays (after REPORT_PULL_SUSPECT_OVER);
                     // at law score 500 the bullhorn once - skipped for good if speech is playing then
                     if heat == 1 && Some(i) == lead {
-                        if self.pol.chirp_pending && !pol.speech_busy {
+                        if self.pol.chirp_pending && pol.pull_stage >= 1 {
                             s.siren_alert(lib, ci.pos);
                             self.pol.chirp_pending = false;
                             self.pol.chirp_t = pol.siren.chirp;
@@ -2782,7 +2784,7 @@ impl Fleet {
                                 self.pol.chirp_t = pol.siren.chirp;
                             }
                         }
-                        if pol.score >= 500.0 && !self.pol.bullhorn_done {
+                        if pol.pull_stage == 2 && !self.pol.bullhorn_done {
                             self.pol.bullhorn_done = true;
                             if !pol.speech_busy {
                                 let k = self.pol.callsign(i);
