@@ -235,6 +235,18 @@ pub fn ensure(root: &Path, user_path: Option<&Path>, allow_download: bool, m: &M
 }
 
 /// Run ffmpeg, true on exit code 0 (stderr tail returned for the log).
+/// Run `attempt`; if it reports failure, wait a moment and run it once more, and return the second result. A conversion that fails
+/// with no message while many ffmpeg processes run side by side (#56 follow-up: one stream out of 1,631 failed in a full install and
+/// converted fine alone, byte for byte as in the other installs) is a passing failure; a real one fails again and is reported.
+pub fn retry_once(mut attempt: impl FnMut() -> (bool, String)) -> (bool, String) {
+    let first = attempt();
+    if first.0 {
+        return first;
+    }
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    attempt()
+}
+
 pub fn run(ff: &Path, args: &[std::ffi::OsString]) -> (bool, String) {
     match command(ff).args(args).stdout(Stdio::null()).stderr(Stdio::piped()).output() {
         Ok(o) => {

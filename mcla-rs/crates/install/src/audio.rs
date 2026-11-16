@@ -478,7 +478,7 @@ fn convert_stream(ff: &Path, data: &[u8], base_name: &str, out_path: &Path, name
         }
         args.push(out_path.into());
     }
-    let (good, err) = ffmpeg::run(ff, &args);
+    let (good, err) = ffmpeg::retry_once(|| ffmpeg::run(ff, &args));
     for t in &tmps {
         tmp_remove(t);
     }

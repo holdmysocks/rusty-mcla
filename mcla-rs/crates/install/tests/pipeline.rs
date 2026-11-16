@@ -305,3 +305,27 @@ fn shader_files_are_their_own_stage_and_a_changed_file_is_found() {
     assert!(!dir.join("xs_sky.wgsl").exists());
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn a_failed_conversion_is_tried_once_more_and_a_real_failure_still_fails() {
+    use mcla_install::ffmpeg::retry_once;
+    let mut calls = 0;
+    let r = retry_once(|| {
+        calls += 1;
+        (calls == 2, String::new())
+    });
+    assert!(r.0 && calls == 2, "a passing failure is retried and succeeds");
+    let mut calls = 0;
+    let r = retry_once(|| {
+        calls += 1;
+        (false, "bad data".into())
+    });
+    assert!(!r.0 && calls == 2 && r.1 == "bad data", "a real failure runs twice, then is reported with the second message");
+    let mut calls = 0;
+    assert!(retry_once(|| {
+        calls += 1;
+        (true, String::new())
+    })
+    .0);
+    assert_eq!(calls, 1, "a success runs once");
+}
