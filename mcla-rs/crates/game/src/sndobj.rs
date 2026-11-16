@@ -1497,6 +1497,12 @@ impl SoundLib {
     fn trim_clips(&mut self) {
         const IDLE_CLIPS: u64 = 256 << 20;
         let bytes = |c: &Clip| 4 * c.stream.as_ref().map_or(c.data.len(), |s| s.samples.len()) as u64;
+        // (summed first without a copy: this runs every update)
+        let is_idle = |p: &PathBuf, c: &Option<Arc<Clip>>| !self.resident.contains(p) && c.as_ref().is_some_and(|c| Arc::strong_count(c) == 1);
+        let sum: u64 = self.clips.iter().filter(|(p, (c, _))| is_idle(p, c)).map(|(_, (c, _))| bytes(c.as_ref().unwrap())).sum();
+        if sum <= IDLE_CLIPS {
+            return;
+        }
         let mut idle: Vec<(u64, PathBuf, u64)> = self.clips.iter().filter(|(p, _)| !self.resident.contains(*p)).filter_map(|(p, (c, used))| c.as_ref().filter(|c| Arc::strong_count(c) == 1).map(|c| (*used, p.clone(), bytes(c)))).collect();
         let mut total: u64 = idle.iter().map(|e| e.2).sum();
         if total <= IDLE_CLIPS {
@@ -2096,6 +2102,12 @@ impl SoundLib {
             }
         }
         self.take_loaded();
+        // D59: the idle clips trimmed to their budget here too, not only on an on-the-spot read (the loader's clips and the
+        // clips the sounds let go took the idle part ~100 MB over it, docs/PERFORMANCE.md 2026-11-16). Not while a sound
+        // waits for its waves: a wave already in for it is not held yet, and dropped it would be asked for again.
+        if self.insts.iter().all(|i| i.loading.is_empty()) {
+            self.trim_clips();
+        }
         crate::ticktimes::pt("lib: scenes, loads");
         let mut insts = std::mem::take(&mut self.insts);
         let (lp, lr, lf) = self.listener;
@@ -4732,6 +4744,34 @@ mod tests {
         }
         lib.trim_clips();
         assert!(lib.resident.iter().all(|f| lib.clips.get(f).is_some_and(|c| c.0.is_some())), "a resident wave was dropped or unread");
+    }
+
+    /// D59: the idle clips are trimmed to their 256 MB budget in the update too (not only on an on-the-spot read), longest
+    /// unused first; a clip a sound holds is kept whatever its age.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn update_trims_idle_clips_to_the_budget() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let mut a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let mut lib = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
+        lib.clips.clear();
+        let clip = || Some(Arc::new(Clip { data: vec![0.0; 2 << 20], rate: 32000, channels: 1, loop_start: 0, stream: None }));
+        // 40 clips of 8 MB as the loader leaves them (320 MB idle), the oldest held by a sound
+        let mut held = None;
+        for k in 0..40u64 {
+            let c = clip();
+            if k == 0 {
+                held = c.clone();
+            }
+            lib.clip_uses += 1;
+            lib.clips.insert(PathBuf::from(format!("test/{k}.wav")), (c, lib.clip_uses));
+        }
+        lib.update(0.0, &mut a);
+        let idle: usize = lib.clips.values().filter(|(c, _)| c.as_ref().is_some_and(|c| Arc::strong_count(c) == 1)).count();
+        assert_eq!(idle * 8, 256, "idle clips kept: {idle}");
+        assert!(lib.clips.contains_key(Path::new("test/0.wav")), "the held clip was dropped");
+        assert!(!lib.clips.contains_key(Path::new("test/1.wav")) && lib.clips.contains_key(Path::new("test/39.wav")), "not the longest unused first");
+        drop(held);
     }
 
     /// A speech or police radio take played as a slot play (`Req::slot`, F-70477 loads it into its wave slot first) waits unstarted for
