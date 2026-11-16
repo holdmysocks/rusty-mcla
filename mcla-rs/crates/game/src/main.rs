@@ -3672,6 +3672,20 @@ impl App {
         let mut world = self.world.take().unwrap();
         let mut gpu = self.gpu.take().unwrap();
         self.vehicles.auto_player = self.drive && self.opt.auto;
+        // (the test driver --auto presses CONTINUE (A) on the ARRESTED / TICKETED panel once it has stood 120 ticks (and again every 120), so a
+        // long soak goes on after an arrest instead of waiting at the panel. Test hook only.)
+        if self.opt.auto {
+            use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
+            static STOOD: AtomicU32 = AtomicU32::new(0);
+            if self.game.arrest_panel.is_some_and(|p| p.0 <= 0.0) && self.game.message_box.is_none() {
+                if (STOOD.fetch_add(1, Relaxed) + 1) % 120 == 0 {
+                    log::info!("--auto: CONTINUE on the {} panel", if self.game.ticket_for.is_some() { "TICKETED" } else { "ARRESTED" });
+                    self.game.nav_enter = true;
+                }
+            } else {
+                STOOD.store(0, Relaxed);
+            }
+        }
         let frozen_now = self.vehicles.frozen || self.vehicles.grid_hold.is_some();
         // (the test driver --auto drives only a car that answers its pad: a deactivated one - the arrest's Racer_Deactivate
         // to its Racer_Activate, the garage, the start warp - keeps the deactivated input, else it crept on under the
