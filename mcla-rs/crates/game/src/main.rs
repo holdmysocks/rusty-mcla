@@ -7922,6 +7922,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         }).collect();
                         self.game.cruiser_marks = s19h_marks;
                         self.game.map_men_names = self.roam.men.iter().filter(|m| !m.hidden).map(|m| (self.game.career.name_of(&m.name), m.car.clone())).collect();
+                        self.game.map_men_key = self.roam.men.iter().filter(|m| !m.hidden).map(|m| m.key.clone()).collect();
                         // (the map's hookmen, all of them: the slot men - subtype 3, the flag; a man an
                         // active mission points at carries the mission's pulse and "!" (element +126) -
                         // and the time trial and tournament men, subtype 4, icons 5 / 7)
@@ -7946,6 +7947,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 }
                             })
                             .collect();
+                        // (a hookman set as the GPS target is followed where he drives - GitHub #55)
+                        self.game.follow_gps_man();
                     }
                     // (the GPS map's cursor names the mission's man: TREVOR / 1975 280Z - `ng_gps_1`)
                     {
@@ -7955,7 +7958,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.district_timer -= sim_dt;
                     // (a target set or cleared on the GPS map takes effect at once, as F-83952 hands the arrow the new
                     // target when it is set: the route is made again now, not at the next 3 s round)
-                    let key = (self.game.gps_pick.map(|p| p.to_array().map(f32::to_bits)), self.game.mission_target.clone());
+                    // (a hookman as the target: he is the key, not the place he moves through - `gps_man`)
+                    let key = (self.game.gps_pick.filter(|_| self.game.gps_man.is_none()).map(|p| p.to_array().map(f32::to_bits)), self.game.gps_man.clone().or(self.game.mission_target.clone()));
                     let fresh = key != self.gps_key;
                     if fresh {
                         self.gps_key = key;

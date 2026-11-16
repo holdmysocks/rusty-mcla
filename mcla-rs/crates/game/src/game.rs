@@ -745,6 +745,10 @@ pub struct Game {
     pub map_cursor: usize,
     /// the place set as the GPS target on the map (SET AS TARGET)
     pub gps_pick: Option<Vec3>,
+    /// the hookman set as the GPS target on the map (his `Man::key`): the target is the man, not the place where he
+    /// was - F-83952 hands the HUD arrow (+612) the target object's own position, read each frame - so `gps_pick`
+    /// follows him (`follow_gps_man`); None for a place. His `Man::key` (the slot, time trial, tournament, red light or freeway man)
+    pub gps_man: Option<String>,
     /// the mission made the GPS target in the mission log (its id)
     pub mission_target: Option<String>,
     /// The HUD arrow has a target (byte +608 of the player's nav arrow object): set with every SET (map, mission
@@ -1320,6 +1324,8 @@ pub struct Game {
     pub map_men: Vec<(Vec3, Vec3, u8, u8, usize, bool)>,
     /// each of `map_men`'s name and car (the GPS map cursor's box, as for the mission's man)
     pub map_men_names: Vec<(String, String)>,
+    /// each of `map_men`'s `Man::key` (the GPS target that follows him - `gps_man`)
+    pub map_men_key: Vec<String>,
     /// the idle camera is on: close shots of the car, the HUD away
     pub idle_cam: bool,
     /// the garages' doors (where their marker stands in the world)
@@ -1621,6 +1627,7 @@ impl Game {
             menu_confirm: 0,
             map_cursor: usize::MAX,
             gps_pick: None,
+            gps_man: None,
             mission_target: None,
             gps_armed: false,
             gps_was_racing: false,
@@ -1886,6 +1893,7 @@ impl Game {
             cruiser_marks: Vec::new(),
             map_men: Vec::new(),
             map_men_names: Vec::new(),
+            map_men_key: Vec::new(),
             idle_cam: false,
             garage_doors: Vec::new(),
             phone_challenge: false,
@@ -13785,6 +13793,8 @@ impl Game {
                 self.career.stats.entry("tut:target_set".into()).or_insert(1);
             } else if enter && self.map_cursor > 0 {
                 (self.gps_pick, self.mission_target) = (Some(places[self.map_cursor].0), None);
+                // (a hookman's mark: the target is he, and follows him - `gps_man`; GitHub #55)
+                self.gps_man = self.map_men.iter().position(|m| m.0 == places[self.map_cursor].0).and_then(|i| self.map_men_key.get(i).cloned());
                 self.gps_armed = true;
                 log::info!("gps: target set on the map at {:?} ({})", places[self.map_cursor].0, places[self.map_cursor].1);
                 self.career.stats.entry("tut:target_set".into()).or_insert(1);
@@ -16662,6 +16672,7 @@ impl Game {
     /// side by side. `place`: a place on the map; `mission`: a mission (its man, else its event).
     pub fn set_gps_target(&mut self, place: Option<Vec3>, mission: Option<String>) {
         self.gps_pick = place;
+        self.gps_man = None;
         self.mission_target = if place.is_some() { None } else { mission };
         // (SET arms the arrow - `F-13265` / `F-31828` -> `F-55947`; UNSET clears it - `F-94071`)
         self.gps_armed = self.gps_pick.is_some() || self.mission_target.is_some();
@@ -16855,6 +16866,24 @@ impl Game {
     /// Where the GPS target is now (F-83952 hands the HUD arrow the target's own position, so it follows a moving
     /// man): the place picked on the map; for a mission its man while he is the one on the map (`rival_mark`), else the
     /// start of its first race still to win.
+    /// The hookman set as the GPS target (`gps_man`) where he is now: `gps_pick` follows him while he is on the map
+    /// (F-83952: the arrow reads the target object's own position). Gone from the map, the target stays where he was
+    /// last (approx.: what the original does with a target whose man is removed is not decoded). Once a tick, after
+    /// `map_men` is filled.
+    pub fn follow_gps_man(&mut self) {
+        let Some(key) = self.gps_man.as_deref() else { return };
+        if self.gps_pick.is_none() {
+            // (another target took its place)
+            self.gps_man = None;
+            return;
+        }
+        if let Some(i) = self.map_men_key.iter().position(|k| k == key) {
+            if let Some(m) = self.map_men.get(i) {
+                self.gps_pick = Some(m.0);
+            }
+        }
+    }
+
     pub fn gps_target_pos(&self) -> Option<Vec3> {
         if !self.gps_armed {
             return None;
