@@ -9,12 +9,16 @@
 #     grow faster to the same level: docs/PERFORMANCE.md "Release gate"); private memory under PRIV_CEIL_MB at the end
 #     either way;
 #   - slow ticks (`slowtick:` lines, MCLA_SLOWTICK=30) after the first minute: at most SLOW_N, none over SLOW_MAX ms;
-#   - frame rate: the last five minutes within FPS_DROP of minutes 5 - 10 (a session that slows down as it goes on).
+#   - frame rate: the last five minutes within FPS_DROP of minutes 5 - 10 (a session that slows down as it goes on);
+#   - the car kept driving: at least MOVING licence plates made (the perf line's count: new traffic about the player) in
+#     every 5 minutes after minute 5, in the run and in the --ref run. `--auto` can stick (from the default start at
+#     ~12 min, both v0.21.0 and v0.22.0): such a run measures a parked car and is void (good runs >= 1,323, stuck 76 - 225).
 import os, re, statistics as st, sys
 
 PRIV_MB, VRAM_MB, SLOPE_MB = 300.0, 200.0, 6.0
 SLOW_N, SLOW_MAX = 10, 150.0
 FPS_DROP = 0.10
+MOVING = 600
 PRIV_CEIL_MB = 7000.0
 
 
@@ -37,6 +41,26 @@ def growth(d, tag):
         b = st.mean(r[col] for r in body if r[0] >= body[-1][0] - 120)
         o[col] = (a, b, slope([r[0] / 60 for r in body], [r[col] for r in body]))
     return o, res
+
+
+def least_moving(d, tag):
+    """(the fewest plates made in a 5-minute window after minute 5, its end in s) by the log's clock, or None"""
+    pts, t0 = [], None
+    for l in open(os.path.join(d, tag + '.err'), encoding='utf-8', errors='replace'):
+        m = re.match(r'\[\d{4}-\d\d-\d\dT(\d\d):(\d\d):(\d\d)Z', l)
+        if not m:
+            continue
+        t = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
+        t0 = t if t0 is None else t0
+        p = re.search(r'\((\d+) plates made', l)
+        if p:
+            pts.append(((t - t0) % 86400, int(p.group(1))))
+    w = []
+    for t, n in pts:
+        before = [q for q in pts if q[0] <= t - 300]
+        if t >= 600 and before:
+            w.append((n - before[-1][1], t))
+    return min(w) if w else None
 
 
 def main():
@@ -83,6 +107,15 @@ def main():
         fails.append('too few samples after minute 5')
     if '--ref' in sys.argv and not ref:
         fails.append('the reference run has too few samples')
+
+    for dd, tt, who in [(d, tag, 'the car')] + ([(sys.argv[sys.argv.index('--ref') + 1], sys.argv[sys.argv.index('--ref') + 2], 'the reference run\'s car')] if '--ref' in sys.argv else []):
+        mv = least_moving(dd, tt)
+        if mv is None:
+            rows.append(f'{who}: no plate counts in the log')
+            continue
+        rows.append(f'{who}: at least {mv[0]} plates made in 5 min (the fewest by {mv[1] / 60:.1f} min)')
+        if mv[0] < MOVING:
+            fails.append(f'{who} stopped moving (only {mv[0]} plates made in the 5 min to {mv[1] / 60:.1f} min, limit {MOVING}): void, run again')
 
     slow = []
     for l in err:
