@@ -664,6 +664,8 @@ struct App {
     story_warp_start: bool,
     /// (scene, set-up): a queued story scene whose STORY_LOCATION_CUT_SIMPLE warp comes first, when the scene would start
     story_warp_for: Option<(usize, usize)>,
+    /// a garage entry handed to a mission's story scene: the wait camera held until the scene plays (F-99229)
+    garage_view_held: bool,
     /// MCLA_MISSION_DUMP: the mission states for comparing with the original (career::MissionDump)
     mission_dump: Option<career::MissionDump>,
     payback_hold: bool,
@@ -1685,6 +1687,7 @@ impl App {
             story_in: None,
             story_warp_start: false,
             story_warp_for: None,
+            garage_view_held: false,
             mission_dump: career::MissionDump::from_env(),
             payback_hold: false,
             garage_mask: Default::default(),
@@ -4948,6 +4951,11 @@ impl App {
                     self.game.place_title = None;
                 }
             }
+            // (a garage entry's held wait camera, until its story scene plays - or none is coming)
+            if self.garage_view_held && (self.cuts.playing.is_some() || !self.cuts.has_pending()) {
+                self.garage_view_held = false;
+                self.place_view = None;
+            }
             if let Some(md) = self.mission_dump.as_mut() {
                 md.step(&self.game.career, self.frame_no);
             }
@@ -6598,12 +6606,16 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         // from the door) - which is what keeps a car that has just come out from going straight back in;
                         // the drive-out scene leaves it about 26 m from the door)
                         let held = garagein::at_door(p).map_or(false, |g| self.game.garage_held(g));
+                        // (garage_core stays in state 3 - polled every 100 ms - while a mission's event script plays its story
+                        // scene instead of the `_ent` scene, so the door does not take the car in again meanwhile: the port had
+                        // dropped the entry when it queued the scene, and the door's next look started a second warp from the
+                        // car - the cut back to the car the v0.22.0 play-test saw)
                         // (0x3ca..0x3ee: PoliceManager_CheckPoliceActivity(1) > 1 waits 100 ms - a pull-over, a pursuit, a
                         // search, a bust or the race's cop zone counting down; a dispatch on its way or a cop's Follow does
                         // not stop it - `Police::activity`, F-35540)
                         let quiet = self.police.activity().0 <= 1;
                         let door = garagein::at_door(p).filter(|&g| !self.game.career.loaded() || self.game.garage_running(g));
-                        let drive_in = self.game.flash_hud.is_some() && self.game.cruising_offline() && !held && self.garage_in.is_none() && quiet && door.is_some() && self.opt.shot.is_none() | std::env::var("MCLA_DOOR_IN").is_ok();
+                        let drive_in = self.game.flash_hud.is_some() && self.game.cruising_offline() && !held && self.garage_in.is_none() && !self.garage_view_held && quiet && door.is_some() && self.opt.shot.is_none() | std::env::var("MCLA_DOOR_IN").is_ok();
                         // (state 4, GO TO GARAGE: 0x3a9 goes straight to the drive-in at 0x42d from wherever the car is -
                         // the listener state still first)
                         let goto = self.goto_garage.filter(|_| self.game.cruising_offline() && self.garage_in.is_none());
@@ -6727,6 +6739,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             if let Some(i) = story {
                                 self.cuts.queue(i);
                                 self.game.car_x.garage_after_scene = true;
+                                // (the warp's end held the camera on the request's matrix - the wait camera - with no time
+                                // limit: F-99030 -> F-99229 for STORY_LOCATION_CUT_SIMPLE; the story scene takes it over.
+                                // The port had let it go here, so the chase camera showed the car until the scene started)
+                                self.place_view = Some((rows.eye, rows.look_point(), rows.r1, fov));
+                                self.garage_view_held = true;
                                 keep = false;
                             } else if let Some(w) = dive_to {
                                 log::info!("garage entry: dive {:?} ({:.3} s) onto {}", w.kind(), w.total(), su.scene);
@@ -6936,7 +6953,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.game.place_title = None;
                 }
             }
-            if self.garage_in.is_none() && self.hangout_entry.is_none() && self.hangout_title.is_none() && self.payback_in.is_none() && !self.payback_hold && self.story_in.is_none() {
+            if self.garage_in.is_none() && self.hangout_entry.is_none() && self.hangout_title.is_none() && self.payback_in.is_none() && !self.payback_hold && self.story_in.is_none() && !self.garage_view_held {
                 self.place_view = None;
                 self.game.place_title = None;
             }
