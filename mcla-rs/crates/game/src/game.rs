@@ -7731,6 +7731,9 @@ impl Game {
                     /// a list of parts to fit
                     Part(&'static str, Slot),
                     Exit,
+                    /// GARAGE_EXIT_CONF_MENU's rows (garage/Main.sc.xml): EXIT_GARAGE_YES, EXIT_GARAGE_NO
+                    ExitYes,
+                    ExitNo,
                 }
                 let slot_row = |s: Slot| CUSTOM_SLOTS.iter().position(|x| *x == s).map_or(0, |i| i + 1);
                 let garage_car = self.dir_name(self.current_car).to_ascii_lowercase();
@@ -7767,7 +7770,8 @@ impl Game {
                     // VEHICLES and VEHICLE SHOWROOM)
                     ("GARAGE", vec![It::RowAs("MANAGE VEHICLES", 0), It::Sub("CUSTOMIZE VEHICLE", 1), It::RowAs("VEHICLE SHOWROOM", 0), It::Exit]),
                     ("CUSTOMIZATION", vec![It::RowAs("PERFORMANCE SHOP", perf_row), It::Sub("EXTERIOR/INTERIOR", RING[0]), if self.flash_garage.is_some() { It::Sub("VINYL EDITOR", 15) } else { It::RowAs("VINYL EDITOR", vinyl_row) }, It::Sub("PAINT SHOP", 3), It::Sub("HYDRAULICS/AIR BAGS", 13), It::Sub("SPECIAL ABILITIES", 14)]),
-                    ("-", vec![It::Exit]),
+                    // (GARAGE_EXIT_CONF_MENU, "G_exit": what B on the top menu and EXIT GARAGE open - menu 2)
+                    ("EXIT", vec![It::ExitYes, It::ExitNo]),
                     // (PAINT OPTIONS: ALL PARTS has the fade and its colour, PARTS the PAINT AREA -
                     // references `g_m_paint`, `g_pp_1`)
                     ("PAINT SHOP", if self.flash_garage.is_none() {
@@ -8337,6 +8341,8 @@ impl Game {
                 // (the GARAGE menu asks for a repair before its rows and before the way out:
                 // `garage.RepairBeforeCustomizing` / `RepairBeforeExiting` - `mc4`. Its rows: MANAGE
                 // VEHICLES, CUSTOMIZE VEHICLE, VEHICLE SHOWROOM, EXIT GARAGE.)
+                // (the repair box's YES on the way out leaves at once - FullFixConfirmExit's PFFMExit_Yes: repairCar, LeaveGarage)
+                let leave_repaired = self.car_x.repair_go.is_some_and(|k| k != 0);
                 let (enter, back) = self.mc4_repair_gate(!listing && self.garage_menu == 0 && self.garage_part.is_none() && self.garage_stack.is_empty(), enter, back, self.garage_cur == 3, self.garage_cur, vehicles.player().map(|c| (c.state.zones, c.state.damage)));
                 // the two rows of the top menu open the list
                 let enter = if !listing && enter && self.flash_garage.is_some() && self.garage_menu == 0 && self.garage_part.is_none() && self.garage_stack.is_empty() && (self.garage_cur == 0 || self.garage_cur == 2) {
@@ -8371,10 +8377,16 @@ impl Game {
                     self.cart_ask = Some(sel);
                     if enter || back {
                         self.cart_ask = None;
+                        // (INSTALL_CONF_MENU / INSTALL_Rim_MENU: YES and NO UI_MENU_SELECT, cancel UI_MENU_BACK)
+                        if self.flash_garage.is_some() {
+                            self.opt_x.s23b.ui_obj = Some(if enter { "UI_MENU_SELECT" } else { "UI_MENU_BACK" });
+                        }
                     }
                     (enter && sel == 0, false)
                 } else if self.garage_part.is_some() && enter && self.flash_garage.is_some() {
                     self.cart_ask = Some(0);
+                    // (the part lists' action_pressed: UI_MENU_SELECT, then the install question)
+                    self.opt_x.s23b.ui_obj = Some("UI_MENU_SELECT");
                     (false, back)
                 } else {
                     (enter, back)
@@ -8388,6 +8400,20 @@ impl Game {
                     let n = ent.len().max(1);
                     let cur = ((cur.min(n - 1)) as isize + down as isize - up as isize).rem_euclid(n as isize) as usize;
                     self.garage_xpart = Some((k, cur));
+                    // (Wheels.sc.xml: TireSelectMenu's up / down GARAGE_TIRE_SELECT_MASTER, BrakeSelectMenu's
+                    // GARAGE_BRAKE_SELECT_MASTER; PartsSubMenu includes MenuInput - by the key; A / X UI_MENU_SELECT)
+                    if self.flash_garage.is_some() {
+                        if up || down {
+                            self.opt_x.s23b.ui_obj = Some(match sec {
+                                "tires" => "GARAGE_TIRE_SELECT_MASTER",
+                                "brakes" => "GARAGE_BRAKE_SELECT_MASTER",
+                                _ if up => "UI_MENU_NAV_UP",
+                                _ => "UI_MENU_NAV_DOWN",
+                            });
+                        } else if enter {
+                            self.opt_x.s23b.ui_obj = Some("UI_MENU_SELECT");
+                        }
+                    }
                     if enter {
                         let supported = ent.get(cur).is_some_and(|r| r.3 == 0
                             || matches!(sec, "tires" | "brakes" | "scissor_door")
@@ -8402,7 +8428,10 @@ impl Game {
                         }
                         went_in = true;
                     } else if sec == "brakes" && self.x_hit(ctx) {
-                        // STOCK BRAKES
+                        // STOCK BRAKES (x_pressed: UI_MENU_SELECT)
+                        if self.flash_garage.is_some() {
+                            self.opt_x.s23b.ui_obj = Some("UI_MENU_SELECT");
+                        }
                         let car = self.dir_name(self.current_car).to_ascii_lowercase();
                         self.xparts.entry(car).or_default().insert(sec.to_string(), 0);
                         self.dirty = true;
@@ -8417,6 +8446,15 @@ impl Game {
                     }
                 } else if let Some(row) = self.garage_part {
                     part_d = down as isize - up as isize;
+                    // (RimSelectMenu and its bike / DLC twins: up / down GARAGE_RIM_SELECT_MASTER, l1 UI_MENU_NAV_DOWN,
+                    // r1 UI_MENU_NAV_UP; the other part lists (PartsSubMenu) include MenuInput - by the key)
+                    if self.flash_garage.is_some() && !asking {
+                        if up || down {
+                            self.opt_x.s23b.ui_obj = Some(if rim_open { "GARAGE_RIM_SELECT_MASTER" } else if up { "UI_MENU_NAV_UP" } else { "UI_MENU_NAV_DOWN" });
+                        } else if rim_open && (tab_prev || tab_next) {
+                            self.opt_x.s23b.ui_obj = Some(if tab_prev { "UI_MENU_NAV_DOWN" } else { "UI_MENU_NAV_UP" });
+                        }
+                    }
                     if rim_open {
                         let n = rim_tabs.len();
                         let d = tab_next as isize - tab_prev as isize;
@@ -8481,6 +8519,8 @@ impl Game {
                         self.garage_cur = 0;
                     }
                     let items = &menus[self.garage_menu].1;
+                    let menu_before = self.garage_menu;
+                    let ui_before = self.opt_x.s23b.ui_obj;
                     match (enter, items[self.garage_cur.min(items.len() - 1)]) {
                         // (`garage.CheckMiscPartPurchased`: the paint shop and the vinyl editor
                         // are bought once per model)
@@ -8538,7 +8578,32 @@ impl Game {
                             self.mc4_part_list_opened(crate::mc4::section_part_type(XPARTS[k].1));
                             went_in = true;
                         }
+                        // (EXIT GARAGE and B on the top menu: RepairBeforeExiting, F-70109, gives EXIT_GARAGE_YES when
+                        // the damage is at most 0.9 - GARAGE_EXIT_CONF_MENU opens on YES, silently)
+                        (true, It::Exit) if self.flash_garage.is_some() => {
+                            self.garage_stack.push((self.garage_menu, self.garage_cur));
+                            self.garage_menu = 2;
+                            self.garage_cur = 0;
+                            went_in = true;
+                        }
                         (true, It::Exit) => exit_now = true,
+                        // (EXIT_GARAGE_YES: UI_MENU_SELECT and LeaveGarage - the sound is the mode change's, sound.rs)
+                        (true, It::ExitYes) => exit_now = true,
+                        // (EXIT_GARAGE_NO: UI_MENU_SELECT and stackPop - the top menu again)
+                        (true, It::ExitNo) => {
+                            if let Some((m, c)) = self.garage_stack.pop() {
+                                self.garage_menu = m;
+                                self.garage_cur = c;
+                            }
+                            self.opt_x.s23b.ui_obj = Some("UI_MENU_SELECT");
+                            went_in = true;
+                        }
+                        _ if back && !listing && !went_back && !leave_repaired && self.flash_garage.is_some() && self.garage_menu == 0 && self.garage_stack.is_empty() => {
+                            self.garage_stack.push((self.garage_menu, self.garage_cur));
+                            self.garage_menu = 2;
+                            self.garage_cur = 0;
+                            went_back = true;
+                        }
                         _ => {
                             if back {
                                 if let Some((m, c)) = self.garage_stack.pop() {
@@ -8552,6 +8617,12 @@ impl Game {
                                 }
                             }
                         }
+                    }
+                    // (a row below the top menu that opens a menu or a list: the action_pressed of Exterior_Menu,
+                    // Vinyl_Select, Paint_Select, Garage_Hydraulics, Garage_ZoneAgroRoar and PartAreaMenu.sc.xml's rows
+                    // plays UI_MENU_SELECT; the top menu's rows go through RepairBeforeCustomizing and play none)
+                    if went_in && self.flash_garage.is_some() && menu_before != 0 && menu_before != 2 && self.opt_x.s23b.ui_obj == ui_before {
+                        self.opt_x.s23b.ui_obj = Some("UI_MENU_SELECT");
                     }
                     // (999: on a sub-menu's name - no setting is selected)
                     let items = &menus[self.garage_menu].1;
@@ -9057,6 +9128,8 @@ impl Game {
                         let (label, value, count) = match it {
                             It::Sub(l, _) => (l.to_string(), String::new(), 0),
                             It::Exit => ("EXIT GARAGE".to_string(), String::new(), 0),
+                            It::ExitYes => ("YES".to_string(), String::new(), 0),
+                            It::ExitNo => ("NO".to_string(), String::new(), 0),
                             // (a kind of part this car has none of stays grey)
                             It::Part(l, sl) => (l.to_string(), if rows_v.iter().any(|x| x.0 == slot_row(*sl)) { String::new() } else { "-".to_string() }, 0),
                             It::Row(id) | It::RowAs(_, id) => match rows_v.iter().find(|x| x.0 == *id) {
@@ -9848,6 +9921,10 @@ impl Game {
                 }
                 if enter && !car_changed && self.garage_row == perf_row {
                     self.perf_shop = Some(0);
+                    // (Garage_customization_menu's Performance: action_pressed GARAGE_RATCHET_MASTER)
+                    if self.flash_garage.is_some() {
+                        self.opt_x.s23b.ui_obj = Some("GARAGE_RATCHET_MASTER");
+                    }
                 } else if (enter && !car_changed && self.garage_row == vinyl_row && self.mc4_misc_check(1)) || std::mem::take(&mut self.vinyl_open_req) {
                     // the editor starts from what the car wears: its own livery or a preset
                     let car = self.vinyl_for.clone();
@@ -16464,7 +16541,11 @@ pub fn garage_key(menu: &str, label: &str) -> Option<&'static str> {
         ("GARAGE", "MANAGE VEHICLES") => "gManage",
         ("GARAGE", "CUSTOMIZE VEHICLE") => "gCustomize",
         ("GARAGE", "VEHICLE SHOWROOM") => "gShowroom",
-        ("GARAGE" | "-", "EXIT GARAGE") => "Exit Garage",
+        ("GARAGE", "EXIT GARAGE") => "Exit Garage",
+        // (GARAGE_EXIT_CONF_MENU)
+        ("", "EXIT") => "G_exit",
+        ("EXIT", "YES") => "Common_Yes",
+        ("EXIT", "NO") => "Common_No",
         // (Garage_customization_menu)
         ("CUSTOMIZATION", "PERFORMANCE SHOP") => "G_Performance",
         ("CUSTOMIZATION", "EXTERIOR/INTERIOR") => "Exterior",
