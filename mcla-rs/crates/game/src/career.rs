@@ -3192,6 +3192,25 @@ impl Career {
     /// HANGOUT_SERIES_DOWNTOWN_HANGOUT_ON_ENTER set the hangout's state 1 and go straight to
     /// their scene, 0x2e5 / 0x300; REDLIGHT_GH_01's leaves READY_TO_START with it). Returns the
     /// mission whose scene plays. Downtown's pink slip then runs its race (`dt_pink_due`).
+    /// The scene's mission `location_enter(event)` would return now (the one whose scene plays), without posting the event (for reading the
+    /// scene's cars ahead as the player comes near - D59.story-read-ahead).
+    pub fn scene_due(&self, event: &str) -> Option<String> {
+        for (id, ev, st, scene, _to) in EVENT_SCENES {
+            if ev != event {
+                continue;
+            }
+            let Some(i) = self.mission_no(id) else { continue };
+            if self.state[i].stage != Stage::Active || self.ext.get(i).map_or(3, |e| e.state) != st || !self.missions[i].events_at.iter().any(|e| e.0 == ev && e.1 == st) {
+                continue;
+            }
+            if self.visit_events.contains(ev) {
+                continue;
+            }
+            return Some(scene.to_string());
+        }
+        None
+    }
+
     pub fn location_enter(&mut self, event: &str) -> Option<String> {
         for (id, ev, st, scene, to) in EVENT_SCENES {
             if ev != event {
@@ -3661,6 +3680,29 @@ mod tests {
             }
         }
         assert!(c.strings.get("INSTALL_ABILITY_CONFIRM_SPLASH").is_some());
+    }
+
+    /// `scene_due` names the mission `location_enter` plays at that event, and nothing once the visit has posted it or
+    /// while the mission is not in the event's state (D59.story-read-ahead).
+    #[test]
+    fn scene_due_is_location_enter() {
+        let data = std::env::var("MCLA_DATA").unwrap_or_else(|_| "D:/MCLA/extracted/cache".to_string());
+        for (id, ev, st, scene, _) in EVENT_SCENES {
+            let mut c = Career::load(&data);
+            if c.missions.is_empty() {
+                return;
+            }
+            let Some(i) = c.mission_no(id) else { continue };
+            assert_eq!(c.scene_due(ev), Career::load(&data).location_enter(ev), "{id} before");
+            c.state[i].stage = Stage::Active;
+            if let Some(e) = c.ext.get_mut(i) {
+                e.state = st;
+            }
+            let due = c.scene_due(ev);
+            assert_eq!(due.as_deref(), Some(scene), "{id} {ev}");
+            assert_eq!(c.location_enter(ev), due, "{id} {ev}");
+            assert_eq!(c.scene_due(ev), None, "{id} after the visit");
+        }
     }
 
     /// The mission log's reward line (F-74020): the last visible reward's text, as the tune loader's vt+4 leaves it

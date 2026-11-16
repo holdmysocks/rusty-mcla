@@ -420,6 +420,8 @@ struct App {
     race_end_way: Option<f32>,
     /// the parts the car in the garage was last built with: a change shows at once
     garage_built: Option<(usize, vehicle_model::CarConfig, u8)>,
+    /// the story scenes whose cars were read ahead as the player came near their garage / hangout (`story_read_ahead`)
+    story_read: std::collections::HashSet<String>,
     /// the player's car (its uid) and the wheel figures its set-up was last fitted from (and whether it got one: a car
     /// built again comes without it)
     player_dims: Option<(u32, [u8; 8], Option<u8>, bool)>,
@@ -1567,6 +1569,7 @@ impl App {
             race_end_from: None,
             race_end_way: None,
             garage_built: None,
+            story_read: Default::default(),
             player_dims: None,
             carpic: Default::default(),
             garage_up: Vec3::Y,
@@ -4958,6 +4961,10 @@ impl App {
                 let cam = self.cine.camera();
                 self.hscene.update(&mut self.game, &mut self.vehicles, &mut gpu, &mut world, near_h.as_ref().map(|(n, d)| (n.as_str(), *d)), scene.as_deref(), cam, dt);
                 self.layout.update(&self.game, &mut self.vehicles, &self.opt.data_dir, scene.as_deref(), dt);
+                // (the story scene a garage / hangout near the player would play: its cars read ahead - D59.story-read-ahead)
+                if self.tick_no % 30 == 0 && self.game.race.is_none() && self.cuts.playing.is_none() {
+                    self.story_read_ahead(&world);
+                }
             }
             crate::ticktimes::mark(crate::ticktimes::S::Other);
             // (a story hookman waits at his place: within his radius, not chased, he is met -
@@ -16116,6 +16123,49 @@ impl App {
     /// The car a cutscene's mover `label` is (car, colour, plate, set-up): "henry" -> the hookman called Henry in
     /// his car; "hookman" / "drv01" -> the rival of the current mission; the bus and the police bring their own models; a
     /// car its caller loads from a fixed set-up is that set-up's car (`cinedriver::SCENE_SETUPS`, painted by its dressing).
+    /// The story scene a garage or hangout within 250 m would play at its entry (`Career::scene_due`): its animation
+    /// packs and its cars read on workers now, once (D59.story-read-ahead). `cine_spawn_cars` built its cars from the files
+    /// read on the game thread at the scene's start (CUT_STORY_HOLLYWOOD_GARAGE_INTRO's Camaro 785 ms in a user's log).
+    /// Built and dressed there as before.
+    fn story_read_ahead(&mut self, world: &world::World) {
+        let Some(p) = self.vehicles.player().map(|c| c.state.pos) else { return };
+        let night = self.time_of_day > 18.5 || self.time_of_day < 5.5;
+        let mut due: Vec<String> = Vec::new();
+        for su in garagein::SETUPS.iter() {
+            if su.door.distance(p) < 250.0 {
+                due.extend(self.game.career.scene_due(su.enter));
+            }
+        }
+        for su in hangoutin::SETUPS.iter() {
+            let [a, b] = su.line;
+            if ((a + b) * 0.5).distance(p) < 250.0 {
+                due.extend(self.game.career.scene_due(su.enter));
+            }
+        }
+        for id in due {
+            let Some(si) = self.cuts.for_mission(&id, night) else { continue };
+            let scene = format!("story/{}", self.cuts.scenes[si].name.to_ascii_lowercase());
+            if !self.story_read.insert(scene.clone()) {
+                continue;
+            }
+            log::info!("story: {} read ahead ({} due)", scene, id);
+            for label in self.cine.read_ahead_scene(&scene) {
+                if cine::is_player_car(&label) {
+                    continue;
+                }
+                let Some((car, _, _, config)) = self.cine_car_of(&scene, &label) else { continue };
+                if !self.vehicles.models.iter().any(|m| m.name.eq_ignore_ascii_case(&car)) {
+                    if let Some(d) = self.game.car_dirs.iter().find(|d| d.file_name().map_or(false, |f| f.to_string_lossy().eq_ignore_ascii_case(&car))).cloned() {
+                        self.vehicles.prefetch(world, &d);
+                    }
+                }
+                if let Some(d) = self.game.mc4_dress_of(&car, &config) {
+                    vehicles::warm_dress(&world.assets.root, &d);
+                }
+            }
+        }
+    }
+
     fn cine_car_of(&mut self, scene: &str, label: &str) -> Option<(String, [f32; 4], String, String)> {
         if let Some((car, config)) = cinedriver::scene_setup(scene, label) {
             return Some((car.to_string(), [1.0; 4], String::new(), config.to_string()));
