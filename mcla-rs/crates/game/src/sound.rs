@@ -936,7 +936,11 @@ impl Sound {
                         self.speech_line = None;
                     }
                     crate::audio::ObjCmd::Clip { key, category, pos } => {
-                        lib.play_clip(&key, category, crate::sndobj::Req { pos, ..Default::default() });
+                        // a police radio take: the speech manager's take play (F-86996 -> F-70477, the career lines' path)
+                        // loads it into its wave slot and requests it with F-35212's defaults - a slot play on audio timer 0
+                        if let Some(h) = lib.play_clip(&key, category, crate::sndobj::Req { pos, ..Default::default() }.slot()) {
+                            lib.set_timer(h, 0);
+                        }
                     }
                     crate::audio::ObjCmd::Scene { name, on } => {
                         // (a speech line's scene, F-77322: strength = dB2lin(the SPEECH category's runtime volume))

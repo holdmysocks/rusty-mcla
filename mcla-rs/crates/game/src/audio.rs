@@ -2440,13 +2440,13 @@ mod tests {
     }
 
     /// D59: `wav_samples` (the chunk headers alone) gives `load_wav`'s sample count and rate for every speech take and
-    /// people's shout of the converted audio (MCLA_AUDIO_DIR).
+    /// people's shout and police radio take of the converted audio (MCLA_AUDIO_DIR).
     #[test]
     #[ignore = "requires MCLA_AUDIO_DIR (converted audio root)"]
     fn header_lengths_equal_the_read_ones() {
         let root = std::path::PathBuf::from(std::env::var("MCLA_AUDIO_DIR").expect("MCLA_AUDIO_DIR"));
         let mut n = 0;
-        for top in ["career_speech", "0x051b41b9"] {
+        for top in ["career_speech", "0x051b41b9", "police_radio"] {
             for d in std::fs::read_dir(root.join(top)).expect("folder").flatten() {
                 let mut files: Vec<_> = std::fs::read_dir(d.path()).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "wav")).collect();
                 files.sort();

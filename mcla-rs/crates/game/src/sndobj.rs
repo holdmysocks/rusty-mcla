@@ -4734,14 +4734,14 @@ mod tests {
         assert!(lib.resident.iter().all(|f| lib.clips.get(f).is_some_and(|c| c.0.is_some())), "a resident wave was dropped or unread");
     }
 
-    /// A speech take played as a slot play (`Req::slot`, F-70477 loads it into its wave slot first) waits unstarted for
+    /// A speech or police radio take played as a slot play (`Req::slot`, F-70477 loads it into its wave slot first) waits unstarted for
     /// its wave from the loader and then holds the same samples and length as the take read on the spot.
     #[test]
     #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
     fn a_speech_line_waits_for_its_wave() {
         let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
         let mut a = crate::audio::Audio::new_offline(&dir).expect("audio");
-        let key = "career_speech/0x5756288a/45e21379";
+        for (key, cat) in [("career_speech/0x5756288a/45e21379", "SPEECH_CAREER"), ("police_radio/0x05a3a723/02788589", "SPEECH_POLICE")] {
         let wave_of = |lib: &SoundLib, h: Handle| -> Option<(Vec<f32>, f32)> {
             let i = lib.insts.iter().find(|i| i.id == h.0)?;
             match &i.root.kind {
@@ -4750,10 +4750,10 @@ mod tests {
             }
         };
         let mut old = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
-        let h = old.play_clip(key, "SPEECH_CAREER", Req::default()).expect("line");
+        let h = old.play_clip(key, cat, Req::default()).expect("line");
         let want = wave_of(&old, h).expect("read on the spot");
         let mut lib = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
-        let h = lib.play_clip(key, "SPEECH_CAREER", Req::default().slot()).expect("slot line");
+        let h = lib.play_clip(key, cat, Req::default().slot()).expect("slot line");
         assert!(!lib.insts.iter().find(|i| i.id == h.0).unwrap().loading.is_empty(), "the take is not read on the game thread");
         let t = std::time::Instant::now();
         while lib.insts.iter().find(|i| i.id == h.0).is_some_and(|i| !i.loading.is_empty()) {
@@ -4761,7 +4761,8 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(2));
             lib.update(0.0, &mut a);
         }
-        assert_eq!(wave_of(&lib, h), Some(want));
+        assert_eq!(wave_of(&lib, h), Some(want), "{key}");
+        }
     }
 
     /// D59: a car's engine waves queued on the loader when its engine is made give the same clips as reading them at

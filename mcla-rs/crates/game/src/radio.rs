@@ -516,7 +516,8 @@ impl Radio {
                 self.wait = 0.0;
                 return;
             };
-            let dur = a.clip(&key).map_or(0.0, |c| c.data.len() as f32 / c.rate.max(1) as f32);
+            // (D59: the length from the wave's chunk headers; its samples are read by the take's slot play)
+            let dur = a.clip_secs(&key);
             if dur > 0.0 {
                 // (the police voices are Speech sounds of category SPEECH_POLICE; the port's own level without them)
                 if !a.obj_clip(&key, "SPEECH_POLICE", None) {
