@@ -5669,6 +5669,17 @@ impl Vehicles {
                         let f = c.state.forward();
                         let _ = writeln!(w, "{:.2}	{}	{}	{:.2}	{:.2}	{:.2}	{:.3}	{:.3}	{:.3}	0	000	0	0	0	0	0	{}	0", self.clock, r.rng_id(), c.model.name, p.x, p.y, p.z, c.state.speed(), f.x, f.z, r.partner.unwrap_or(0));
                     }
+                    // (a trailer has no behaviour, car +452 = 0, but the same car class (vtable slots 28 / 29 its tow and
+                    // cab check, slot 30 F-30960): F-50624 runs for it as for any car - +412 = |car +208| on the 30 Hz
+                    // update, F-30960 with no behaviour (a = 0, which F-58614 keeps), then F-58614's offset timer on its
+                    // MWC; an active body measures only. The others' F-70116 reads this +412: a towed trailer moving
+                    // at 0.447 m/s or more is not blocking)
+                    if let Some(v) = r.lock.track(c.state.pos, dt) {
+                        r.v = measured_speed(v);
+                    }
+                    if !update_measures_only(false, r.in_level && r.active) {
+                        rider_offset(r, env.clock);
+                    }
                     continue;
                 }
                 4 | 5 => {
