@@ -1358,6 +1358,176 @@ struct LawTactic {
     escalates: bool,
 }
 
+/// The player's law record as the law step F-52240 keeps it (police manager +96 + 68 x the target, only the player's is
+/// scored): +96 this update's offence bits (F-88545), +100 the started bits (cleared only with the whole record, F-88677),
+/// +112 the fall's seconds, +120 the climb's, +124 the speed bands' (one for the three), +128 off-road, +132 two-wheel,
+/// +136 burn-out, +140 the roof jump's byte, +144 wrong way, +148 block traffic. The score +104 is `Police::score`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct LawRec {
+    pub bits: u32,
+    pub started: u32,
+    pub fall: f32,
+    pub climb: f32,
+    pub speed: f32,
+    pub off: f32,
+    pub two: f32,
+    pub burn: f32,
+    pub roof: u8,
+    pub wrong: f32,
+    pub block: f32,
+}
+
+/// The law step's points (mcPoliceTuningGlobals): each continuous offence's start and per-second points, the one-shots,
+/// the fall and climb rates and the two thresholds that pick between them.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct LawPts {
+    pub hi: (i32, i32),
+    pub mid: (i32, i32),
+    pub low: (i32, i32),
+    pub off: (i32, i32),
+    pub prop: i32,
+    pub police: i32,
+    pub other: i32,
+    pub red: i32,
+    pub two: (i32, i32),
+    pub burn: (i32, i32),
+    pub roof: i32,
+    pub wrong: (i32, i32),
+    pub block: (i32, i32),
+    pub fall: i32,
+    pub climb: i32,
+    pub pull: i32,
+    pub max: i32,
+}
+
+impl LawPts {
+    pub(crate) fn of(t: &dyn Fn(&str, f32) -> f32) -> LawPts {
+        let i = |n: &str, d: f32| t(n, d) as i32;
+        LawPts {
+            hi: (i("iHighSpeedStartPoints", 600.0), i("iHighSpeedPerSecPoints", 10.0)),
+            mid: (i("iMidSpeedStartPoints", 250.0), i("iMidSpeedPerSecPoints", 10.0)),
+            low: (i("iLowSpeedStartPoints", 130.0), i("iLowSpeedPerSecPoints", 38.0)),
+            off: (i("iOffRoadStartPoints", 50.0), i("iOffRoadPerSecPoints", 50.0)),
+            prop: i("iDamagePropPoints", 250.0),
+            police: i("iDamagePoliceVehPoints", 600.0),
+            other: i("iDamageOtherVehPoints", 130.0),
+            red: i("iRedLightPoints", 250.0),
+            two: (i("iTwoWheelStartPoints", 50.0), i("iTwoWheelPerSecPoints", 50.0)),
+            burn: (i("iBurnOutStartPoints", 130.0), i("iBurnOutPerSecPoints", 25.0)),
+            roof: i("iJumpOffRoofTopPoints", 500.0),
+            wrong: (i("iWrongWayStartPoints", 130.0), i("iWrongWayPerSecPoints", 25.0)),
+            block: (i("iBlockTrafficStartPoints", 50.0), i("iBlockTrafficPerSecPoints", 25.0)),
+            fall: i("iNoLawBrokenPerSecPoints", 10.0),
+            climb: i("iPullOverPerSecPoints", 10.0),
+            pull: i("iPullOverLawBreakScore", 250.0),
+            max: i("iMaxLawBreakingScore", 1000.0),
+        }
+    }
+}
+
+/// F-52240 from its watcher test to the ladder (82707C30 .. the fall and the climb), on this update's bits `r.bits`:
+/// with a watcher, in the original's order - the speed bands (high 0x4, else mid 0x2, else low 0x1: a band not started
+/// pays its start points and sets its started bits, the high 4|2|1, the mid 2|1; started, the shared timer +124 grows by
+/// dt and pays the band's per-second points each whole second, `while t > 1 { t -= 1 }`), off-road 0x8 (its timer kept
+/// at the start), the one-shots prop 0x10, police car 0x20 / 0x40 (started 0x20|0x40 or 0x40, one payment), other car
+/// 0x80, red light 0x200, then two-wheel 0x400, burn-out 0x800 (their timers zeroed at the start), the roof jump 0x1000
+/// once while its byte +140 is 0 (the byte cleared when the bit is off), wrong way 0x2000 and block traffic 0x4000
+/// (zeroed at the start). Every payment is one AddPoints (`add(score, points) -> score`). Then, with the score over 0:
+/// under the pull-over score the fall's timer +112 pays -fall each whole second when no bit is set or nobody watches;
+/// from it to the maximum the climb's timer +120 pays +climb each whole second (tests law_score_matches_the_recordings).
+pub(crate) fn law_score(r: &mut LawRec, score: &mut i32, watched: bool, dt: f32, p: &LawPts, add: &mut dyn FnMut(i32, i32) -> i32) {
+    let mut pay = |score: &mut i32, pts: i32| *score = add(*score, pts);
+    let per_sec = |t: &mut f32, score: &mut i32, pts: i32, pay: &mut dyn FnMut(&mut i32, i32)| {
+        *t += dt;
+        while *t > 1.0 {
+            *t -= 1.0;
+            pay(score, pts);
+        }
+    };
+    if watched {
+        let b = r.bits;
+        // the speed bands
+        for (bit, set, (start, sec)) in [(0x4u32, 0x7u32, p.hi), (0x2, 0x3, p.mid), (0x1, 0x1, p.low)] {
+            if b & bit != 0 {
+                if r.started & bit != 0 {
+                    per_sec(&mut r.speed, score, sec, &mut pay);
+                } else {
+                    r.started |= set;
+                    pay(score, start);
+                }
+                break;
+            }
+        }
+        // off-road (its timer not zeroed at the start)
+        if b & 0x8 != 0 {
+            if r.started & 0x8 != 0 {
+                per_sec(&mut r.off, score, p.off.1, &mut pay);
+            } else {
+                r.started |= 0x8;
+                pay(score, p.off.0);
+            }
+        }
+        if b & 0x10 != 0 {
+            r.started |= 0x10;
+            pay(score, p.prop);
+        }
+        if b & 0x60 != 0 {
+            r.started |= if b & 0x20 != 0 { 0x60 } else { 0x40 };
+            pay(score, p.police);
+        }
+        if b & 0x80 != 0 {
+            r.started |= 0x80;
+            pay(score, p.other);
+        }
+        if b & 0x200 != 0 {
+            r.started |= 0x200;
+            pay(score, p.red);
+        }
+        for (bit, (start, sec), which) in [(0x400u32, p.two, 0), (0x800, p.burn, 1)] {
+            if b & bit != 0 {
+                let t = if which == 0 { &mut r.two } else { &mut r.burn };
+                if r.started & bit != 0 {
+                    per_sec(t, score, sec, &mut pay);
+                } else {
+                    r.started |= bit;
+                    *t = 0.0;
+                    pay(score, start);
+                }
+            }
+        }
+        if b & 0x1000 != 0 {
+            if r.roof == 0 {
+                r.roof = 1;
+                r.started |= 0x1000;
+                pay(score, p.roof);
+            }
+        } else {
+            r.roof = 0;
+        }
+        for (bit, (start, sec), which) in [(0x2000u32, p.wrong, 0), (0x4000, p.block, 1)] {
+            if b & bit != 0 {
+                let t = if which == 0 { &mut r.wrong } else { &mut r.block };
+                if r.started & bit != 0 {
+                    per_sec(t, score, sec, &mut pay);
+                } else {
+                    r.started |= bit;
+                    *t = 0.0;
+                    pay(score, start);
+                }
+            }
+        }
+    }
+    if *score > 0 {
+        if *score < p.pull {
+            if r.bits == 0 || !watched {
+                per_sec(&mut r.fall, score, -p.fall, &mut pay);
+            }
+        } else if *score < p.max {
+            per_sec(&mut r.climb, score, p.climb, &mut pay);
+        }
+    }
+}
+
 /// AddPoints (F-19359): with a tactic on the target whose may-escalate byte is 0 the points are dropped (None). The cap is
 /// iMaxLawBreakingScore; a Pull Over's iPursuitLawBreakScore - 1 unless its bullhorn has sounded and its vt+24 holds; a Pursuit's /
 /// Double Pursuit's iMax - 1 unless its vt+24 holds. The sum is clamped to 0 .. cap (a score above the cap comes down to it).
@@ -2351,29 +2521,15 @@ pub struct Police {
     /// the tactic's +88: the cop whose car the target's seen probe hit nearest (F-16046; kept while the target is not
     /// moving, the probe then not run); the common update F-63286 brakes it (F-39048, 1.0)
     probe_cop: Option<u32>,
-    /// the highest speed band whose start points were paid (the record's "started" bits +100: kept to `clear`)
-    speed_level: u8,
+    /// the player's law record (F-52240's +96 .. +148 but the score): the bits, the started bits and the timers
+    rec: LawRec,
     /// the highest speed band of the offences so far (1..3; 0 = none): the fine counts that one
     speed_top: u8,
-    /// the seconds counters of the per-second points (F-52240: they pay whole seconds): 0 speed,
-    /// 1 wrong way, 2 burn-out, 3 two-wheel driving, 4 off-road, 5 the fall below iPullOverLawBreakScore,
-    /// 6 the climb from it, 7 blocking traffic (F-52240: the record's +148, apart from the fall's +112)
-    sec: [f32; 8],
-    /// the player is off the roads, since the start points were paid
-    off_active: bool,
-    /// two-wheel driving has been going on since its start points were paid
-    two_active: bool,
-    /// the jump in the air has been paid (the original's byte +140)
-    jump_paid: bool,
     /// the pull-over was run from (the fine's `iPullOverFleeFine`)
     fled: bool,
     /// the share of the career (the Progression system's fraction, 0..1) that cuts the fine;
     /// set by the game each frame
     pub progress: f32,
-    wrong_active: bool,
-    burnout_active: bool,
-    /// block traffic's started bit (F-88545)
-    block_active: bool,
     /// the law record's wrong-way bit (0x2000 of its frame offence bits, F-88545: the condition F-29334 held for
     /// fWrongWayThresholdTime, every tick once started); kept through the grace, as the record is
     against_traffic: bool,
@@ -2534,17 +2690,10 @@ impl Police {
             flee_hold: 0.0,
             flee_t: 0.0,
             flee_ask: false,
-            speed_level: 0,
+            rec: LawRec::default(),
             speed_top: 0,
-            sec: [0.0; 8],
-            off_active: false,
-            two_active: false,
-            jump_paid: false,
             fled: false,
             progress: 1.0,
-            wrong_active: false,
-            burnout_active: false,
-            block_active: false,
             against_traffic: false,
             peds: Vec::new(),
             last_damage: 0.0,
@@ -3027,7 +3176,7 @@ impl Police {
         self.score = 0.0;
         self.fine = 0.0;
         self.offences = 0;
-        self.speed_level = 0;
+        self.rec = LawRec::default();
         self.lost = 0.0;
         self.search = 0.0;
         self.reset_arrest();
@@ -4125,8 +4274,10 @@ impl Police {
         let watching = scoring && (in_tactic || detected);
 
         // ---- offences ---------------------------------------------------------
-        let mut breaking = false;
-        let mut add = 0.0f32;
+        // (F-52240 per update, past the grace: the offence pass F-88545 sets this update's bits in the record's +96 - every
+        // tick, a cop or not; the threshold timers of burn-out, wrong way and block traffic run in it -, then, with a
+        // watcher only, `law_score` pays them as the original's block does, and after it the fall or the climb)
+        let mut bits = 0u32;
         // speeding: three bands above the limit
         // (F-36879: the road's limit in mph, `fSpeedLimitLow` where there is none; a band starts
         // at the larger of limit + offset and limit x (100 + percent) / 100)
@@ -4135,29 +4286,12 @@ impl Police {
         let lvl = speed_level(speed, node_limit, t("fSpeedLimitLow", 50.0),
             [t("fSpeedLimitLowOffset", 15.0), t("fSpeedLimitMidOffset", 30.0), t("fSpeedLimitHiOffset", 45.0)],
             [t("iSpeedLimitLowPrcnt", 1.0) as i32, t("iSpeedLimitMidPrcnt", 50.0) as i32, t("iSpeedLimitHiPrcnt", 80.0) as i32]).0;
-        if watching && lvl > 0 {
-            breaking = true;
-            self.offences |= LAW_SPEED;
-            self.tick_law |= 0x1;
-            self.speed_top = self.speed_top.max(lvl);
-            // (F-52240 / F-19359: a band higher than any paid pays its start points that tick and nothing else;
-            // then the three bands share one seconds counter, the current band's rate. Dropping to no speeding
-            // re-arms nothing: the started bits stay until the record is cleared)
-            if lvl > self.speed_level {
-                add += match lvl {
-                    3 => t("iHighSpeedStartPoints", 600.0),
-                    2 => t("iMidSpeedStartPoints", 250.0),
-                    _ => t("iLowSpeedStartPoints", 130.0),
-                };
-                self.speed_level = lvl;
-            } else {
-                add += self.whole_seconds(0, dt) * match lvl {
-                    3 => t("iHighSpeedPerSecPoints", 10.0),
-                    2 => t("iMidSpeedPerSecPoints", 10.0),
-                    _ => t("iLowSpeedPerSecPoints", 38.0),
-                };
-            }
-        }
+        bits |= match lvl {
+            3 => 0x7,
+            2 => 0x3,
+            1 => 0x1,
+            _ => 0,
+        };
         // (F-88545, every scored tick and with no cop: each of the three has a condition, its started bit and one float -
         // the threshold timer and, once started, the per-second carry; `offence_gate`. Points only when a cop watches)
         // driving against the traffic (F-29334: not over an ai_shortcut polygon; the player's best lane and its tangent
@@ -4182,88 +4316,25 @@ impl Police {
                 self.fw_road = n.starts_with("FW") || n.starts_with("XT");
             }
         }
-        let wrong_bit = scoring && offence_gate(wrong_cond, self.wrong_active, &mut self.sec[1], t("fWrongWayThresholdTime", 1.2), dt);
+        let started = self.rec.started;
+        let wrong_bit = scoring && offence_gate(wrong_cond, started & 0x2000 != 0, &mut self.rec.wrong, t("fWrongWayThresholdTime", 1.2), dt);
         if scoring {
             self.against_traffic = wrong_bit;
         }
-        if watching && wrong_bit {
-            breaking = true;
-            self.offences |= LAW_WRONG_WAY;
-            self.tick_law |= 0x2000;
-            if !self.wrong_active {
-                self.wrong_active = true;
-                self.sec[1] = 0.0;
-                add += t("iWrongWayStartPoints", 130.0);
-            } else {
-                add += self.whole_seconds(1, dt) * t("iWrongWayPerSecPoints", 25.0);
-            }
-        }
         // burn-outs (F-88545: the car sim's burn-out charge above 0 - the launch after it counts as well)
         let burn_cond = burn_charged(p.state.veh.as_ref().map(|v| v.burn));
-        let burn_bit = scoring && offence_gate(burn_cond, self.burnout_active, &mut self.sec[2], t("fBurnOutThresholdTime", 1.5), dt);
-        if watching && burn_bit {
-            breaking = true;
-            self.offences |= LAW_BURNOUT;
-            if !self.burnout_active {
-                self.burnout_active = true;
-                self.sec[2] = 0.0;
-                add += t("iBurnOutStartPoints", 130.0);
-            } else {
-                add += self.whole_seconds(2, dt) * t("iBurnOutPerSecPoints", 25.0);
-            }
-        }
+        let burn_bit = scoring && offence_gate(burn_cond, started & 0x800 != 0, &mut self.rec.burn, t("fBurnOutThresholdTime", 1.5), dt);
         // blocking traffic (F-60011; not during a pull-over)
         let block_cond = self.heat != Heat::PullOver && block_traffic_cond(world, vehicles, p, &self.peds, &tun);
-        let block_bit = scoring && offence_gate(block_cond, self.block_active, &mut self.sec[7], t("fBlockTrafficThresholdTime", 1.0), dt);
-        if watching && block_bit {
-            breaking = true;
-            self.offences |= LAW_BLOCK_TRAFFIC;
-            if !self.block_active {
-                self.block_active = true;
-                self.sec[7] = 0.0;
-                add += t("iBlockTrafficStartPoints", 50.0);
-            } else {
-                add += self.whole_seconds(7, dt) * t("iBlockTrafficPerSecPoints", 25.0);
-            }
-        }
+        let block_bit = scoring && offence_gate(block_cond, started & 0x4000 != 0, &mut self.rec.block, t("fBlockTrafficThresholdTime", 1.0), dt);
         // off the roads (F-90092: no polygon of the mesh with the ai_road material under the car)
         let off_road = crate::offroad::mesh().map_or(false, |m| !m.on_road(ppos));
-        if watching && off_road {
-            breaking = true;
-            self.offences |= LAW_OFF_ROAD;
-            self.tick_law |= 0x8;
-            if !self.off_active {
-                // (its seconds counter is not reset at the start, as the speed bands')
-                self.off_active = true;
-                add += t("iOffRoadStartPoints", 50.0);
-            } else {
-                add += self.whole_seconds(4, dt) * t("iOffRoadPerSecPoints", 50.0);
+        // a jump: in the air for longer than fAirJumpThresholdTime (F-29122, the car sim's air time)
+        let air = p_air > t("fAirJumpThresholdTime", 0.8);
+        for (on, b) in [(off_road, 0x8), (p_two, 0x400), (burn_bit, 0x800), (air, 0x1000), (wrong_bit, 0x2000), (block_bit, 0x4000)] {
+            if on {
+                bits |= b;
             }
-        }
-        // driving on two wheels: start points, then per second
-        if watching && p_two {
-            breaking = true;
-            self.offences |= LAW_TWO_WHEEL;
-            if !self.two_active {
-                self.two_active = true;
-                self.sec[3] = 0.0;
-                add += t("iTwoWheelStartPoints", 50.0);
-            } else {
-                add += self.whole_seconds(3, dt) * t("iTwoWheelPerSecPoints", 50.0);
-            }
-        }
-        // a jump: in the air for longer than fAirJumpThresholdTime (F-29122, the car sim's air
-        // time), paid once per jump
-        if p_air > t("fAirJumpThresholdTime", 0.8) {
-            if watching && !self.jump_paid {
-                self.jump_paid = true;
-                breaking = true;
-                self.offences |= LAW_ROOF_JUMP;
-                add += t("iJumpOffRoofTopPoints", 500.0);
-            }
-        } else if watching {
-            // (byte +140 is written only inside the detection block)
-            self.jump_paid = false;
         }
         // running a red light (F-65840): only on the tick the car's nearest lane becomes a lane of a new junction. `a` is
         // the running arm while green or yellow (a junction with no signal or all red: none), `d` the way it is going
@@ -4279,51 +4350,61 @@ impl Police {
                 // (the arm getters F-93041 / F-75755 read J +160 / +164 only: a forced arm or forced red reaches them through `step`)
                 let a = sig.map_or(Vec3::ZERO, |s| running_arm(s.timer, s.current as i32, &s.arms));
                 let d = if speed > t("fMovingSpeed", 1.0) * 0.447 { -pvel / speed } else { Vec3::ZERO };
-                if watching && d.dot(a) < 0.9 {
-                    breaking = true;
-                    self.offences |= LAW_RED_LIGHT;
-                    self.tick_law |= 0x200;
-                    add += t("iRedLightPoints", 250.0);
+                if d.dot(a) < 0.9 {
+                    bits |= 0x200;
                 }
             }
         }
-        // the contact word (F-83713 -> F-52240, all under the detection block, one payment each a frame): a prop touched, a
-        // police car run into (the aggressor only; a cop ramming a slower player scores nothing), other cars
-        if watching && law_word & 1 != 0 {
-            breaking = true;
-            self.offences |= LAW_PROP;
-            add += t("iDamagePropPoints", 250.0);
-        }
-        let mut hit_cop = false;
-        // (F-93844: the hard byte, the largest cop value of the table over 22.35 m/s; F-26639 B says its line from the cop
-        // with the largest)
+        // the contact word (F-83713 -> F-88545, read and cleared once a frame): a prop touched 0x10, a police car run into
+        // 0x40 (the aggressor only; a cop ramming a slower player scores nothing) - with 0x20 when hard (F-93844: the
+        // largest cop value of the table over 22.35 m/s; F-26639 B says its line from the cop with the largest) -, other
+        // cars 0x80
         self.hard_tab = None;
-        if watching && law_word & 2 != 0 {
-            hit_cop = true;
+        if law_word & 1 != 0 {
+            bits |= 0x10;
+        }
+        if law_word & 2 != 0 {
+            bits |= 0x40;
             let now = vehicles.player().and_then(|c| c.state.veh.as_deref()).map_or(0.0, |v| v.agro.now);
             let tab = vehicles.player().and_then(|c| c.state.veh.as_deref()).map_or(Vec::new(), |v| v.agro.law_tab.iter().filter(|e| e.0 >> 32 == 2 && e.1 > now).map(|e| (e.0 as u32, e.2)).collect());
             if tab.iter().any(|e: &(u32, f32)| e.1 > 22.35) {
-                self.hard_tab = Some(tab);
-                self.offences |= LAW_POLICE_HARD;
-                self.tick_law |= 0x20;
+                bits |= 0x20;
+                if watching {
+                    self.hard_tab = Some(tab);
+                }
             }
-            breaking = true;
-            self.offences |= LAW_POLICE_VEHICLE;
-            self.tick_law |= 0x40;
-            add += t("iDamagePoliceVehPoints", 600.0);
         }
-        if watching && law_word & 8 != 0 {
-            breaking = true;
-            self.offences |= LAW_VEHICLE;
-            self.tick_law |= 0x80;
-            add += t("iDamageOtherVehPoints", 130.0);
+        if law_word & 8 != 0 {
+            bits |= 0x80;
         }
         self.last_damage = damage;
+        if scoring {
+            self.rec.bits = bits;
+        }
+        // (what the port keeps besides the record - the offences the fine and the ticket read, the report's bits, the
+        // highest band - from the bits a cop watched)
+        let hit_cop = watching && bits & 0x40 != 0;
+        if watching {
+            self.tick_law = bits;
+            if lvl > 0 {
+                self.speed_top = self.speed_top.max(lvl);
+            }
+            for (b, o) in [(0x1, LAW_SPEED), (0x2000, LAW_WRONG_WAY), (0x800, LAW_BURNOUT), (0x10, LAW_PROP), (0x80, LAW_VEHICLE),
+                (0x40, LAW_POLICE_VEHICLE), (0x20, LAW_POLICE_HARD), (0x200, LAW_RED_LIGHT), (0x400, LAW_TWO_WHEEL), (0x8, LAW_OFF_ROAD),
+                (0x4000, LAW_BLOCK_TRAFFIC)] {
+                if bits & b != 0 {
+                    self.offences |= o;
+                }
+            }
+            if bits & 0x1000 != 0 && self.rec.roof == 0 {
+                self.offences |= LAW_ROOF_JUMP;
+            }
+        }
 
-        // (AddPoints, F-19359, for every offence, the decay and the per-second growth: the law tactic on the player - none
-        // when the tactic is on an AI racer - drops the points when its may-escalate byte is 0, and caps the score: a pull-over
-        // at iPursuitLawBreakScore - 1 until its bullhorn has sounded and F-98647 holds, a Pursuit / Double Pursuit at iMax - 1
-        // until its vt+24 holds - not in its Delay, no radio line, the byte, not searching or arresting, no arrest timer)
+        // (AddPoints, F-19359, for every payment, the fall and the climb: the law tactic on the player - none when the
+        // tactic is on an AI racer - drops the points when its may-escalate byte is 0, and caps the score: a pull-over at
+        // iPursuitLawBreakScore - 1 until its stage is 2 and F-98647 holds, a Pursuit / Double Pursuit at iMax - 1 until its
+        // vt+24 holds - not in its Delay, no radio line, the byte, not searching or arresting, no arrest timer)
         let max_score = t("iMaxLawBreakingScore", 1000.0);
         let pull = t("iPullOverLawBreakScore", 250.0);
         let (searching, arresting) = (self.heat == Heat::Search, self.heat == Heat::Busted);
@@ -4345,31 +4426,15 @@ impl Police {
             },
         });
         let (max_i, pursuit_i) = (max_score as i32, t("iPursuitLawBreakScore", 600.0) as i32);
-        let add_points_now = |score: f32, points: f32| {
-            add_points(score as i32, points as i32, law_tac, max_i, pursuit_i).map_or(score, |v| v as f32)
-        };
-        if breaking {
-            self.score = add_points_now(self.score, add);
-        }
         if scoring {
-            // (F-52240 after the offences: under iPullOverLawBreakScore the score falls iNoLawBrokenPerSecPoints a
-            // whole second while no offence is counted - iUndetectedPerSecPoints is read by nothing -; from it on it
-            // climbs iPullOverPerSecPoints a whole second, offences or not, and never falls)
-            if self.score > 0.0 && self.score < pull {
-                if !breaking {
-                    let n = self.whole_seconds(5, dt);
-                    if n > 0.0 {
-                        self.score = add_points_now(self.score, -n * t("iNoLawBrokenPerSecPoints", 10.0));
-                    }
-                    if self.score <= 0.0 {
-                        self.offences = 0;
-                    }
-                }
-            } else if self.score >= pull && self.score < max_score {
-                let n = self.whole_seconds(6, dt);
-                if n > 0.0 {
-                    self.score = add_points_now(self.score, n * t("iPullOverPerSecPoints", 10.0));
-                }
+            let pts = LawPts::of(&|n, d| t(n, d));
+            let before = self.score;
+            let mut score = self.score as i32;
+            law_score(&mut self.rec, &mut score, watching, dt, &pts, &mut |s, d| add_points(s, d, law_tac, max_i, pursuit_i).unwrap_or(s));
+            self.score = score as f32;
+            if before > 0.0 && self.score <= 0.0 {
+                // (the port's fine list goes with a score fallen to 0)
+                self.offences = 0;
             }
         }
 
@@ -4457,7 +4522,7 @@ impl Police {
                         self.begin_cue = Some(self.target);
                         // (its Arrow Trap / Pursuit report is the default one with +8 = the record's +100 & +96)
                         if kind != TacKind::PullOver {
-                            self.report_bits = Some(self.tick_law);
+                            self.report_bits = Some(self.rec.started & self.tick_law);
                         }
                     }
                     if let Some(cops) = self.engage(gpu, world, vehicles, kind.cops(), if zone && !detected { None } else { first }, ppos, pfwd) {
@@ -5480,17 +5545,6 @@ impl Police {
     /// plus for a pursuit `iPerSecPursuitFine` x its length (rounded half away from zero) and
     /// `iPullOverFleeFine` after running from a pull-over; cut to 1/4, 1/3, 1/2 below 25 %,
     /// 50 %, 75 % of the career, at least 100, at most `iMaxFine`.
-    /// The whole seconds that counter `i` has run through (the original subtracts 1 s while the
-    /// counter stands above 1 s).
-    fn whole_seconds(&mut self, i: usize, dt: f32) -> f32 {
-        self.sec[i] += dt;
-        let mut n = 0.0;
-        while self.sec[i] > 1.0 {
-            self.sec[i] -= 1.0;
-            n += 1.0;
-        }
-        n
-    }
 
     fn law_fines(&self) -> f32 {
         if self.no_charges {
@@ -5595,19 +5649,12 @@ impl Police {
         self.score = 0.0;
         self.fine = 0.0;
         self.offences = 0;
-        self.speed_level = 0;
         self.speed_top = 0;
         self.fled = false;
         // (F-88677 clears the whole record: the started bits and the counters too)
-        self.off_active = false;
-        self.two_active = false;
-        self.wrong_active = false;
-        self.burnout_active = false;
-        self.block_active = false;
-        self.sec = [0.0; 8];
+        self.rec = LawRec::default();
         // (and F-88677's other fields: the roof-jump byte +44 (mgr +140), the last junction +56 (+152), the last road +60 and
         // its timer +64 - the radio's road and the freeway test read it)
-        self.jump_paid = false;
         self.last_junction = None;
         self.rdo_road = None;
         self.rdo_fw_t = 0.0;
@@ -6143,6 +6190,80 @@ mod tests {
             n += 1;
         }
         assert_eq!(n, 6000);
+    }
+
+    #[test]
+    fn law_score_matches_the_recordings() {
+        // (work/hookmen2/dp/cap/L1 .. L4, the law step F-52240 in the running original, every update with a score or a
+        // watcher: the record after the offence pass F-88545 (LO) and after the ladder (LX). `law_score` with AddPoints
+        // runs from the LO record, watched when a watcher was recorded (LW), with the recorded dt; AddPoints' tactic is
+        // the one whose update ran in the frame before, with its +28 byte: a pull-over's may-escalate F-98647 from its +92
+        // stage and +112 radio timer; a pursuit's vt+24 F-62213 from its FSM state (0 Delay, 4 Arrest, 6 Search) and its
+        // arrest timer +108 - its other input, the speech-playing byte +269 (F-94735), is not recorded and is taken from
+        // the record (the cap lifted: free), and the cap may lift only where the recorded inputs let it; an Arrow Trap's
+        // cap is iMax. The grace (+116 > 0) skips it all. Compared: every record word the block and the fall / climb
+        // write, bit for bit)
+        let pts = LawPts::of(&|_, d| d);
+        let h = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let (mut n, mut watched_n, mut paid_n, mut lifted_n) = (0, 0, 0, 0);
+        let mut kinds = std::collections::BTreeMap::new();
+        for line in include_str!("testdata/law_steps_ref.txt").lines().filter(|l| !l.starts_with('#')) {
+            let v: Vec<&str> = line.split('\t').collect();
+            let (o, x): (Vec<u32>, Vec<u32>) = (v[10..24].iter().map(|s| h(s)).collect(), v[24..38].iter().map(|s| h(s)).collect());
+            let rec = |w: &[u32]| LawRec {
+                bits: w[0],
+                started: w[1],
+                fall: f32::from_bits(w[4]),
+                climb: f32::from_bits(w[6]),
+                speed: f32::from_bits(w[7]),
+                off: f32::from_bits(w[8]),
+                two: f32::from_bits(w[9]),
+                burn: f32::from_bits(w[10]),
+                roof: (w[11] >> 24) as u8,
+                wrong: f32::from_bits(w[12]),
+                block: f32::from_bits(w[13]),
+            };
+            let dt = f32::from_bits(h(v[2]));
+            let watched = v[3] == "1";
+            let may = v[5] != "0";
+            let mut r = rec(&o);
+            let mut score = o[2] as i32;
+            if f32::from_bits(o[5]) <= 0.0 {
+                let tac = match v[4] {
+                    "V" => Some(LawTactic {
+                        ty: TacKind::PullOver.ty(),
+                        may,
+                        sounded: v[6] == "2",
+                        escalates: pullover_may_escalate(may, 0.0, f32::from_bits(h(v[7])), false),
+                    }),
+                    "P" => {
+                        let st: u32 = v[8].parse().unwrap();
+                        let base = pursuit_may_escalate(st == 0, false, may, st == 6, st == 4, f32::from_bits(h(v[9])));
+                        let lifted = x[2] > 999 && o[2] <= 999;
+                        assert!(!lifted || base, "{} {}: the cap lifted where the recorded inputs hold it", v[0], v[1]);
+                        lifted_n += lifted as u32;
+                        Some(LawTactic { ty: TacKind::Pursuit.ty(), may, sounded: false, escalates: base && x[2] > 999 })
+                    }
+                    "A" => Some(LawTactic { ty: TacKind::ArrowTrap.ty(), may, sounded: false, escalates: false }),
+                    _ => None,
+                };
+                law_score(&mut r, &mut score, watched, dt, &pts, &mut |s, d| add_points(s, d, tac, 1000, 600).unwrap_or(s));
+            }
+            let want = rec(&x);
+            assert_eq!((r, score), (want, x[2] as i32), "{} {}", v[0], v[1]);
+            n += 1;
+            watched_n += watched as u32;
+            if score != o[2] as i32 {
+                paid_n += 1;
+            }
+            for b in 0..15 {
+                if watched && o[0] & (1 << b) != 0 {
+                    *kinds.entry(1u32 << b).or_insert(0) += 1;
+                }
+            }
+        }
+        eprintln!("law_score: {n} updates, {watched_n} watched, {paid_n} with a change of score, {lifted_n} pursuit cap lifts; watched bits {kinds:x?}");
+        assert_eq!(n, 6295);
     }
 
     #[test]
