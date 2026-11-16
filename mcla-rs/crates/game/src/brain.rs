@@ -1935,6 +1935,56 @@ mod tests {
     }
     use super::*;
 
+    /// The racing brain right after the race's set-up (ctor F-42537, its init F-60964, SetupRace F-68332 and the core's set-up
+    /// calls) as the original holds it: testdata/brain_setup_rec.txt has the fields of r6.bin's three racers (work/ai-record,
+    /// AROUND HOLLYWOOD, 1 lap) that stay the same in every 50th record. The port's `setup_race` gives the same values:
+    /// heading 0 (+192), final speed -1 (+208), laps 1 (+224), nitro allowed (+236), the nitro / slingshot scores 0.5
+    /// (+240 / +244), hold still / looping off (+257 / +258), the shortcut chance 0 at the race's Medium (+260), the off-mesh counter 30 (+268), max speed -1 (+292),
+    /// collision 0 (+296), the opponent bit (+328), avoid handbrake turns off (+338), the stuck tune 2 s / 1 s / 5 m
+    /// (+368 .. +376), the rubber band on (+380). +408 = 0x10: the obstacle scan F-53450 sets bit 4 (pedestrians) on
+    /// every call; the port's scan ignores kind 4 always and keeps `ignore` 0 (same obstacles).
+    #[test]
+    fn race_setup_is_the_recorded_brain() {
+        let tune = Arc::new(AiTune::from_floats(&vec![0.0; 4096]).unwrap());
+        let rec = include_str!("testdata/brain_setup_rec.txt");
+        let mut n = 0;
+        for l in rec.lines().filter(|l| l.starts_with("racer ")) {
+            let w: Vec<&str> = l.split_whitespace().collect();
+            let opp: u32 = w[1].parse().unwrap();
+            let off: u32 = w[2][1..].parse().unwrap();
+            let v = u32::from_str_radix(w[4], 16).unwrap();
+            let b = Brain::setup_race(Arc::new(Course::default()), tune.clone(), opp, 1, 1, true);
+            let f = |x: f32| x.to_bits();
+            let got = match off {
+                192 => f(b.final_heading.x),
+                196 => f(b.final_heading.y),
+                200 => f(b.final_heading.z),
+                208 => f(b.final_speed),
+                224 => b.plan.laps as u32,
+                236 => b.allow_nitro as u32,
+                240 => f(b.nitro_score),
+                244 => f(b.sling_score),
+                257 => b.hold_still as u32,
+                258 => b.looping as u32,
+                260 => f(b.plan.shortcut_chance),
+                268 => b.off_mesh as u32,
+                292 => f(b.max_speed),
+                296 => f(b.collision),
+                328 => b.plan.opponent,
+                338 => b.avoid_handbrake as u32,
+                368 => f(Stuck::TIME),
+                372 => f(Stuck::REVERSE),
+                376 => f(Stuck::RADIUS),
+                380 => b.plan.rubber as u32,
+                408 => b.ignore | 0x10,
+                _ => panic!("{l}"),
+            };
+            assert_eq!(got, v, "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 63);
+    }
+
     /// The cop brain's attach F-43897 ends in the racing brain's Clear F-76382; the port makes a new `Brain::police` at each
     /// attach. tools/brain_clear_reference.py runs Clear offline on a brain filled with A5A5A5A5 (capacities 0, then 5 / 7):
     /// the fields it leaves equal the fresh police brain's - goals none, +212 / +216 / +220 = 0, laps +224 = 1, +252 (aiv
