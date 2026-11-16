@@ -10869,6 +10869,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         }
                         // the director's step (F-18583): one blend for every camera
                         let out = self.cam_switch.blend.apply(&boomcam::BoomTarget { pan: (0.0, 0.0), ..target }, drive_out, &others, dt);
+                        // (then the look-around frame F-36289: the ability camera, when neither current nor the blend's
+                        // target, updated unseen with its collision off)
+                        self.ability_cam.background(&self.cam_switch.blend, self.ability.kind == ability::Kind::Agro, &track_car, dt, &cam_level, aspect);
                         self.cam_switch.blend.track_steps = None;
                         if std::env::var("MCLA_EVENT_DEBUG").is_ok() && self.frame_no % 10 == 0 {
                             log::info!("event cam: event {:?} leaving {} air {} running {} allowed {} handbrake {} charge {:.2} yaw {:.2} cam {:.1} {:.1} {:.1}", self.event_dir.event(), self.event_dir.leaving(&self.cam_switch.blend), vs.map_or(false, |v| v.air.fitted && v.air.on), self.event_dir.running(), allowed, car.input.handbrake, charge, render_state.ang_vel.y, out.pos.x, out.pos.y, out.pos.z);

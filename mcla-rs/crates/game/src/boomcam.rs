@@ -2650,6 +2650,9 @@ impl TrackTune {
 #[derive(Default)]
 pub struct AbilityCam {
     cam: TrackCam,
+    /// TrackTo and Offset taken from the tune, the first update snapped (the load's vt+76; how the original's first
+    /// update after the load places it was not read: approx.)
+    ready: bool,
 }
 
 impl AbilityCam {
@@ -2663,10 +2666,10 @@ impl AbilityCam {
     /// when the director runs it, and whether it was pushed this frame.
     pub fn frame(&mut self, dir: &mut Director, push: bool, running: bool, times: (f32, f32), agro: bool, car: &TrackCar, dt: f32, test: SphereTest, aspect: f32) -> (Option<BoomOut>, bool) {
         let mut pushed = false;
-        // (F-98424 type 3: a time above 0 begins a blend, else a cut)
+        self.ready(agro, car);
+        // (F-98424 type 3: a time above 0 begins a blend, else a cut. The push resets nothing: the camera is where
+        // F-36289's updates in the background left it - `background`)
         if push && !dir.involves(CamId::Ability) {
-            let t = TrackTune::ability(agro);
-            self.cam.set(&t, car, 99, 0.0);
             dir.push(CamId::Ability, times.0, 1.0);
             pushed = true;
         } else if !running && dir.is_current(CamId::Ability) {
@@ -2677,6 +2680,44 @@ impl AbilityCam {
         }
         let t = TrackTune::ability(agro);
         (Some(self.cam.paced(dir, &t, car, &|c| *c, dt, dt, test, aspect)), pushed)
+    }
+
+    fn ready(&mut self, agro: bool, car: &TrackCar) {
+        if !self.ready {
+            self.cam.set(&TrackTune::ability(agro), car, 99, 0.0);
+            self.ready = true;
+        }
+    }
+
+    /// The player camera's look-around frame (F-36289), after the camera's update and the director's step: while
+    /// the ability camera (+68) is neither current nor the blend's target (F-38782 zero) it is updated all the same,
+    /// once a game frame, with CollideType 0 (slot 17, F-90909, set to 0 for the update and back after it), and
+    /// its collision's state is cleared after each update (+672 = 0.0, a constant of the image; +668 = 0; byte
+    /// +156 = 0). So it keeps following the car unseen and the push takes it from there. (The view's camera +44
+    /// and the reverse camera +64 get the same update when not current - their port is the chase booms'.)
+    pub fn background(&mut self, dir: &Director, agro: bool, car: &TrackCar, dt: f32, test: SphereTest, aspect: f32) {
+        self.ready(agro, car);
+        if dir.current_or_target(CamId::Ability) {
+            return;
+        }
+        let mut t = TrackTune::ability(agro);
+        t.collide_type = 0;
+        let mut one = |c: &mut TrackCam, k: &TrackCar, dt: f32, dt_game: f32| {
+            let snapping = c.snap;
+            let o = c.update(&t, k, dt, dt_game, test, aspect);
+            c.drawn = [if snapping { None } else { c.drawn[1] }, Some(o)];
+            c.dist = 0.0;
+            c.bits = 0;
+            c.corrected = false;
+        };
+        match dir.track_steps.as_ref() {
+            Some(steps) => {
+                for k in steps {
+                    one(&mut self.cam, k, 1.0 / 30.0, 1.0 / 30.0);
+                }
+            }
+            None => one(&mut self.cam, car, dt, dt),
+        }
     }
 }
 
@@ -4886,6 +4927,38 @@ mod tests {
         assert!((4..=5).contains(&n) && dir.is_current(CamId::Ability), "{n}");
         f(&mut a, &mut dir, false, false);
         assert!(dir.active() && dir.src == CamId::Ability && dir.time == 0.3);
+    }
+
+    /// F-36289's background update of the ability camera: while it is out of the director it follows the car
+    /// once a frame (collision off, its collision state cleared), and the push takes it from where it stands -
+    /// no reset (the first update after the push continues from the background's place, it does not snap).
+    #[test]
+    fn ability_camera_follows_unseen_and_is_pushed_from_there() {
+        let chase = BoomOut { pos: Vec3::new(0.0, 2.0, 9.0), look: Vec3::ZERO, up: Vec3::Y, fov: 40.0 };
+        let mut car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::new(0.0, 0.0, -20.0), speed: 20.0, reverse_gear: false, steer: 0.0, front_z: Some(-1.3), slope: Some(0.0), air_time: 0.0, aero: 1.0, model_offset_y: 0.708, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO, follow: None, bike_wiped: false };
+        let dt = 1.0 / 30.0;
+        let (mut a, mut dir) = (AbilityCam::default(), Director::default());
+        for _ in 0..60 {
+            car.pos += car.vel * dt;
+            let (o, pushed) = a.frame(&mut dir, false, false, (0.5, 0.3), false, &car, dt, &NO_WORLD, 16.0 / 9.0);
+            assert!(o.is_none() && !pushed);
+            dir.apply(&target_at(car.pos), chase, &[], dt);
+            a.background(&dir, false, &car, dt, &NO_WORLD, 16.0 / 9.0);
+        }
+        // (it went along with the car: 40 m down -z, the camera behind it)
+        let before = a.cam.out[3];
+        assert!(before.z < -30.0 && before.z > car.pos.z, "{before:?} {:?}", car.pos);
+        assert!(!a.cam.snap && a.cam.dist == 0.0 && a.cam.bits == 0 && !a.cam.corrected);
+        // pushed: no snap, the first shown update starts from the background's place
+        car.pos += car.vel * dt;
+        let (o, pushed) = a.frame(&mut dir, true, true, (0.5, 0.3), false, &car, dt, &NO_WORLD, 16.0 / 9.0);
+        assert!(pushed);
+        let o = o.expect("in the director");
+        assert!((o.pos - before).length() < 1.5, "{:?} from {before:?}", o.pos);
+        // and while the director has it as the target, the background leaves it alone
+        let held = a.cam.out[3];
+        a.background(&dir, false, &car, dt, &NO_WORLD, 16.0 / 9.0);
+        assert_eq!(a.cam.out[3], held);
     }
 
     /// The event's off on the director (F-94591, F-29802, F-98424 -> F-43758): while blending in a
