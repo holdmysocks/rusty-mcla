@@ -1424,6 +1424,9 @@ pub struct Vehicles {
     /// a race is on as the ambient manager's byte +0x64251 has it (F-86550): the current race (F-27863), not a payback
     /// (race type 0 - 4, race +3096), not over (+3773, `$IsRaceFinish`) - set by the game each frame
     pub race_event: bool,
+    /// the current-race pointer F-27863 (0x8286EBF8, set by the running race) is not null: `Game::race_current`, set by
+    /// the game each frame. The slipstream's leader search F-69277 skips every racer without it
+    pub race_current: bool,
     /// a replay plays (set by the game each frame): every recorded car's place is the recording's (`replay::Recording::apply`),
     /// a car it has not on the road then stands out of sight, so the racers' safe place does not set them down
     pub replaying: bool,
@@ -4246,12 +4249,12 @@ impl Vehicles {
         let me = &self.cars[i];
         let Some(vt) = me.params().veh.as_ref() else { return (0.0, -1) };
         // (the racer list: every car; one with no turbo has no SST object; a car's gyro +18 is the side it is up on.
-        // F-27863, asked before each racer, is taken as true; F-54299's SportBike class as the model's bike flag;
+        // F-27863, asked before each racer, is the current race: none, no leader - the slipstream charges only in a race; F-54299's SportBike class as the model's bike flag;
         // the car's +224 is its speed as this tick came in, |vel| before its step)
         let racers: Vec<Racer> = self.cars.iter().enumerate()
             .map(|(j, o)| Racer { car: true, me: j == i, sst: Self::has_sst(o) && o.params().veh.is_some(), gyro18: o.state.veh.as_ref().map(|v| v.two as u16) })
             .collect();
-        let (_, s, j) = find_leader(Self::has_sst(me), me.state.vel.length(), vt.t.ss_turbo.min_speed, &racers, || true, |j| self.cars[j].model.bike, |j| {
+        let (_, s, j) = find_leader(Self::has_sst(me), me.state.vel.length(), vt.t.ss_turbo.min_speed, &racers, || self.race_current, |j| self.cars[j].model.bike, |j| {
             let o = &self.cars[j];
             let (Some(ov), Some(ot)) = (o.state.veh.as_ref(), o.params().veh.as_ref()) else { return 0.0 };
             strength(&ot.t.ss_turbo, &DraftCar { pos: o.state.pos, up: o.state.up(), vel: o.state.vel, speed: ov.last_speed }, me.state.pos)

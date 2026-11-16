@@ -6601,6 +6601,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 player_input.throttle = 0.0;
             }
             // (the ambient manager's race byte +0x64251, F-86550: a current race, not a payback - race type 5 - and not over)
+            self.vehicles.race_current = self.game.race_current();
             self.vehicles.race_event = self.game.race.as_ref().is_some_and(|r| r.kind != game::RaceKind::Payback)
                 && !(self.game.mode == Mode::Results || self.game.race_end_t.is_some());
             // (the soak hook's drive over a hangout's entry line: straight on, half throttle, instead of the auto driver)
