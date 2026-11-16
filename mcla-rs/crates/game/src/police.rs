@@ -1425,7 +1425,7 @@ impl LawPts {
     }
 }
 
-/// F-52240 from its watcher test to the ladder (82707C30 .. the fall and the climb), on this update's bits `r.bits`:
+/// F-52240 from its watcher test to the ladder (its offence block, the fall and the climb), on this update's bits `r.bits`:
 /// with a watcher, in the original's order - the speed bands (high 0x4, else mid 0x2, else low 0x1: a band not started
 /// pays its start points and sets its started bits, the high 4|2|1, the mid 2|1; started, the shared timer +124 grows by
 /// dt and pays the band's per-second points each whole second, `while t > 1 { t -= 1 }`), off-road 0x8 (its timer kept
