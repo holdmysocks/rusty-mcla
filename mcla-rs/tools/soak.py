@@ -13,6 +13,9 @@
 #   - the car kept driving: at least MOVING licence plates made (the perf line's count: new traffic about the player) in
 #     every 5 minutes after minute 5, in the run and in the --ref run. `--auto` can stick (from the default start at
 #     ~12 min, both v0.21.0 and v0.22.0): such a run measures a parked car and is void (good runs >= 1,323, stuck 76 - 225);
+#     The plates alone miss a car parked in traffic (a 60-min soak of 2026-11-16 stood 38 min at the police station
+#     after an arrest and still made 702): the player's own `player t=` positions must also not stay within PARKED_M
+#     for more than PARKED_S after minute 1 (in the run and in the --ref run);
 #   - the vehicle driven: the game's `driven: player vehicle <name>` lines are printed; with --vehicle the run must have
 #     driven only that one (a save's current car replaces `--car`: the v0.22.0 soak's "bike" legs drove the R8). The
 #     --ref run is checked too when its build writes the line (builds before 2026-11-16 do not).
@@ -22,6 +25,7 @@ PRIV_MB, VRAM_MB, SLOPE_MB = 300.0, 200.0, 6.0
 SLOW_N, SLOW_MAX = 10, 150.0
 FPS_DROP = 0.10
 MOVING = 600
+PARKED_M, PARKED_S = 5.0, 120.0
 PRIV_CEIL_MB = 7000.0
 
 
@@ -64,6 +68,26 @@ def least_moving(d, tag):
         if t >= 600 and before:
             w.append((n - before[-1][1], t))
     return min(w) if w else None
+
+
+def longest_parked(d, tag):
+    """(the longest time in s the player stayed within PARKED_M of one spot after minute 1, its start in s) by the game's
+    `player t=` lines, or None"""
+    pts = []
+    for l in open(os.path.join(d, tag + '.err'), encoding='utf-8', errors='replace'):
+        m = re.search(r'player t=([\d.]+) Vec3\(([-\d.e]+), [-\d.e]+, ([-\d.e]+)\)', l)
+        if m:
+            pts.append((float(m.group(1)), float(m.group(2)), float(m.group(3))))
+    pts = [q for q in pts if q[0] >= 60]
+    if not pts:
+        return None
+    best, i = (0.0, pts[0][0]), 0
+    for j in range(len(pts)):
+        while (pts[j][1] - pts[i][1]) ** 2 + (pts[j][2] - pts[i][2]) ** 2 > PARKED_M ** 2:
+            i += 1
+        if pts[j][0] - pts[i][0] > best[0]:
+            best = (pts[j][0] - pts[i][0], pts[i][0])
+    return best
 
 
 def driven(d, tag):
@@ -124,6 +148,12 @@ def main():
         rows.append(f'{who}: at least {mv[0]} plates made in 5 min (the fewest by {mv[1] / 60:.1f} min)')
         if mv[0] < MOVING:
             fails.append(f'{who} stopped moving (only {mv[0]} plates made in the 5 min to {mv[1] / 60:.1f} min, limit {MOVING}): void, run again')
+        pk = longest_parked(dd, tt)
+        if pk is not None:
+            rows.append(f'{who}: parked at most {pk[0]:.0f} s (from {pk[1] / 60:.1f} min)')
+            if pk[0] > PARKED_S:
+                fails.append(f'{who} stood {pk[0]:.0f} s within {PARKED_M:.0f} m from {pk[1] / 60:.1f} min (limit {PARKED_S:.0f} s): '
+                             'void, run again')
 
     want = sys.argv[sys.argv.index('--vehicle') + 1].lower() if '--vehicle' in sys.argv else None
     for dd, tt, who in [(d, tag, 'the run')] + ([(sys.argv[sys.argv.index('--ref') + 1], sys.argv[sys.argv.index('--ref') + 2], 'the reference run')] if '--ref' in sys.argv else []):
