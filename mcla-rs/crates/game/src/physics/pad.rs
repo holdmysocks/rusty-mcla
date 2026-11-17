@@ -422,6 +422,9 @@ pub struct PadHeld {
     /// input +84: the steering target T of the frame (the stick through its dead zone and exponent, the pull added,
     /// clamped to -1..1), which the human racer's virtual +172 (F-91694) hands the rider machine as its goal steering
     pub goal: f32,
+    /// flag 0x2000 of input +40 as the frame left it: the stomp test on the frame's pedal before the cruise, cleared
+    /// when the cruise holds the road's speed; the update after the frame calls the kick-down (F-65097) on it
+    pub stomp: bool,
 }
 
 #[cfg(test)]
