@@ -8,7 +8,7 @@
 //! * `DIRECTION_PLAYER` (and `_STREETRACE`, `DIRECTION_CHANGE_*`) -> `..._NORTH` etc.
 //! * `LOCATION1` / `LOCATION2` -> `LOCATION1_SUNSET_BLVD`: the street and the cross
 //!   street, named as in the road network's zones ("HW_oh_Sunset Blvd.")
-//! * `VEHICLE_MODEL` -> `MODEL_VP_VW_GOLF_83`
+//! * `VEHICLE_MODEL` -> `MODEL_vp_vw_golf_83`: the car's PoliceDesc, as VEHICLE_REACQUIRE
 //! * `CALL` / `REPLY` / `ACKNOWLEDGE` -> the officer's plain line (`CALL_DISPATCH`, `REPLY`), or the
 //!   dispatcher's with the other party's call sign (`CALL_3ADAM5`)
 //! * `PRE_SQUELCH` / `POST_SQUELCH` -> the clicks of the dispatcher's or the car's set
@@ -511,9 +511,11 @@ impl Radio {
                         // F-73009 / F-26958 (CALL_NEIGHBORHOOD_%s / SUSPECT_LAST_SEEN_%s): the context's district (+188), none
                         // when it is empty
                         "CALL_NEIGHBORHOOD" | "SUSPECT_LAST_SEEN" if !self.district.is_empty() => format!("{name}_{}", self.district),
-                        // F-26276 ("%s_%s"): the word and the chased car's PoliceDesc (VEHICLE_REACQUIRE_vp_aud_r8_08)
-                        "VEHICLE_REACQUIRE" if self.police_desc.contains_key(&ctx.car.to_ascii_lowercase()) => format!("{name}_{}", self.police_desc[&ctx.car.to_ascii_lowercase()]),
-                        "VEHICLE_MODEL" if !ctx.car.is_empty() => format!("MODEL_{}", ctx.car.to_ascii_uppercase()),
+                        // F-26276 ("%s_%s"): the word and the chased car's PoliceDesc (VEHICLE_REACQUIRE_vp_aud_r8_08); the
+                        // resolver F-28061 passes "MODEL" for VEHICLE_MODEL (MODEL_vp_aud_r8_08)
+                        "VEHICLE_REACQUIRE" | "VEHICLE_MODEL" if self.police_desc.contains_key(&ctx.car.to_ascii_lowercase()) => {
+                            format!("{}_{}", if name == "VEHICLE_MODEL" { "MODEL" } else { name }, self.police_desc[&ctx.car.to_ascii_lowercase()])
+                        }
                         "CALL" => with("CALL", "CALL_DISPATCH"),
                         "REPLY" => with("REPLY", "REPLY"),
                         "ACKNOWLEDGE" => with("ACKNOWLEDGE", "ACKNOWLEDGE"),
@@ -811,6 +813,36 @@ mod tests {
                 }
             }
             assert!(named > 0, "{car}: never named");
+        }
+    }
+
+    /// VEHICLE_MODEL is F-26276 with the word "MODEL" (the resolver F-28061's case 18): MODEL_ and the chased car's
+    /// PoliceDesc - the pack's CHP Charger is named MODEL_vp_dge_charger_06 (its own name has no clip on the disc).
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn a_model_names_the_police_desc() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let mut r = Radio::load(&dir, a.root());
+        r.units = (Some("4ADAM8".into()), None);
+        let hash = |w: &str| { let w = w.trim_end_matches(".wav"); u32::from_str_radix(w, 16).ok().filter(|_| w.len() == 8).unwrap_or_else(|| joaat(w)) };
+        for (car, desc) in [("vp_aud_r8_08", "vp_aud_r8_08"), ("vp_se_dge_chp_06", "vp_dge_charger_06"), ("vpd_aud_s5_08", "vp_aud_r8_08")] {
+            let want: HashSet<u32> = (1..=20).map(|t| joaat(&format!("MODEL_{desc}_{t:02}"))).collect();
+            let own: HashSet<u32> = (1..=20).map(|t| joaat(&format!("MODEL_{car}_{t:02}"))).collect();
+            let mut named = 0;
+            for _ in 0..30 {
+                r.queue.clear();
+                r.stop();
+                r.clock += 60.0;
+                let ctx = Ctx { car: car.into(), hour: 12.0, ..Default::default() };
+                assert!(r.say_from("DISPATCH_REPORT_VIOLATION_3RD_ST_PROMENADE", "DISPATCH".into(), "4ADAM8".into(), &ctx), "{car}");
+                let words: Vec<u32> = r.queue.iter().filter(|q| !q.0.is_empty()).map(|q| hash(q.0.rsplit('/').next().unwrap())).collect();
+                named += words.iter().filter(|w| want.contains(*w)).count();
+                if car != desc {
+                    assert!(!words.iter().any(|w| own.contains(w)), "{car}: its own name");
+                }
+            }
+            assert!(named > 0, "{car}: the model never said");
         }
     }
 
