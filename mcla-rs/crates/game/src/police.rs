@@ -3760,6 +3760,25 @@ impl Police {
     }
 
     /// The tactic's target car (+32): the AI racer the cop zone chose, else the player.
+    /// The radio context's racer (F-78553, run each tick by F-11845): the target (+32) of the manager's first active
+    /// tactic (F-28945) - the player, or the AI racer a race's cop zone chases; None with no tactic (the context is kept).
+    /// The Dispatch to Location (the player's place) is taken first, as its slot (type 0) is.
+    pub fn radio_racer<'a>(&self, vehicles: &'a Vehicles) -> Option<&'a crate::vehicles::CarInstance> {
+        if self.dsp.is_some() {
+            return vehicles.player();
+        }
+        if self.heat == Heat::None {
+            return None;
+        }
+        self.target_car(vehicles)
+    }
+
+    /// F-63053 with 1, F-78553's skip: a tactic of the city's cops (its first cop's +872; the goons' is 0) in its Search with
+    /// the clock running - the context keeps the place where the target was lost.
+    pub fn radio_hold(&self) -> bool {
+        !self.goons && self.heat == Heat::Search && search_clock_runs(self.search)
+    }
+
     fn target_car<'a>(&self, vehicles: &'a Vehicles) -> Option<&'a crate::vehicles::CarInstance> {
         match self.target {
             Some(u) => vehicles.cars.iter().find(|c| c.uid == u),

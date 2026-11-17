@@ -462,6 +462,9 @@ struct App {
     news: std::collections::VecDeque<(String, Option<String>)>,
     speech: speech::Speech,
     radio: radio::Radio,
+    /// the radio context object (F-78553's +208 heading, +60 street ...): updated each tick from the police's target, read
+    /// by every line
+    radio_ctx: radio::Ctx,
     /// where the dispatcher reports reckless driving (centre, radius, call), and the pause between reports
     dispatch_zones: Vec<racescript::GlobalSound>,
     /// the player's place last frame (the global triggers' line test)
@@ -1164,8 +1167,7 @@ impl App {
                     self.speech.say("PLAYER_COPS_ESCAPE_TICKET");
                 }
                 if self.radio.loaded() {
-                    let rctx = radio_ctx(&self.vehicles, world, self.time_of_day);
-                    self.radio.note(&rctx, world.nav.as_ref());
+                    let rctx = say_ctx(&self.radio_ctx, &self.police, &self.vehicles, self.time_of_day);
                     self.radio.say("REPORT_SUSPECT_FLEES", &rctx);
                 }
                 // (0xb6c -> 0xcf8: the fade up fn 0x11a6(0, 1, 1.0, 0), not waited - it lifts the walk's own fade_to_black
@@ -1624,6 +1626,7 @@ impl App {
             news: Default::default(),
             speech: Default::default(),
             radio: radio::Radio::default(),
+            radio_ctx: radio::Ctx::default(),
             dispatch_zones: Vec::new(),
             dispatch_prev: Vec::new(),
             record3: None,
@@ -6579,8 +6582,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         // to an officer, probability 1) carries the speech line at its +28; F-14569 plays the radio line and,
                         // only when the radio manager took it, the speech)
                         let took = if self.radio.loaded() {
-                            let rctx = radio_ctx(&self.vehicles, &world, self.time_of_day);
-                            self.radio.note(&rctx, world.nav.as_ref());
+                            let rctx = say_ctx(&self.radio_ctx, &self.police, &self.vehicles, self.time_of_day);
                             self.radio.say("DISPATCH_REPORT_VIOLATION_STREETRACE", &rctx)
                         } else {
                             true
@@ -8758,6 +8760,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.police.untimed_race = self.game.race.as_ref().is_some_and(|r| r.time_limit <= 0.0);
                     self.police.player_police = self.player_police();
                     let ev = self.police.update(&gpu, &world, &mut self.vehicles, brain::FRAME);
+                    // (F-11845 -> F-78553, each tick: the context from the first active tactic's target, kept with no
+                    // tactic and while a Search's clock runs; here after the police step, before this frame's lines)
+                    if let Some(car) = self.police.radio_racer(&self.vehicles).filter(|_| !self.police.radio_hold()) {
+                        self.radio_ctx = radio_ctx(car, &world, self.time_of_day);
+                        self.radio.note(&self.radio_ctx, world.nav.as_ref());
+                    }
                     // (StartTactic's strip texts, F-76838: into the HUD movie, which stands for the whole game)
                     for k in std::mem::take(&mut self.police.hud_msgs) {
                         if let Some(fh) = self.game.flash_hud.as_mut() {
@@ -8799,8 +8807,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
                 // ---- the radio traffic that goes with it ----
                 if self.radio.loaded() && !s19d_goons && !self.police.goons {
-                    let rctx = radio_ctx(&self.vehicles, &world, self.time_of_day);
-                    self.radio.note(&rctx, world.nav.as_ref());
+                    let rctx = say_ctx(&self.radio_ctx, &self.police, &self.vehicles, self.time_of_day);
                     // (the one speech manager: each speaker sees the other's scenario playing)
                     talk_sync(&mut self.speech, &mut self.radio);
                     match ev {
@@ -9831,7 +9838,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // (F-85023 took the radio's request out of the one ring: asked again through the radio's whole gate)
             if let Some((scenario, (sender, receiver))) = self.speech.radio_next.take() {
                 if self.radio.loaded() {
-                    let rctx = radio_ctx(&self.vehicles, &world, self.time_of_day);
+                    let rctx = say_ctx(&self.radio_ctx, &self.police, &self.vehicles, self.time_of_day);
                     self.radio.say_from(&scenario, sender, receiver, &rctx);
                 }
             }
@@ -17850,9 +17857,15 @@ fn talk_sync(sp: &mut speech::Speech, r: &mut radio::Radio) {
     r.speech_on = sp.busy();
 }
 
-fn radio_ctx(vehicles: &vehicles::Vehicles, world: &world::World, hour: f32) -> radio::Ctx {
+/// A line's context: the context object as the last tick left it, the hour now, and the car the line names - the first
+/// active tactic's target read when the line is made (F-26276 -> F-55561), none with no tactic.
+fn say_ctx(ctx: &radio::Ctx, police: &police::Police, vehicles: &vehicles::Vehicles, hour: f32) -> radio::Ctx {
+    radio::Ctx { hour, car: police.radio_racer(vehicles).map(|c| c.model.name.clone()).unwrap_or_default(), ..ctx.clone() }
+}
+
+/// F-78553 on the racer `p` (the first active tactic's target).
+fn radio_ctx(p: &vehicles::CarInstance, world: &world::World, hour: f32) -> radio::Ctx {
     let mut ctx = radio::Ctx { hour, ..Default::default() };
-    let Some(p) = vehicles.player() else { return ctx };
     // (F-78553: the velocity when the racer's +224 is at least 0.1, else the matrix's -z row; y = 0, made unit by the
     // reciprocal square root estimate - here the exact one, which only a word on the 45 degree line could tell apart)
     let v = if p.state.speed() >= 0.1 { p.state.vel } else { p.state.forward() };
