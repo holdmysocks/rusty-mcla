@@ -102,6 +102,9 @@ fn outer_side(wpos: vec3<f32>, n: vec3<f32>) -> bool {
 // PS_IceBlock: rgb = DiffuseTex(uv x 4.5).r x FX_TexColor.rgb x FX_TexColor.w + dpFront(R);
 // a = gLightAmbient.w x (FX_FresnelMin + (FX_FresnelMax - FX_FresnelMin)(1 - |n.v|)^FX_FresnelExp).
 // a = TexColor, b = (FresnelMin, FresnelMax, FresnelExp, -)
+// pow with a tune file's exponent: x^0 = 1 for every x, 0 included, as the Xenos computes it (GitHub #57); else pow itself
+fn xpow(x: f32, e: f32) -> f32 { return select(pow(x, e), 1.0, e == 0.0); }
+
 fn ice(in: VOut) -> vec4<f32> {
     let p = fx.inst[in.ii];
     let v = normalize(g.cam_pos.xyz - in.wpos);
@@ -110,7 +113,7 @@ fn ice(in: VOut) -> vec4<f32> {
     let e = env(reflect(-v, n));
     let t = textureSample(t_diff, s_diff, in.uv * 4.5).r;
     let rgb = t * p.a.rgb * p.a.w + e;
-    let a = p.b.x + (p.b.y - p.b.x) * pow(max(1.0 - ndv, 0.0), p.b.z);
+    let a = p.b.x + (p.b.y - p.b.x) * xpow(max(1.0 - ndv, 0.0), p.b.z);
     return vec4<f32>(rgb, clamp(a, 0.0, 1.0));
 }
 
@@ -154,7 +157,7 @@ fn shield(in: VOut) -> vec4<f32> {
     let wa = ta.a * p.a.w * p.c.x;
     let wb = tb.a * p.b.w * p.c.y;
     let rgb = ta.rgb * p.a.rgb * wa + tb.rgb * p.b.rgb * wb + e * p.d.w;
-    let fr = p.d.x + (p.d.y - p.d.x) * pow(max(1.0 - ndv, 0.0), p.d.z);
+    let fr = p.d.x + (p.d.y - p.d.x) * xpow(max(1.0 - ndv, 0.0), p.d.z);
     return vec4<f32>(rgb, clamp(fr * p.d.w + wa + wb, 0.0, 1.0));
 }
 

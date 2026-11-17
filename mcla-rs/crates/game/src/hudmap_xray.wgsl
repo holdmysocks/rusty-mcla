@@ -62,10 +62,13 @@ fn ripple_alpha(uv: vec2<f32>) -> f32 {
     let w = sin(fract(ph) * 6.2831855 - 3.1415927);
     var fall = 0.0;
     if r < 1.0 {
-        fall = pow(1.0 - r, g.ripple.w);
+        fall = xpow(1.0 - r, g.ripple.w);
     }
     return clamp(w * g.ripple2.x, 0.0, 1.0) * fall;
 }
+
+// pow with a tune file's exponent: x^0 = 1 for every x, 0 included, as the Xenos computes it (GitHub #57); else pow itself
+fn xpow(x: f32, e: f32) -> f32 { return select(pow(x, e), 1.0, e == 0.0); }
 
 @fragment
 fn fs_main(in: VOut) -> @location(0) vec4<f32> {

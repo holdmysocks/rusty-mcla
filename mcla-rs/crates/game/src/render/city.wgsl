@@ -1470,7 +1470,7 @@ fn vs_body(in: VsIn) -> VsOut {
             o.fill = vec4<f32>(ray, 0.025 + 0.825 * pow(clamp(1.0 - abs(nv), 0.0, 1.0), 4.5125));
         } else {
             let tbv = paint_row(PAINT_B, min((u32(round(obj.params.w)) / 32u) % 8u, 5u));
-            o.fill = vec4<f32>(normalize(ray), tbv.y + (tbv.z - tbv.y) * pow(clamp(1.0 - nv, 0.0, 1.0), tbv.x));
+            o.fill = vec4<f32>(normalize(ray), tbv.y + (tbv.z - tbv.y) * xpow(clamp(1.0 - nv, 0.0, 1.0), tbv.x));
             o.neon_hl = nv + 4.0;
         }
     }
@@ -2043,6 +2043,19 @@ fn ch_nm(nn: vec3<f32>, t: vec3<f32>, b: vec3<f32>, x: f32, y: f32, m: f32) -> v
 // 1 - GitHub #57 (as #14's paint_pow). Any other exponent: pow itself.
 fn ch_pow(x: f32, y: f32) -> f32 { return select(pow(x, y), 1.0, y == 0.0); }
 fn ch_pow3(x: vec3<f32>, y: f32) -> vec3<f32> { return select(pow(x, vec3<f32>(y)), vec3<f32>(1.0), y == 0.0); }
+
+// The same rule for every other pow whose exponent is data (a material's, a tune file's, a vertex's): x^0 = 1 for every x,
+// any other exponent pow itself (GitHub #57). MCLA_DEBUG_VIEW=798 marks yellow a pixel where such a pow met a base <= 0
+// with an exponent of 0 (NaN there before this rule on AMD), magenta a colour that is not a number or infinite.
+var<private> xp_bad: u32 = 0u;
+fn xpow(x: f32, e: f32) -> f32 {
+    if (e == 0.0 && x <= 0.0) { xp_bad = xp_bad | 2u; }
+    return select(pow(x, e), 1.0, e == 0.0);
+}
+fn xpow3(x: vec3<f32>, e: f32) -> vec3<f32> {
+    if (e == 0.0 && any(x <= vec3<f32>(0.0))) { xp_bad = xp_bad | 2u; }
+    return select(pow(x, vec3<f32>(e)), vec3<f32>(1.0), e == 0.0);
+}
 
 // (MCLA_DEBUG_VIEW=797, GitHub #57: a character term that is not a number or infinite - exponent bits, which no
 // compiler folds - marks the pixel magenta; an input from the vertex stage cyan. NVIDIA clamps a NaN to 0 where AMD
@@ -2967,14 +2980,14 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
                 paint = mix(pc_a, pc_b, clamp(2.0 * clamp(t, 0.0, 1.0) - 0.5, 0.0, 1.0));
             }
         } else if (fade == 1u) {
-            paint = mix(pc_b, pc_a, clamp(pow(abs(dot(nf6, v)), fall6), 0.0, 1.0));
+            paint = mix(pc_b, pc_a, clamp(xpow(abs(dot(nf6, v)), fall6), 0.0, 1.0));
         } else if (fade >= 2u) {
             paint = mix(pc_a, pc_b, in.paint_s);
         }
         // (diagnostics 691: the directional fade's vertex value itself; 692: the two-tone's weight)
         if (g.params.w > 690.5 && g.params.w < 691.5) { return vec4<f32>(to_scene(vec3<f32>(in.paint_s)), 1.0); }
         if (g.params.w > 691.5 && g.params.w < 692.5) {
-            return vec4<f32>(to_scene(vec3<f32>(clamp(pow(abs(dot(nf6, v)), fall6), 0.0, 1.0))), 1.0);
+            return vec4<f32>(to_scene(vec3<f32>(clamp(xpow(abs(dot(nf6, v)), fall6), 0.0, 1.0))), 1.0);
         }
         // (a part painted by itself carries its colour in the vertex colour, alpha set)
         if (in.color.a > 0.5 && p_area == 0u) { paint = in.color.rgb; }
@@ -3834,7 +3847,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
     }
     if (spec > 0.0) {
         let f = fresnel(n, v, 0.04);
-        let s = pow(ndh, gloss) * spec * g.sun_dir.w * shadow;
+        let s = xpow(ndh, gloss) * spec * g.sun_dir.w * shadow;
         let r = reflect(-v, n);
         let env = env_color(r);
         // (car parts read from their programs, work/lighting bmprobe.py / bs3.py / cglassprobe.py;
@@ -4044,7 +4057,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             let mt = second.a * in.dmg.x;
             let dift = mix(car_raw(albedo.rgb), vec3<f32>(0.44, 0.35, 0.25), mt) * ltt;
             let nht = sqrt(clamp(0.5 + 0.5 * dot(n, v), 0.0, 1.0));
-            let envt = pow(max(env_soft(reflect(-v, n)), vec3<f32>(0.000001)), vec3<f32>(2.0 - albedo.a * second.a)) * (albedo.a * albedo.a * (0.125 + 0.875 * (1.0 - nht))) * clamp(1.0 - 6.0 * mt, 0.0, 1.0);
+            let envt = xpow3(max(env_soft(reflect(-v, n)), vec3<f32>(0.000001)), 2.0 - albedo.a * second.a) * (albedo.a * albedo.a * (0.125 + 0.875 * (1.0 - nht))) * clamp(1.0 - 6.0 * mt, 0.0, 1.0);
             lit = (dift + envt - clamp(dift * envt, vec3<f32>(0.0), vec3<f32>(1.0))) * wt;
             base = vec3<f32>(0.0);
             emissive = vec3<f32>(0.0);
@@ -4127,7 +4140,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
                 let nl = clamp(dot(np_t, ldir), 0.0, 1.0);
                 let dl = lcol * (nl * clamp(4.0 * nl, 0.0, 1.0) * att_t * di_t * occ_t);
                 let nh = clamp(dot(np_t, normalize(v + ldir)), 0.0, 1.0);
-                let sl = lcol * (pow(max(nh, 1e-20), p_t) * clamp(4.0 * nl, 0.0, 1.0) * ks_t);
+                let sl = lcol * (xpow(max(nh, 1e-20), p_t) * clamp(4.0 * nl, 0.0, 1.0) * ks_t);
                 ld_t = ld_t + dl - clamp(ld_t * dl, vec3<f32>(0.0), vec3<f32>(1.0));
                 ls_t = ls_t + sl - clamp(ls_t * sl, vec3<f32>(0.0), vec3<f32>(1.0));
             }
@@ -4184,7 +4197,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             let amb_a = hemi * (am_a * occ_a);
             lt_a = lt_a + amb_a - clamp(lt_a * amb_a, vec3<f32>(0.0), vec3<f32>(1.0));
             let dif_a = col_a * lt_a;
-            let sp_a = pow(max(env_soft(r), vec3<f32>(0.000001)), vec3<f32>(e_a)) * (k_a * occ_a);
+            let sp_a = xpow3(max(env_soft(r), vec3<f32>(0.000001)), e_a) * (k_a * occ_a);
             let lit_a = dif_a + sp_a - clamp(dif_a * sp_a, vec3<f32>(0.0), vec3<f32>(1.0));
             let nv_a = dot(n, v);
             let f5m_a = pow(1.0 - clamp(nv_a, 0.0, 1.0), 5.0);
@@ -4281,7 +4294,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             let lk_t = lt_t * (1.33333 * tsc);
             let ob_t = own_t * (tb.z * tb.z);
             let dif_t = ttex * tcol * (lk_t + ob_t - clamp(lk_t * ob_t, vec3<f32>(0.0), vec3<f32>(1.0)));
-            let ee_t = pow(max(env_soft(reflect(-v, tnp)), vec3<f32>(0.000001)), vec3<f32>(tdl.x));
+            let ee_t = xpow3(max(env_soft(reflect(-v, tnp)), vec3<f32>(0.000001)), tdl.x);
             let lum_t = dot(ttex, vec3<f32>(0.3, 0.59, 0.11));
             let th = clamp(abs(dot(normalize(tnp + v), tnp)), 0.0, 1.0);
             let sp_t = lum_t * (ee_t * (tdl.y * (0.5 + 0.5 * tocc) * (0.5 + 0.666665 * tsc)) + ee_t * own_t) * ((3.5 * (1.0 - th) + 0.5) * (0.25 * tnp.y + 0.75));
@@ -4427,7 +4440,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             let dif9 = col9 * lt9;
             // (grillopaque.fxc, PS_BumpSpec_SpecMap of cars/0x3d436fa4 - bit 64: the same program
             // with this term times the texture's colour; work/lighting/bs6.py)
-            let sp9 = pow(max(env_soft(r), vec3<f32>(0.000001)), vec3<f32>(e9)) * (k9 * (0.5 + 0.5 * occ9)) * select(vec3<f32>(1.0), tex9, (pd9 & 64u) != 0u);
+            let sp9 = xpow3(max(env_soft(r), vec3<f32>(0.000001)), e9) * (k9 * (0.5 + 0.5 * occ9)) * select(vec3<f32>(1.0), tex9, (pd9 & 64u) != 0u);
             let lit9 = dif9 + sp9 - clamp(dif9 * sp9, vec3<f32>(0.0), vec3<f32>(1.0));
             let f59 = pow(1.0 - clamp(dot(n, v), 0.0, 1.0), 5.0);
             let s59 = sm9 * sm9 * sm9 * sm9 * sm9;
@@ -4590,7 +4603,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
                 // (tight curves: the mirror blurs and fades to the ambient colour)
                 let cur = clamp(2.0 * (clamp(length(dpdx(n)) - 0.15, 0.0, 1.0) + clamp(length(dpdy(n)) - 0.15, 0.0, 1.0)), 0.0, 1.0);
                 let envm = mix(env, hemi, cur) * kk;
-                let fr = (tb.y + (tb.z - tb.y) * pow(1.0 - ndv, tb.x)) * step(0.0005, tb.z);
+                let fr = (tb.y + (tb.z - tb.y) * xpow(1.0 - ndv, tb.x)) * step(0.0005, tb.z);
                 let w = clamp(fr + 0.25 * step(0.001, tb.y) * max(dot(envm, vec3<f32>(0.3, 0.59, 0.11)) - 1.0, 0.0), 0.0, 1.0) * (1.0 - scraped) * ao_v;
                 // the flakes: a 128 x 128 noise, uv x DL4.x x 4 (ObjNoiseUvMod), whose mips fade to
                 // flat grey quickly (62 -> 16 -> 3 of 255 by the second level, bias -1)
@@ -4678,7 +4691,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
                     let pv_a = !(g.params.w > 699.5 && g.params.w < 700.5);
                     let ndv_a = select(dot(n, v), in.neon_hl - 4.0, pv_a);
                     let edge_a = select(0.0, 1.0, sqrt(dpdx(ndv_a) * dpdx(ndv_a) + dpdy(ndv_a) * dpdy(ndv_a)) >= 0.125);
-                    let fr_a = select(tb.y + (tb.z - tb.y) * pow(clamp(1.0 - ndv_a, 0.0, 1.0), tb.x), in.fill.w, pv_a);
+                    let fr_a = select(tb.y + (tb.z - tb.y) * xpow(clamp(1.0 - ndv_a, 0.0, 1.0), tb.x), in.fill.w, pv_a);
                     let w_a = clamp(fr_a - edge_a, 0.0, 1.0) * ao_v;
                     let ray_a = select(reflect(-v, n), in.fill.xyz, pv_a);
                     let m_a = mix(dif, select(env, env_color(ray_a), pv_a), w_a);
@@ -4718,7 +4731,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             // (kept faint: in the game's garage footage metallic paint reads as smooth, with only a fine sparkle)
             let nf = normalize(n + flake * tc.z * tc.z * 0.6 * (1.0 - scraped));
             let envp = env_color(reflect(-v, nf));
-            let fm = (tb.y + (tb.z - tb.y) * pow(1.0 - ndv, tb.x) + obj.color.a * 0.02 * step(0.001, tb.z)) * (1.0 - 0.85 * scraped);
+            let fm = (tb.y + (tb.z - tb.y) * xpow(1.0 - ndv, tb.x) + obj.color.a * 0.02 * step(0.001, tb.z)) * (1.0 - 0.85 * scraped);
             // (against the game: its paint is deep - a lit panel shows about the swatch's own colour)
             var dif_l = (hemi * ao * (ta.z / 0.2) * 0.75 + g.sun_color.rgb * g.sun_dir.w * ndl * mix(0.6, 1.0, occ) * (ta.x / 0.225)) * 0.6;
             if (g.ambient_ground.w > 0.0) {
@@ -4728,7 +4741,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             // (sparkle's coarse flakes show as a grain in the colour itself)
             let dif = base * dif_l * (1.0 + flake.x * tc.z * tc.z * 0.9) * select(1.0, 1.25, g.ambient_ground.w < -0.5);
             let lum = dot(envp, vec3<f32>(0.3, 0.59, 0.11));
-            let soft = mix(base * lum, envp, tc.x) * ta.y * pow(max(lum, 0.001), ta.w - 1.0) * 0.1 * (1.0 - scraped);
+            let soft = mix(base * lum, envp, tc.x) * ta.y * xpow(max(lum, 0.001), ta.w - 1.0) * 0.1 * (1.0 - scraped);
             lit = dif * (1.0 - fm * 0.5) + envp * fm * 0.8 + soft;
             // (the lamps' and the sun's highlight is the mirror's doing - sharp on gloss, none on
             // matte - with the soft specular's broad sheen about it on metallic and pearl)
@@ -5697,5 +5710,10 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
     if (setup_b1_bs) { alpha = select(albedo.a, pow(max(albedo.a, 0.0), 1.6), in.uv1.y < -0.5); amb_keep_a = true; }
     if (setup_b1_badge) { alpha = clamp(2.0 * albedo.a - 1.0, 0.0, 1.0); amb_keep_a = true; }
     if (mat.mode != 2u && mat.mode != 12u && mat.mode != 22u && !amb_keep_a) { alpha = 1.0; }
+    if (g.params.w > 797.5 && g.params.w < 798.5) {
+        if (ch_nf(col)) { return vec4<f32>(to_scene(vec3<f32>(1.0, 0.0, 1.0)), alpha); }
+        if ((xp_bad & 2u) != 0u) { return vec4<f32>(to_scene(vec3<f32>(1.0, 1.0, 0.0)), alpha); }
+        return vec4<f32>(tonemap(col * 0.25), alpha);
+    }
     return vec4<f32>(tonemap(col), alpha);
 }
