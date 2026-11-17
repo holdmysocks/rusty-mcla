@@ -550,7 +550,7 @@ pub struct WheelTouch {
 /// less than 2 cm apart; its normal is kept within what the polygon and its neighbours across
 /// the edges the point lies on allow (the polygon's own normal on an open edge); and the
 /// deepest of them, depth times the normal's share of the car's `up`, is the wheel's.
-pub fn wheel_touch(world: &WorldCollider, core: &super::gjk::WheelCore, up: Vec3, reach_box: Option<&WheelBox>, ball: Option<(Vec3, f32)>) -> Option<WheelTouch> {
+pub fn wheel_touch(world: &WorldCollider, core: &super::gjk::WheelCore, up: Vec3, reach_box: Option<&WheelBox>, ball: Option<(Vec3, f32)>, moved: Option<&([Vec3; 4], [Vec3; 4])>) -> Option<WheelTouch> {
     let reach = Vec3::splat(core.round() + CORE + 0.03);
     // (each: corners, normal, surface, and - where the mesh is the city's own bound - what its
     // record says of its neighbours across its three edges: their normals as the original's
@@ -647,6 +647,11 @@ pub fn wheel_touch(world: &WorldCollider, core: &super::gjk::WheelCore, up: Vec3
                 continue;
             }
         } else if std::env::var_os("MCLA_DBG_NOEDGETEST").is_none() && !edge_keeps(tri, face, &beside, r.on_b, r.normal) {
+            continue;
+        }
+        // (the same "moving out" test as the wheel's collision, F-35118 (5): the wheel's contact is one of those the
+        // collision kept. gy2.0 k55: a kerb's neighbouring face, refused there, was the deepest here.)
+        if moved.is_some_and(|(now, last)| moving_out(now, last, r.on_a, face)) {
             continue;
         }
         let normal = if exact { cone_exact(tri, face, &beside, r.on_b, r.normal) } else { cone_normal(tri, face, &beside, r.on_b, r.normal) };
@@ -1587,6 +1592,21 @@ fn sink(slots: &mut Vec<Slot>, slot: Slot) {
     }
 }
 
+/// The hull's "moving out" test, F-35118 (5), for a wheel's point as the car carries it: where that point (`on_a`)
+/// of the body has gone between `last` and `now` (the part's matrix, and its matrix at the top of its travel in the
+/// car's last matrix), along the polygon's normal `face` it must not have come out (over 2.5e-5).
+pub(super) fn moving_out(now: &[Vec3; 4], last: &[Vec3; 4], on_a: Vec3, face: Vec3) -> bool {
+    let from = on_a - now[3];
+    let u = Vec3::new(dot3(now[0], from), dot3(now[1], from), dot3(now[2], from));
+    let delta = [now[0] - last[0], now[1] - last[1], now[2] - last[2], now[3] - last[3]];
+    let mv = Vec3::new(
+        (delta[3].x + delta[2].x * u.z) + (delta[1].x * u.y + delta[0].x * u.x),
+        (delta[3].y + delta[2].y * u.z) + (delta[1].y * u.y + delta[0].y * u.x),
+        (delta[3].z + delta[2].z * u.z) + (delta[1].z * u.y + delta[0].z * u.x),
+    );
+    dot3(mv, face) > f32::from_bits(0x38d1_b717)
+}
+
 /// Everything one wheel's shape touches, laid into `manifolds` as the hull's contacts are
 /// (F-82759 for a wheel's part): the same narrow phase, edge test and cone as `wheel_touch`,
 /// every contact kept. `now`: the body's matrix (rows and the model's origin).
@@ -1636,18 +1656,10 @@ pub fn wheel_collide(world: &WorldCollider, core: &super::gjk::WheelCore, part: 
         // have come out. I + V sa.0 216..231: with the part's own "last" matrix - the top of its travel - the
         // recorded contacts of 223 / 225 would be refused.)
         if let Some((pn, pb, _, _)) = moved.as_ref() {
-            let from = r.on_a - pn[3];
-            let u = Vec3::new(dot3(pn[0], from), dot3(pn[1], from), dot3(pn[2], from));
-            let delta = [pn[0] - pb[0], pn[1] - pb[1], pn[2] - pb[2], pn[3] - pb[3]];
-            let mv = Vec3::new(
-                (delta[3].x + delta[2].x * u.z) + (delta[1].x * u.y + delta[0].x * u.x),
-                (delta[3].y + delta[2].y * u.z) + (delta[1].y * u.y + delta[0].y * u.x),
-                (delta[3].z + delta[2].z * u.z) + (delta[1].z * u.y + delta[0].z * u.x),
-            );
             if std::env::var_os("MCLA_DBG_WTOUCH").is_some() {
-                eprintln!("WMOVE part {part} polygon {i} out {:?} dist {:?} pn {:?} pl {:?}", dot3(mv, face), r.distance, pn, pb);
+                eprintln!("WMOVE part {part} polygon {i} dist {:?} pn {:?} pl {:?}", r.distance, pn, pb);
             }
-            if dot3(mv, face) > f32::from_bits(0x38d1_b717) {
+            if moving_out(pn, pb, r.on_a, face) {
                 return;
             }
         }
