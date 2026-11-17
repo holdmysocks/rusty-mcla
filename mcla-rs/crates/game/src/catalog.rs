@@ -23,6 +23,34 @@ pub struct CarInfo {
     pub mods_speed: f32,
     pub base_handling: f32,
     pub mods_handling: f32,
+    /// ShowroomAccel / ShowroomSpeed / ShowroomHndlg (the record's +88, +92, +96; F-87336 copies BaseAccel / BaseSpeed /
+    /// BaseHndlg when the row has none): the showroom's fitted figures (F-60422)
+    pub showroom: [Option<f32>; 3],
+}
+
+/// The live car's figures F-17130 reads: MaxHorsePower (the engine tune's +4), Mass (the set's +112; the live one the
+/// body's +192, which the archetype takes from the tune) and HighGearMPH (the transmission tune's +12).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LiveFigures {
+    pub hp: f32,
+    pub mass: f32,
+    pub high_gear: f32,
+}
+
+impl LiveFigures {
+    pub fn of(t: &mcla_formats::rage::simtune::SimTune) -> LiveFigures {
+        LiveFigures { hp: t.engine.s.max_hp, mass: t.s.mass, high_gear: t.trans.s.high_gear_mph }
+    }
+}
+
+/// F-17130's clamp of a share to 0..1 in its two fsel: below 0 (or NaN) 0, from 1 up 1.
+fn share01(x: f32) -> f32 {
+    let a = if x >= 0.0 { x } else { 0.0 };
+    if a - 1.0 >= 0.0 {
+        1.0
+    } else {
+        a
+    }
 }
 
 impl CarInfo {
@@ -37,6 +65,37 @@ impl CarInfo {
             [speed(self.base_speed), speed(self.mods_speed)],
             [(self.base_handling * 100.0) as i32, (self.mods_handling * 100.0) as i32],
         ]
+    }
+
+    /// The showroom's fitted figures (F-60422 with a showroom item): [acceleration, speed, handling] of the record's
+    /// +88, +92, +96 as F-13938 scales the stock ones.
+    pub fn showroom_meters(&self) -> [i32; 3] {
+        let accel = self.showroom[0].unwrap_or(self.base_accel);
+        let speed = self.showroom[1].unwrap_or(self.base_speed);
+        let hand = self.showroom[2].unwrap_or(self.base_handling);
+        [(accel * 130.0) as i32, ((speed - 100.0) * f32::from_bits(0x3f1b26ca)) as i32, (hand * 100.0) as i32]
+    }
+
+    /// The fitted figures of the live car (F-17130, the garage's cur_ acceleration, speed and handling of the player's
+    /// own car): [acceleration, speed, handling]. `base` / `mods` the car's two tune sets as the `.r50` holds them, `live`
+    /// its built tune, `parts` the record's CarCfgPerf states +17, +18 (suspension), +19 (brakes), +20 (tires),
+    /// `bike` the live car is a motorcycle (F-54299).
+    /// - acceleration: t = clamp((M - L) / (M - B)) of hp / mass, cur = max - t (max - stock);
+    /// - speed: u = clamp(1 - (M - L) / (M - B)) of HighGearMPH, cur = stock - u (stock - max);
+    /// - handling: t = the four states' sum x 50 (motorcycle) or x 13, held to 0..100, cur = stock - (stock - max) (t x 0.01);
+    /// each in single precision, the last step fused, truncated.
+    pub fn live_meters(&self, base: LiveFigures, mods: LiveFigures, live: LiveFigures, parts: [u8; 4], bike: bool) -> [i32; 3] {
+        let [[acc_b, acc_m], [spd_b, spd_m], [hnd_b, hnd_m]] = self.meters();
+        let am = mods.hp / mods.mass;
+        let t = share01((am - live.hp / live.mass) / (am - base.hp / base.mass));
+        let accel = (-t).mul_add((acc_m - acc_b) as f32, acc_m as f32) as i32;
+        let r = (mods.high_gear - live.high_gear) / (mods.high_gear - base.high_gear);
+        let u = share01(1.0 - r);
+        let speed = (-u).mul_add((spd_b - spd_m) as f32, spd_b as f32) as i32;
+        let sum: i32 = parts.iter().map(|&p| p as i32).sum();
+        let lv = (sum * if bike { 50 } else { 13 }).clamp(0, 100);
+        let hand = (-((hnd_b - hnd_m) as f32)).mul_add(lv as f32 * 0.01, hnd_b as f32) as i32;
+        [accel, speed, hand]
     }
 }
 
@@ -102,6 +161,9 @@ fn parse_blocks(text: &str, out: &mut HashMap<String, CarInfo>) {
             "ModsSpeed" => c.mods_speed = f(),
             "BaseHndlg" => c.base_handling = f(),
             "ModsHndlg" => c.mods_handling = f(),
+            "ShowroomAccel" => c.showroom[0] = Some(f()),
+            "ShowroomSpeed" => c.showroom[1] = Some(f()),
+            "ShowroomHndlg" => c.showroom[2] = Some(f()),
             _ => {}
         }
     }
@@ -439,6 +501,30 @@ mod meter_tests {
             let c = CarInfo { base_accel: v[0], mods_accel: v[1], base_speed: v[2], mods_speed: v[3], base_handling: v[4], mods_handling: v[5], ..Default::default() };
             let m = c.meters();
             let got = [m[1][0], m[1][1], m[0][0], m[0][1], m[2][0], m[2][1]];
+            let want: Vec<i32> = o.split(' ').map(|x| x.parse().unwrap()).collect();
+            assert_eq!(got[..], want[..], "{line}");
+            n += 1;
+        }
+        assert!(n >= 4000);
+    }
+
+    #[test]
+    fn garage_cur_meters_match_the_original() {
+        // (tools/garage_cur_meters_reference.py: F-17130 run offline; each line the catalogue row's six fields, the base /
+        // mods / live hp, mass and high gear, the four part bytes and the motorcycle flag, then the ints of its modes 1
+        // (speed), 2 (acceleration) and 3 (handling))
+        let f = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+        let mut n = 0;
+        for line in include_str!("testdata/garage_cur_meters_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = i.split(' ').collect();
+            let v: Vec<f32> = w[..15].iter().map(|s| f(s)).collect();
+            let c = CarInfo { base_accel: v[0], mods_accel: v[1], base_speed: v[2], mods_speed: v[3], base_handling: v[4], mods_handling: v[5], ..Default::default() };
+            let lf = |k: usize| LiveFigures { hp: v[k], mass: v[k + 1], high_gear: v[k + 2] };
+            let parts: Vec<u8> = w[15..19].iter().map(|s| u32::from_str_radix(s, 16).unwrap() as u8).collect();
+            let bike = u32::from_str_radix(w[19], 16).unwrap() != 0;
+            let m = c.live_meters(lf(6), lf(9), lf(12), [parts[0], parts[1], parts[2], parts[3]], bike);
+            let got = [m[1], m[0], m[2]];
             let want: Vec<i32> = o.split(' ').map(|x| x.parse().unwrap()).collect();
             assert_eq!(got[..], want[..], "{line}");
             n += 1;
