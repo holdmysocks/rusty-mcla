@@ -913,6 +913,29 @@ impl PedVoices {
 const VOICE_BASE: u64 = 0x4000_0000;
 const NONE: u32 = 0xFFFF_FFFF;
 
+/// F-39111: the weighted pick of a Randomized sound. The history excludes its children only when it is shorter than the
+/// list; r = rand(0, the sum of the rest) (F-60851), then the first child whose weight takes r to 0 or below; 0 when none.
+fn weighted_pick(rng: &SharedMwc, hist: &[u8], n: usize, children: &[(u32, f32)]) -> usize {
+    let excluded = |i: usize| hist.len() < n && hist.contains(&(i as u8));
+    let mut total = 0.0f32;
+    for (i, c) in children.iter().enumerate() {
+        if !excluded(i) {
+            total += c.1;
+        }
+    }
+    let mut r = rng.float(0.0, total);
+    for (i, c) in children.iter().enumerate() {
+        if excluded(i) {
+            continue;
+        }
+        r -= c.1;
+        if r <= 0.0 {
+            return i;
+        }
+    }
+    0
+}
+
 impl SoundLib {
     /// `root` = the converted audio (`audio_pc`), `cfg` = `audio/X360/config` of the extracted cache.
     pub fn load(root: &Path, cfg: &Path) -> Option<SoundLib> {
@@ -1749,24 +1772,13 @@ impl SoundLib {
         }
         let (idx, hist) = self.history.entry(hash).or_insert_with(|| (0, vec![0xFF; hlen])).clone();
         if h.tristate(5) == 1 {
-            let i = (idx + 1) % n;
-            self.history.insert(hash, (i, hist));
+            // F-15148: the child at the stored index, then the index moves on ((idx - 1) mod n with a step variable
+            // below 0: no sound of the disc has one)
+            let i = idx % n;
+            self.history.insert(hash, ((i + 1) % n, hist));
             return Some(children[i].0);
         }
-        let excluded = |i: usize| hlen < n && hist.contains(&(i as u8));
-        let total: f32 = children.iter().enumerate().filter(|(i, _)| !excluded(*i)).map(|(_, c)| c.1).sum();
-        let mut r = self.rng.float(0.0, total);
-        let mut chosen = 0;
-        for (i, c) in children.iter().enumerate() {
-            if excluded(i) {
-                continue;
-            }
-            r -= c.1;
-            if r <= 0.0 {
-                chosen = i;
-                break;
-            }
-        }
+        let chosen = weighted_pick(&self.rng, &hist, n, children);
         if hlen > 0 {
             let mut hist = hist;
             let at = idx % hlen;
@@ -3726,6 +3738,30 @@ mod tests {
         assert_eq!(n, 3934);
     }
 
+    /// A Randomized sound's weighted pick (F-39111) against the original's code run offline with the game's rand
+    /// (tools/sound_pick_reference.py): every Randomized payload of sounds.dat with an empty and random histories, and 3,000
+    /// random lists (zero, equal, tiny and huge weights) - the index and the generator's state after, bit for bit.
+    #[test]
+    fn weighted_picks_match_the_original() {
+        use super::*;
+        let mut n = 0;
+        for l in include_str!("testdata/sound_pick_ref.txt").lines() {
+            let (inp, out) = l.split_once(" -> ").unwrap();
+            let v = |t: &str| u32::from_str_radix(&t[1..], 16).unwrap();
+            let t: Vec<&str> = inp.split_whitespace().collect();
+            let hist: Vec<u8> = t.iter().filter(|x| x.starts_with('x')).map(|x| v(x) as u8).collect();
+            let kids: Vec<(u32, f32)> = t.iter().filter(|x| x.starts_with('w')).map(|x| (0, f32::from_bits(v(x)))).collect();
+            assert_eq!((hist.len() as u32, kids.len() as u32), (v(t[2]), v(t[3])));
+            let o: Vec<u32> = out.split_whitespace().map(v).collect();
+            set_audio_rng_state((v(t[0]), v(t[1])));
+            let i = weighted_pick(&SharedMwc, &hist, kids.len(), &kids);
+            let st = audio_rng_state();
+            assert_eq!((i as u32, st.0, st.1), (o[0], o[1], o[2]), "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 5559);
+    }
+
     /// The XMA start (F-86924): every play-from-ms of a recorded drive (ms, the voice's rate, the start sample handed to the
     /// seek F-68498; work/audio2/spdrec x1, verify_audio_b1.md batch 63) equals `xma_start_frame`.
     #[test]
@@ -4158,6 +4194,25 @@ mod tests {
             println!("{name}: first update {first:?}, second {second:?}");
             assert!(!first.is_empty(), "{name}: plays the update it was started");
             assert!(second.is_empty(), "{name}: killed at the next update");
+        }
+    }
+
+    /// A Randomized in step mode (tristate 5; 37 sounds of the disc) plays the child at the stored index, then moves the
+    /// index on (F-15148): its first play is the first child, the order 0, 1, .. n-1, 0.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn a_step_randomized_starts_at_its_first_child() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let mut lib = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
+        for name in ["NITROUS_EMPTY_RAND", "PARKED_CAR_ALARMS_RAND_01", "LARGE_L_RAND_2ND_PASS"] {
+            let hash = joaat(name);
+            let s = audcfg::parse_sound(lib.snd.get(hash).expect(name));
+            let audcfg::Payload::Randomized { history_len, children, .. } = s.payload else { panic!("{name}") };
+            assert_eq!(s.header.tristate(5), 1, "{name}");
+            let got: Vec<u32> = (0..children.len() + 1).map(|_| lib.pick(hash, &s.header, history_len as usize, &children).unwrap()).collect();
+            let want: Vec<u32> = (0..children.len() + 1).map(|i| children[i % children.len()].0).collect();
+            assert_eq!(got, want, "{name}");
         }
     }
 
