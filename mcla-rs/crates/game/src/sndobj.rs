@@ -457,7 +457,7 @@ enum St {
 }
 
 enum Kind {
-    Wave { wave: Option<WaveInfo>, clip: Option<Arc<Clip>>, voice: u64, pos_ms: f32, dur_ms: f32, looping: bool },
+    Wave { wave: Option<WaveInfo>, clip: Option<Arc<Clip>>, voice: u64, pos_ms: f32, dur_ms: f32, looping: bool, run: bool },
     Stream { clip: Option<Arc<Clip>>, headroom: f32, voice: u64, pos_ms: f32, dur_ms: f32, looping: bool },
     /// Wrapper, Multitrack, Streaming fallback, OnStop's child, approximations
     Group { children: Vec<Node> },
@@ -1619,14 +1619,14 @@ impl SoundLib {
                     let clip = self.clip_of(&w.file.clone(), w.loop_start);
                     let waiting = clip.is_none() && self.make_wait.as_ref().is_some_and(|f| f.iter().any(|f| f.0 == w.file));
                     let dur_ms = w.dur_ms.filter(|_| clip.is_some() || waiting).or_else(|| clip.as_ref().map(|c| c.frames() as f32 * 1000.0 / c.rate as f32)).unwrap_or(0.0);
-                    Kind::Wave { looping: w.loop_start >= 0, wave: Some(w), clip, voice: self.voice_id(), pos_ms: 0.0, dur_ms }
+                    Kind::Wave { looping: w.loop_start >= 0, wave: Some(w), clip, voice: self.voice_id(), pos_ms: 0.0, dur_ms, run: false }
                 } else if let Some((mp3, h0, _)) = self.stream_index().get(&wave).cloned() {
                     // a stream channel: the converted file holds every channel folded to stereo
                     let clip = self.clip_of(&mp3, -1);
                     let dur_ms = clip.as_ref().map(|c| c.frames() as f32 * 1000.0 / c.rate as f32).unwrap_or(0.0);
                     Kind::Stream { clip, headroom: h0 as f32 * 0.01, voice: self.voice_id(), pos_ms: 0.0, dur_ms, looping: false }
                 } else {
-                    Kind::Wave { wave: None, clip: None, voice: 0, pos_ms: 0.0, dur_ms: 0.0, looping: false }
+                    Kind::Wave { wave: None, clip: None, voice: 0, pos_ms: 0.0, dur_ms: 0.0, looping: false, run: false }
                 }
             }
             Payload::Streaming { duration_ms, children } => {
@@ -1848,7 +1848,7 @@ impl SoundLib {
         let dur_ms = wave.as_ref().and_then(|w| w.dur_ms).or_else(|| clip.as_ref().map(|c| c.frames() as f32 * 1000.0 / c.rate as f32)).unwrap_or(0.0);
         let voice = self.voice_id();
         let looping = wave.as_ref().is_some_and(|w| w.loop_start >= 0);
-        let root = Node { h, vol, pitch, pan: -1, predelay_ms: 0.0, start_ms: 0.0, st: St::Waiting, t: 0.0, play_t: 0.0, clock: Clock::default(), env0: 0.0, tot: (0, 0), ty_ms: 0, kind: Kind::Wave { wave, clip, voice, pos_ms: 0.0, dur_ms, looping } };
+        let root = Node { h, vol, pitch, pan: -1, predelay_ms: 0.0, start_ms: 0.0, st: St::Waiting, t: 0.0, play_t: 0.0, clock: Clock::default(), env0: 0.0, tot: (0, 0), ty_ms: 0, kind: Kind::Wave { wave, clip, voice, pos_ms: 0.0, dur_ms, looping, run: false } };
         let id = self.next;
         self.next += 1;
         let timer = Some(self.timer_of(&root.h));
@@ -2271,9 +2271,9 @@ impl SoundLib {
         let child_po = (n.tot.1, false);
         let releasing = n.clock.stopped;
         let done = match &mut n.kind {
-            Kind::Wave { clip, wave, voice, pos_ms, dur_ms, looping } => {
+            Kind::Wave { clip, wave, voice, pos_ms, dur_ms, looping, run } => {
                 let Some(c) = clip.clone() else { n.st = St::Done; return };
-                if *pos_ms == 0.0 {
+                if !*run {
                     *pos_ms = if *looping { offset % dur_ms.max(1.0) } else { offset };
                 }
                 if self.voice_jump.remove(voice) {
@@ -2284,13 +2284,19 @@ impl SoundLib {
                     true
                 } else {
                     let ratio = 2f32.powf(ctx.pitch as f32 / 1200.0);
+                    // the position pass F-71931 runs in the voice manager before the pick: a voice's slot is taken at its
+                    // first update (F-93155 -> the record at the start offset), that update's pass only marks it (slot
+                    // flag 0x08), every later one moves it on by this update's time before the voice is (re)started
+                    if *run {
+                        *pos_ms += ms * ratio;
+                        if *looping && *pos_ms >= *dur_ms {
+                            let ls = wave.as_ref().and_then(|w| w.loop_ms).unwrap_or(c.loop_start as f32 * 1000.0 / c.rate as f32);
+                            *pos_ms = ls + (*pos_ms - *dur_ms) % (*dur_ms - ls).max(1.0);
+                        }
+                    }
+                    *run = true;
                     let headroom = wave.as_ref().map(|w| w.headroom as f32 * 0.01).unwrap_or(0.0);
                     out.push(Leaf { voice: *voice, clip: c.clone(), ctx, headroom, start_frame: xma_start_frame(*pos_ms, c.rate), looping: *looping, stereo: false });
-                    *pos_ms += ms * ratio;
-                    if *looping && *pos_ms >= *dur_ms {
-                        let ls = wave.as_ref().and_then(|w| w.loop_ms).unwrap_or(c.loop_start as f32 * 1000.0 / c.rate as f32);
-                        *pos_ms = ls + (*pos_ms - *dur_ms) % (*dur_ms - ls).max(1.0);
-                    }
                     false
                 }
             }
@@ -3422,7 +3428,8 @@ fn reset_node(n: &mut Node) {
     n.clock = Clock::default();
     n.tot = (0, 0);
     match &mut n.kind {
-        Kind::Wave { pos_ms, .. } | Kind::Stream { pos_ms, .. } => *pos_ms = 0.0,
+        Kind::Wave { pos_ms, run, .. } => (*pos_ms, *run) = (0.0, false),
+        Kind::Stream { pos_ms, .. } => *pos_ms = 0.0,
         Kind::Group { children } => children.iter_mut().for_each(reset_node),
         Kind::Twin { children, clock, played, .. } => {
             (*clock, *played) = (0.0, false);
@@ -3996,7 +4003,7 @@ mod tests {
             let mut one = || Box::new(ch.remove(0));
             let mut ty_ms = 0;
             let kind = match t {
-                12 => Kind::Wave { wave: None, clip: None, voice: 0, pos_ms: 0.0, dur_ms: p[0] as u32 as i32 as f32, looping: p[1] != 0 },
+                12 => Kind::Wave { wave: None, clip: None, voice: 0, pos_ms: 0.0, dur_ms: p[0] as u32 as i32 as f32, looping: p[1] != 0, run: false },
                 1 => Kind::Looping { child: one(), child_hash: 0, count: p[0] as i16, restart_ms: 0, plays: 0, child_off: None },
                 2 => Kind::Envelope { a: p[0] as f32, d: p[1] as f32, s: p[4] as f32 * 0.01, hold: p[2] as f32, r: p[3] as f32, curves: [0; 3], child: one(), rel_from: None },
                 5 => Kind::OnStop { child: one(), on_stop: 0, stopped: None },
