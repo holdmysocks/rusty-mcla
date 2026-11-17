@@ -6134,7 +6134,7 @@ impl Vehicles {
         let Some((name, shade)) = trailer_pick(&mut r.mwc, |n| models.iter().any(|m| m.name.eq_ignore_ascii_case(n))) else { return };
         let Some(mi) = self.models.iter().position(|m| m.name.eq_ignore_ascii_case(name)) else { return };
         let (cp, cr) = (self.cars[cab].state.pos, self.cars[cab].state.rot);
-        let pos = cp + cr * CAB_HITCH - cr * TRAILER_HITCH;
+        let pos = trailer_place(cp, cr * Vec3::Z, CAB_HITCH, TRAILER_HITCH);
         let mname = self.models[mi].name.clone();
         let tty = *self.amb_types.entry(mname.clone()).or_insert_with(|| AmbType::load(root, &mname));
         let color = tty.color(shade).unwrap_or(super::TRAFFIC_PALETTE[shade % super::TRAFFIC_PALETTE.len()]);
@@ -9957,6 +9957,37 @@ pub fn heading_of(x: f32, z: f32) -> f32 {
     h
 }
 
+/// F-15197: b - a, both wrapped into (0, 2 pi], the difference into [-pi, pi).
+pub fn angle_diff(a: f32, b: f32) -> f32 {
+    const TAU: f32 = 6.2831855;
+    const PI: f32 = 3.1415927;
+    let wrap = |mut x: f32| {
+        while x <= 0.0 {
+            x += TAU;
+        }
+        while x > TAU {
+            x -= TAU;
+        }
+        x
+    };
+    let mut d = wrap(b) - wrap(a);
+    while d < -PI {
+        d += TAU;
+    }
+    while d >= PI {
+        d -= TAU;
+    }
+    d
+}
+
+/// The trailer's place in F-45988: the cab's place (F-58860) + its hitch - the trailer's (the types' hitch vectors,
+/// F-45572), both turned about y by the cab's heading against +z (F-10286 of the cab's z row and of (0, 0, 1), F-15197,
+/// F-57591) - the heading only, not the cab's pitch or roll; the trailer takes the cab's rotation rows as they are.
+pub fn trailer_place(cab_pos: Vec3, cab_z: Vec3, cab_hitch: Vec3, trailer_hitch: Vec3) -> Vec3 {
+    let a = angle_diff(heading_of(0.0, 1.0), heading_of(cab_z.x, cab_z.z));
+    cab_pos + crate::aiv::rot_y(cab_hitch, a) - crate::aiv::rot_y(trailer_hitch, a)
+}
+
 impl PathRails {
     /// The heading of the spawn matrix (F-10286: atan2(z row x, z row z) in (0, 2 pi]).
     pub fn heading(&self) -> f32 {
@@ -11373,6 +11404,24 @@ mod original_curve_tests {
             n += 1;
         }
         assert_eq!(n, 126);
+    }
+
+    /// The trailer's place in F-45988 (heading F-10286, angle difference F-15197, rotation about y F-57591, the hitch
+    /// getter F-45572) against the original's code run offline (tools/trailer_place_reference.py ->
+    /// testdata/trailer_place_ref.txt: 4,000 cabs, every third with the real hitch vectors, pitch up to 1.5 rad).
+    #[test]
+    fn trailer_place_matches_the_original() {
+        let mut n = 0;
+        for line in include_str!("testdata/trailer_place_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<f32> = i.split(' ').map(|x| f32::from_bits(u32::from_str_radix(x, 16).unwrap())).collect();
+            let want: Vec<u32> = o.split(' ').map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let v = |k: usize| Vec3::new(w[k], w[k + 1], w[k + 2]);
+            let got = trailer_place(v(2), Vec3::new(w[0], 0.0, w[1]), v(5), v(8));
+            assert_eq!([got.x.to_bits(), got.y.to_bits(), got.z.to_bits()], [want[0], want[1], want[2]], "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 4000);
     }
 
     /// F-10286: the spawn matrix heading (guest atan2 wrapped to (0, 2 pi]) against the original's code run offline
