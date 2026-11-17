@@ -1729,6 +1729,12 @@ pub struct Drivers {
     models: HashMap<usize, Option<Arc<SkinModel>>>,
     /// (car key, the local human's pack, the female pack, driver set)
     rigs: HashMap<(String, bool, bool, usize), Option<Rig>>,
+    /// (D59) the keys whose rig once loaded: a rig no seat uses is dropped (`evict_rigs`) and loaded again
+    /// the same (it is the key's and the files' alone) when a seat with that key wants it, so a machine that
+    /// stepped because the rig was there still steps
+    rig_seen: std::collections::HashSet<(String, bool, bool, usize)>,
+    /// a car's DRV_HIT_HRD length, kept when its rig is dropped
+    hit_hard: HashMap<String, f32>,
     poses: HashMap<usize, Pose>,
     buf: SkinBuffer,
     /// the player's head in car space (for the cockpit camera)
@@ -2112,8 +2118,13 @@ impl Drivers {
 
     /// The length of a car's DRV_HIT_HRD clip, once its driver is loaded.
     pub fn hit_hard_secs(&self, car: &str) -> Option<f32> {
-        let k = car_key(car);
-        self.rigs.iter().filter(|((c, _, _, _), _)| *c == k).find_map(|(_, r)| r.as_ref()?.hit_hard)
+        self.hit_hard.get(&car_key(car)).copied()
+    }
+
+    /// Drop the rigs (each a whole bound clip set) whose key no seat has now (D59: memory only - `rig_seen`).
+    fn evict_rigs(&mut self, seats: &[Seat]) {
+        let used: std::collections::HashSet<_> = seats.iter().filter_map(|s| Some((car_key(s.car), s.player, is_female(s.set), self.pick_set(s)?))).collect();
+        self.rigs.retain(|k, r| r.is_none() || used.contains(k));
     }
 
     fn rig(&mut self, gpu: &mut Gpu, car: &str, bike: bool, player: bool, female: bool, si: usize) -> bool {
@@ -2175,7 +2186,12 @@ impl Drivers {
                 let dofw = [dof_weights(&model.spine_bones), dof_weights(&model.neck_bones), dof_weights(&nf)];
                 Some(Rig { steer, idle_stop: clip(&["drv_idle_stp"]), reverse: clip(&["drv_rev"]), model, gestures, hit_hard, ejects, bike, dict, clips, dofw })
             })();
-            if rig.is_none() {
+            if let Some(r) = &rig {
+                if let Some(h) = r.hit_hard {
+                    self.hit_hard.entry(key.0.clone()).or_insert(h);
+                }
+                self.rig_seen.insert(key.clone());
+            } else {
                 log::warn!("drivers: no animations for {}", car);
             }
             self.rigs.insert(key.clone(), rig);
@@ -2288,7 +2304,11 @@ impl Drivers {
             for s in seats {
                 let (Some(d), false) = (s.drv.as_ref(), s.bike) else { continue };
                 let Some(si) = self.pick_set(s) else { continue };
-                let Some(Some(rig)) = self.rigs.get(&(car_key(s.car), s.player, is_female(s.set), si)) else { continue };
+                let key = (car_key(s.car), s.player, is_female(s.set), si);
+                if !self.rigs.contains_key(&key) && self.rig_seen.contains(&key) {
+                    self.rig(gpu, s.car, s.bike, s.player, key.2, si);
+                }
+                let Some(Some(rig)) = self.rigs.get(&key) else { continue };
                 // (the racer's +144, the character's name: the faces are `<name>_<set>`; the hi-res model is the set's `_h`)
                 let set = self.sets[si].0.trim_end_matches("_h").to_string();
                 let a = self.cars.entry(s.uid).or_insert_with(|| CarAnim::new(&set, [0x2f6b_6f5d, 0x0000_3039]));
@@ -2569,6 +2589,9 @@ impl Drivers {
             if s.player {
                 self.player_head = rig.model.head.and_then(|h| self.buf.bone_pos(h)).map(|w| s.mat.inverse().transform_point3(w));
             }
+        }
+        if self.frame % 300 == 0 {
+            self.evict_rigs(seats);
         }
         if self.frame == 50 {
             log::info!("drivers: {} seats, {} rigs, {} poses", seats.len(), self.rigs.len(), self.poses.len());
