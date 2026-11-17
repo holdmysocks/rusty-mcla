@@ -33,6 +33,8 @@ enum Step {
     /// an asset spoken by the sender (0) or the receiver (1) of the call
     Play { asset: String, group: String, role: u8 },
     Special { name: String, role: u8 },
+    /// a WaitTime: the next line waits this long after the last one's sound ended
+    Wait(f32),
 }
 
 /// What a call may mention.
@@ -93,6 +95,10 @@ pub struct Radio {
     dispatchers: Vec<(String, f32, f32)>,
     /// a voice -> its banks (speech.dat's POLICE_RADIO\<voice>_<part> and SC_<voice>)
     voice_banks: HashMap<String, HashSet<String>>,
+    /// a bank's folder by its name hash: "0x<hash>", or the name the extraction gave it when the hash matched a name
+    /// of its dictionary (DISPATCHER_2_A is in "G_RemoveItemsFromCart.xsc", DISPATCHER_01_R / _S in "U-Tk.xsc" /
+    /// "U-Tk.xsd": the same joaat)
+    dirs: HashMap<u32, String>,
     /// the call signs of the lead cruiser and of a second one, as the cars' sounds hand them out (`Sound::radio_units`)
     pub units: (Option<String>, Option<String>),
     /// a scenario's `frequency` in s (default 10) and `priority`; its last start on `clock` and the wording it took
@@ -142,7 +148,17 @@ impl Radio {
         if let Ok(rd) = std::fs::read_dir(audio_root.join("police_radio")) {
             for e in rd.flatten() {
                 let bank = e.file_name().to_string_lossy().to_string();
-                let Ok(t) = std::fs::read_to_string(e.path().join("_index.tsv")) else { continue };
+                let h = bank.strip_prefix("0x").and_then(|x| u32::from_str_radix(x, 16).ok()).unwrap_or_else(|| joaat(&bank));
+                r.dirs.insert(h, format!("police_radio/{bank}"));
+                // (a folder of an older conversion without its index: the waves are named by their hash)
+                let t = std::fs::read_to_string(e.path().join("_index.tsv")).unwrap_or_else(|_| {
+                    std::fs::read_dir(e.path())
+                        .into_iter()
+                        .flatten()
+                        .flatten()
+                        .filter_map(|f| f.file_name().to_string_lossy().strip_suffix(".wav").map(|n| format!("{n}\t{n}\n")))
+                        .collect()
+                });
                 for line in t.lines() {
                     let mut c = line.split('\t');
                     let (Some(name), Some(hash)) = (c.next(), c.next()) else { continue };
@@ -187,7 +203,8 @@ impl Radio {
                 let core = name.strip_prefix("SC_").unwrap_or(&name).replace("DISPATCHER_2_", "DISPATCHER_02_");
                 let core = if core == "DISPATCHER_2" { "DISPATCHER_02".to_string() } else { core };
                 if let Some(v) = voices.iter().filter(|v| core == **v || core.starts_with(&format!("{v}_"))).max_by_key(|v| v.len()) {
-                    r.voice_banks.entry(v.clone()).or_default().insert(format!("police_radio/0x{:08x}", joaat(&name)));
+                    let bank = r.bank(joaat(&name));
+                    r.voice_banks.entry(v.clone()).or_default().insert(bank);
                 }
                 i = end.max(st);
             }
@@ -212,12 +229,17 @@ impl Radio {
                         if let Some(n) = attr(l, "name") {
                             steps.push(Step::Special { name: n.to_string(), role });
                         }
+                    } else if l.starts_with("<WaitTime") {
+                        if let Some(t) = attr(l, "value").and_then(|v| v.parse::<f32>().ok()) {
+                            steps.push(Step::Wait(t));
+                        }
                     }
                 }
                 // (a freeway report is all SpecialCase)
                 if steps.iter().any(|s| match s {
                     Step::Play { .. } => true,
                     Step::Special { name, .. } => !name.ends_with("_SQUELCH"),
+                    Step::Wait(_) => false,
                 }) {
                     wordings.push(steps);
                 }
@@ -229,6 +251,11 @@ impl Radio {
         }
         log::info!("police radio: {} calls, {} clips, {} officers, {} dispatchers, {} voices with banks", r.scenarios.len(), r.clips.len(), r.officers.len(), r.dispatchers.len(), r.voice_banks.len());
         r
+    }
+
+    /// A bank's folder ("police_radio/0x<hash>" when none is found).
+    fn bank(&self, h: u32) -> String {
+        self.dirs.get(&h).cloned().unwrap_or_else(|| format!("police_radio/0x{h:08x}"))
     }
 
     pub fn loaded(&self) -> bool {
@@ -433,11 +460,16 @@ impl Radio {
         let is_dispatch = |v: &Option<String>| v.as_ref().is_some_and(|v| disp.contains(v));
         let dir = direction(ctx.heading, self.road_dir);
         // (clip, role) in order; squelches are filled in afterwards
-        let mut line: Vec<(Option<String>, u8, bool, usize)> = Vec::new();
+        // (clip, role, pre squelch, step, WaitTime: role 2)
+        let mut line: Vec<(Option<String>, u8, bool, usize, f32)> = Vec::new();
         let mut said: Vec<String> = Vec::new();
         for (si, st) in steps.iter().enumerate() {
             let (asset, role): (String, u8) = match st {
                 Step::Play { asset, role, .. } => (asset.clone(), *role),
+                Step::Wait(t) => {
+                    line.push((None, 2, false, si, *t));
+                    continue;
+                }
                 Step::Special { name, role } => {
                     let r = *role as usize;
                     // the dispatcher names the other party's call sign; an officer calls dispatch (F-28061)
@@ -448,7 +480,7 @@ impl Radio {
                     };
                     let a = match name.as_str() {
                         "PRE_SQUELCH" | "POST_SQUELCH" => {
-                            line.push((None, *role, name == "PRE_SQUELCH", si));
+                            line.push((None, *role, name == "PRE_SQUELCH", si, 0.0));
                             continue;
                         }
                         "FREEWAY_ENTER" | "FREEWAY_EXIT" if !self.ramp.is_empty() => format!("{name}_{}", self.ramp),
@@ -478,18 +510,20 @@ impl Radio {
             }
             let k = takes[self.take(&key, pick, si, takes.len())].clone();
             said.push(format!("{v}:{asset}"));
-            line.push((Some(k), role, false, si));
+            line.push((Some(k), role, false, si, 0.0));
         }
         if !line.iter().any(|l| l.0.is_some()) {
             return false;
         }
         self.playing = priority;
-        for (clip, role, pre, si) in line {
+        for (clip, role, pre, si, t) in line {
             match clip {
                 Some(k) => self.queue.push_back((k, 0.7)),
+                // (an empty name: a WaitTime of t s)
+                None if role == 2 => self.queue.push_back((String::new(), t)),
                 None => {
                     // the click of the speaker's set
-                    let bank = format!("police_radio/0x{:08x}", joaat(if is_dispatch(&voice[role as usize]) { "POLICE_RADIO_SQUELCH_DISPATCH" } else { "POLICE_RADIO_SQUELCH_OFFICER" }));
+                    let bank = self.bank(joaat(if is_dispatch(&voice[role as usize]) { "POLICE_RADIO_SQUELCH_DISPATCH" } else { "POLICE_RADIO_SQUELCH_OFFICER" }));
                     let takes: Vec<String> = self.takes(if pre { "PRE_SQUELCH" } else { "POST_SQUELCH" }).into_iter().filter(|k| bank_of(k) == bank).collect();
                     if !takes.is_empty() {
                         let k = takes[self.take(&key, pick, si, takes.len())].clone();
@@ -533,6 +567,10 @@ impl Radio {
                 self.wait = 0.0;
                 return;
             };
+            if key.is_empty() {
+                self.wait = vol;
+                continue;
+            }
             // (D59: the length from the wave's chunk headers; its samples are read by the take's slot play)
             let dur = a.clip_secs(&key);
             if dur > 0.0 {
@@ -540,7 +578,11 @@ impl Radio {
                 if !a.obj_clip(&key, "SPEECH_POLICE", None) {
                     a.play(&key, vol);
                 }
-                self.wait = dur + 0.04;
+                // the next line starts when this one's sound has ended (F-78934's end callback, then the next line's
+                // WaitTime counted from there, F-35459: +392 >= +400) - one after the other, the squelches too, no gap
+                // of their own. Recorded on the original (h1, hookmen2): a squelch ended at update 455 and the word
+                // started in it; the receiver's squelch started 9 updates after the end with +392 0.503 >= 0.5
+                self.wait = dur;
             }
         }
     }
@@ -693,6 +735,23 @@ mod tests {
     /// A call keeps its two voices for all its lines (GitHub #17: the description changed voice word by word): every
     /// clip a call queues is in the sender's or the receiver's banks or a squelch set, the sender of a REPORT_* call is
     /// the lead cruiser, its receiver the dispatcher on shift; DISPATCH_REPORT_* go the other way.
+    /// The recorded call of h1 (hookmen2, the original running): REPORT_SUSPECT_DESTRUCTION is squelch, word, squelch,
+    /// then the receiver's squelch 0.5 s after the end (its WaitTime), word, squelch - one after the other; the port
+    /// queues the WaitTime and starts each clip when the one before ends.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn a_call_waits_its_wait_time() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let mut r = Radio::load(&dir, a.root());
+        r.units = (Some("3ADAM5".into()), None);
+        assert!(r.say_from("REPORT_SUSPECT_DESTRUCTION", "3ADAM5".into(), "DISPATCH".into(), &Ctx { hour: 12.0, ..Default::default() }));
+        let q: Vec<(bool, f32)> = r.queue.iter().map(|(k, t)| (k.is_empty(), *t)).collect();
+        assert_eq!(q.len(), 7, "{:?}", r.queue);
+        assert_eq!(q[3], (true, 0.5));
+        assert!(q.iter().enumerate().all(|(i, e)| e.0 == (i == 3)));
+    }
+
     #[test]
     #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
     fn a_call_keeps_its_voices() {
@@ -728,7 +787,7 @@ mod tests {
                     assert_eq!((sv.as_str(), rv.clone()), ("4ADAM8", want), "{name}");
                 }
                 let mut voices: HashSet<&str> = HashSet::new();
-                for (clip, _) in &r.queue {
+                for (clip, _) in r.queue.iter().filter(|q| !q.0.is_empty()) {
                     let b = bank_of(clip).to_string();
                     if squelch.contains(&b) {
                         continue;
