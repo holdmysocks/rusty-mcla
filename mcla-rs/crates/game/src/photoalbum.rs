@@ -2,10 +2,10 @@
 //! `tune/ui/PhotoAlbum.sc.xml` and `tune/ui/photo/*.sc.xml` (SnapShot, SS_SeeFullScreenPhoto,
 //! PhotoAlbum with its sixteen `photo/Slot.sc` slots, PA_ChooseSlot, LocalMode,
 //! FullScreenPicture, PA_LoadFile / PA_SaveFile and the two message boxes), the album object
-//! `mcPhotoAlbum` (script methods sub_8263FA10: PhotoSlotChosen 0, SetPreviewPicture 1
-//! (sub_8263DFC0), ShowNextPhoto 6 (sub_8263CDC0), ShowPreviousPhoto 7 (sub_8263CE88),
-//! LoadPhotoAlbum 8 (sub_8263E428), SaveSnapshot 10, PostLoad 20, PostSave 21; the write
-//! sub_8263DCF8) and its movie `photoalbum` (`resources/ui/photoalbum/0xdfc28929.r27`), which
+//! `mcPhotoAlbum` (script methods F-99626: PhotoSlotChosen 0, SetPreviewPicture 1
+//! (F-27283), ShowNextPhoto 6 (F-56999), ShowPreviousPhoto 7 (F-33302),
+//! LoadPhotoAlbum 8 (F-12232), SaveSnapshot 10, PostLoad 20, PostSave 21; the write
+//! F-67304) and its movie `photoalbum` (`resources/ui/photoalbum/0xdfc28929.r27`), which
 //! lays itself out from the variables the states write (`cur_visibility*`, `overwritemode`,
 //! `helptext`, `cur_Selection`, `empty_slot`, `preview_letterbox`, `takephoto_trig`, ...).
 //! Notes: `work/career2/gasphoto/notes.md` section 2, `work/career2/photo/`; log in
@@ -82,7 +82,7 @@ pub fn grid_move(k: usize, d: Dir) -> usize {
     }
 }
 
-/// sub_8263DC38: the slot the chooser opens on - the first free one, slot 0 when all are used.
+/// F-93904: the slot the chooser opens on - the first free one, slot 0 when all are used.
 pub fn first_free(used: &[bool; SLOTS]) -> usize {
     used.iter().position(|u| !u).unwrap_or(0)
 }
@@ -93,7 +93,7 @@ fn is_used(used: &[bool; SLOTS], k: usize) -> bool {
     used.get(k).copied().unwrap_or(false)
 }
 
-/// ShowNextPhoto (sub_8263CDC0): from the cursor on, the next used slot (after 15 comes 0),
+/// ShowNextPhoto (F-56999): from the cursor on, the next used slot (after 15 comes 0),
 /// sixteen tries; None when there is none.
 pub fn next_used(used: &[bool; SLOTS], k: usize) -> Option<usize> {
     let mut k = k;
@@ -109,7 +109,7 @@ pub fn next_used(used: &[bool; SLOTS], k: usize) -> Option<usize> {
     None
 }
 
-/// ShowPreviousPhoto (sub_8263CE88): the previous used slot; below 0 the original goes to 16
+/// ShowPreviousPhoto (F-33302): the previous used slot; below 0 the original goes to 16
 /// (a slot that is never used, so the next try is 15), sixteen tries.
 pub fn prev_used(used: &[bool; SLOTS], k: usize) -> Option<usize> {
     let mut k = k as i32;
@@ -125,7 +125,7 @@ pub fn prev_used(used: &[bool; SLOTS], k: usize) -> Option<usize> {
     None
 }
 
-/// SetPreviewPicture's prompt (sub_8263DFC0): 9 with a snapshot waiting for a slot; else 8 on
+/// SetPreviewPicture's prompt (F-27283): 9 with a snapshot waiting for a slot; else 8 on
 /// a used slot, 56 on a free one while the album holds pictures (+856 > 0), 58 when it is empty.
 pub fn preview_prompt(pending: bool, used_k: bool, count: usize) -> u8 {
     if pending {
@@ -139,7 +139,7 @@ pub fn preview_prompt(pending: bool, used_k: bool, count: usize) -> u8 {
     }
 }
 
-/// PhotoSlotChosen's prompt as it goes full screen (0x8263FC2C): 10 with more than one picture,
+/// PhotoSlotChosen's prompt as it goes full screen (A-10334): 10 with more than one picture,
 /// else 57.
 pub fn full_prompt(count: usize) -> u8 {
     if count > 1 {
@@ -149,8 +149,8 @@ pub fn full_prompt(count: usize) -> u8 {
     }
 }
 
-/// The prompt sets (sub_8220F040: static lists built by sub_827B51B0 (7), sub_827B5258 (8),
-/// sub_827B52D8 (9), sub_827B5330 (10), sub_827B5398 (11); 56 / 57 / 58 written in place):
+/// The prompt sets (F-40654: static lists built by F-73259 (7), F-29965 (8),
+/// F-22161 (9), F-44052 (10), F-90804 (11); 56 / 57 / 58 written in place):
 /// (string key, button icon) in the game's order.
 pub fn prompt_rows(n: u8) -> &'static [(&'static str, i32)] {
     match n {
@@ -177,7 +177,7 @@ pub struct PhotoAlbum {
     pub pending: bool,
     /// the album was entered from SnapShot (its B / YES pop back there), not from the pause menu
     pub from_snap: bool,
-    /// 0x8290621C: the album read since the city came back (EnableCity clears it - sub_8263D1E0)
+    /// 0x8290621C: the album read since the city came back (EnableCity clears it - F-69080)
     pub loaded: bool,
     /// the prompt set on the bar (`game.setPrompt`)
     pub prompt: u8,
@@ -190,7 +190,7 @@ pub struct PhotoAlbum {
     shot: Option<egui::TextureHandle>,
     /// pictures still to read while PA_LoadFile stands
     to_load: Vec<usize>,
-    /// a used slot's picture to decode into PreviewPicture (F-73137 through sub_8263C9C8), and a slot
+    /// a used slot's picture to decode into PreviewPicture (F-73137 through F-76200), and a slot
     /// whose grid picture is to be made again after a save - both done where the textures are made
     want_preview: Option<usize>,
     reload: Option<usize>,
@@ -501,9 +501,9 @@ impl Game {
         self.pa_preview(k);
     }
 
-    /// SetPreviewPicture (sub_8263DFC0): +1180 = k, the prompt, `empty_slot`, `preview_letterbox`
+    /// SetPreviewPicture (F-27283): +1180 = k, the prompt, `empty_slot`, `preview_letterbox`
     /// (the picture's 16:9 flag against the screen's: always both 16:9 in the port), and the
-    /// slot's picture into PreviewPicture (sub_8263C9C8; a free slot only sets `empty_slot`).
+    /// slot's picture into PreviewPicture (F-76200; a free slot only sets `empty_slot`).
     fn pa_preview(&mut self, k: usize) {
         self.album.sel = k;
         let used_k = self.album.used[k];
@@ -515,7 +515,7 @@ impl Game {
         self.pa_show_slot(k);
     }
 
-    /// sub_8263C9C8: a used slot's picture becomes PreviewPicture; a free one sets `empty_slot`.
+    /// F-76200: a used slot's picture becomes PreviewPicture; a free one sets `empty_slot`.
     fn pa_show_slot(&mut self, k: usize) {
         if self.album.used[k] {
             // (the slot's file decoded whole, F-73137: done where the textures are made - `photo_album_ui`)
@@ -537,7 +537,7 @@ impl Game {
     }
 
     /// The `PhotoAlbum` state focused (DisableCity, the album shown, `menu.name` PA_Title), then
-    /// LoadPhotoAlbum (sub_8263E428).
+    /// LoadPhotoAlbum (F-12232).
     fn pa_enter_album(&mut self) {
         self.pa_set_int("cur_visibility", 1);
         self.pa_set_int("cur_visibility_album", 1);
@@ -606,7 +606,7 @@ impl Game {
         let _ = std::fs::remove_file(snapshot_path(&self.data_dir));
     }
 
-    /// sub_8263DCF8 for the chosen slot (+1160): the snapshot written into it, the counts
+    /// F-67304 for the chosen slot (+1160): the snapshot written into it, the counts
     /// (`mc4b_photo_save`), the slot's texture; +1170 / +1176 cleared, PA_ChooseSlot
     /// deactivated; file.saveStart -> PA_SaveFile.
     fn pa_save(&mut self) {
@@ -847,7 +847,7 @@ impl Game {
                     self.pa_set_int("cur_visibility_album", 0);
                     self.pa_enter_snap();
                 } else if enter {
-                    // SaveSnapshot (+1170 = 1; sub_8263DC38 focuses the first free slot when the
+                    // SaveSnapshot (+1170 = 1; F-93904 focuses the first free slot when the
                     // album is loaded), WaitingForLoadMode, PhotoAlbum
                     self.pa_sound("UI_MENU_SELECT");
                     self.album.pending = true;
@@ -1070,7 +1070,7 @@ mod tests {
         assert_eq!(prompt_rows(7).len(), 6);
     }
 
-    /// sub_8263DCF8: a new slot raises the count (aFAB as it reaches 16), an overwrite does
+    /// F-67304: a new slot raises the count (aFAB as it reaches 16), an overwrite does
     /// not; tPTS + 1 for every picture saved.
     #[test]
     fn save_into_chosen_slot_counts() {
