@@ -1278,6 +1278,15 @@ pub struct Dress {
     pub plate: String,
 }
 
+/// Slot 40 of the driver (the vehicle-hit notify of F-83713's vehicle case) starts the brain's 1.5 s collision timer (+296,
+/// F-37791): only mcOpponent's slot (F-30284; mcPolice, mcAiRacer and mcPlayer keep the base F-33876), only for the victim
+/// (byte 0), only with a brain that is a racing one (IsA mcBrainRacing - the cruising brain derives from it; the port's
+/// `AiDriver::brain`) and only when the other car's driver answers slot 10 true (mcPlayer alone). Every computer car with a
+/// brain is an mcOpponent but a police unit (`CarInstance::cop`), whose driver is mcPolice; a plain mcAiRacer is only a base.
+pub(crate) fn hit_starts_timer(aggressor: bool, victim_opponent: bool, racing_brain: bool, other_is_player: bool) -> bool {
+    !aggressor && victim_opponent && racing_brain && other_is_player
+}
+
 /// The walker's aggressor test (F-83713) for the car "this" with velocity `va` and its partner with `vb`, `d` = partner position - this position:
 /// this when the partner stands (< 0.2235 m/s), the partner when this stands, else the one whose velocity points at the other the
 /// more (velocity . offset / speed).
@@ -6052,8 +6061,11 @@ if keep || c.state.pos.distance(center) < 450.0 {
             // (the aggressor's law word: 2 against a police car (+465), 8 against any other car not the human's)
             vs.agro.law_word |= car_bit(victim_cop, false);
             // (F-30284: an opponent's brain starts its collision timer when the player ran into it)
-            if let Some(ai) = self.cars[victim].ai.as_mut().filter(|ai| ai.brain.is_some()) {
-                ai.hit_pending = true;
+            let brain = self.cars[victim].ai.as_ref().map_or(false, |ai| ai.brain.is_some());
+            if hit_starts_timer(false, !victim_cop, brain, true) {
+                if let Some(ai) = self.cars[victim].ai.as_mut() {
+                    ai.hit_pending = true;
+                }
             }
         }
     }
@@ -9366,6 +9378,25 @@ mod hit_tests {
         // both move: the one whose heading points more at the other (the speeds divide out)
         assert!(first_is_aggressor(Vec3::new(30.0, 0.0, 0.0), Vec3::new(-5.0, 0.0, 5.0), d));
         assert!(!first_is_aggressor(Vec3::new(5.0, 0.0, 5.0), Vec3::new(-30.0, 0.0, 0.0), d));
+    }
+
+    /// The hit notify against the original run offline (tools/hit_notify_reference.py, ai_gaps_decode.md gap 1): slot 40
+    /// dispatched through the drivers' own vtables (0 mcOpponent, 1 mcAiRacer, 2 mcPolice, 3 mcPlayer) with each brain (0
+    /// none, 1 racing, 2 cruising, 3 animated) and the other car's driver of each class; the timer 1.5 exactly where
+    /// `hit_starts_timer` says, untouched elsewhere, the base notify once in every case.
+    #[test]
+    fn hit_notify_matches_the_original() {
+        let mut n = 0;
+        for l in include_str!("testdata/hit_notify_ref.txt").lines() {
+            let w: Vec<&str> = l.split_whitespace().collect();
+            let (byte, victim, brain, other) = (w[2].parse::<u32>().unwrap(), w[3], w[4], w[5]);
+            let (timer, base) = (u32::from_str_radix(w[7], 16).unwrap(), w[8]);
+            assert_eq!(base, "1", "{l}");
+            let started = hit_starts_timer(byte & 0xFF != 0, victim == "0", brain == "1" || brain == "2", other == "3");
+            assert_eq!(timer, if started { 1.5f32.to_bits() } else { 0xDEADBEEF }, "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 256);
     }
 }
 
