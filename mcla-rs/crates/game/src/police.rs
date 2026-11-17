@@ -8726,6 +8726,7 @@ pub fn hide_opponents(vehicles: &mut Vehicles, world: &World, player: bool) {
         c.pose_history.reset();
         // (Racer Reset, F-89258: +676 = 0 and the driver instance's reset - its scene show flag off, cinedriver.rs)
         c.show_driver = false;
+        c.drv_resets += 1;
         c.deactivated = !c.is_player;
         log::info!("police: HideOpponents - race entry {} (uid {}) to the lot {:?}", k, c.uid, pos);
     }
@@ -8786,6 +8787,7 @@ pub fn station_reset(vehicles: &mut Vehicles, world: &World, n: u32) -> Option<u
     c.pose_history.reset();
     // (ResetWithDamageIntact, F-39106: the scene show flag off, cinedriver.rs)
     c.show_driver = false;
+    c.drv_resets += 1;
     if n == 0 {
         log::info!("police: after the form - the car at the police station {:?} (damage {:.3})", pos, c.state.damage);
         if damaged_out(c.state.damage) {
@@ -8843,6 +8845,7 @@ pub fn scene_frame_at(vehicles: &mut Vehicles, world: &World, place: (Vec3, f32)
     // (ResetWithDamageIntact, F-39106: racer +676 = 0 and the driver instance's reset - its scene show flag off,
     // cinedriver.rs; the car scenes' UseRacerNativeCharacter(0) shows it again, the bikestand's script does not)
     c.show_driver = false;
+    c.drv_resets += 1;
     let (place, lean) = match world.collider.ground(pos, 5.0, 5.0) {
         Some(h) if h.normal.angle_between(Vec3::Y) > 0.002 => (Vec3::new(pos.x, h.point.y, pos.z), glam::Quat::from_rotation_arc(Vec3::Y, h.normal.normalize())),
         Some(h) => (Vec3::new(pos.x, h.point.y, pos.z), glam::Quat::IDENTITY),

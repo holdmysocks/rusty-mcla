@@ -37,6 +37,8 @@ pub struct Seat<'a> {
     pub set: &'a str,
     /// LoadDriver's hi-res set (F-39898): the local human, or a racer raised by UseRacerNativeCharacter (F-94066)
     pub hi: bool,
+    /// the racer's resets that reach the driver instance (`CarInstance::drv_resets`)
+    pub resets: u32,
     /// the car's mcCarModelTune vDriverGaugeLightOffset / vDriverNeonLightOffset (`SimTunes::driver_lights`)
     pub lights: Option<[[f32; 3]; 2]>,
     /// the car's record's gauge colour A and interior neon colour (w: IntNeonIntensity) - None: its own set-up's
@@ -179,6 +181,8 @@ struct CarAnim {
     m: dm::Machine,
     seq: da::Seq,
     pan_p: Option<(f32, f32)>,
+    /// the seat's driver resets seen (`Seat::resets`)
+    resets: u32,
 }
 
 /// The composer's view of a rig (drvanim `Poser`): a frame is two DOFs per bone, the rotation (a Quaternion) and the
@@ -340,7 +344,19 @@ impl CarAnim {
             m: dm::Machine::new(set, rng),
             seq: da::Seq::default(),
             pan_p: None,
+            resets: 0,
         }
+    }
+
+    /// The driver instance's reset F-94693 (the racer's Reset / ResetWithDamageIntact, HideOpponents): the sequencer's
+    /// reset (F-23174, its clips gone), the context F-81756, the machine F-50857 back to "start here" (its next step runs the
+    /// start's action: the idle and the pan overlay again), driver +408 = 1. (Its other driver words +380 .. +404 and the
+    /// matrix +288 are not modelled; +420 is `CarInstance::show_driver`.)
+    fn reset(&mut self, k: &dm::Tune) {
+        self.seq = da::Seq::default();
+        self.ctx.reset(k);
+        self.m.reset();
+        self.gm.drv408 = 1.0;
     }
 
     /// One frame of the driver: the gatherer (with the car's steering-wheel shake), the context step, the machine, its
@@ -2321,7 +2337,11 @@ impl Drivers {
                 let Some(Some(rig)) = self.rigs.get(&key) else { continue };
                 // (the racer's +144, the character's name: the faces are `<name>_<set>`; the hi-res model is the set's `_h`)
                 let set = self.sets[si].0.trim_end_matches("_h").to_string();
-                let a = self.cars.entry(s.uid).or_insert_with(|| CarAnim::new(&set, [0x2f6b_6f5d, 0x0000_3039]));
+                let a = self.cars.entry(s.uid).or_insert_with(|| CarAnim { resets: s.resets, ..CarAnim::new(&set, [0x2f6b_6f5d, 0x0000_3039]) });
+                if a.resets != s.resets {
+                    a.resets = s.resets;
+                    a.reset(&k);
+                }
                 let culled = self.frozen.get(&s.uid).copied().unwrap_or(false);
                 let jaw = self.acting.get(&s.id).map_or(false, |x| x.jaw);
                 if let Some(o) = a.step(rig, d, &k, dt, self.frame & 1 == 1, culled, &mut self.rng, s.car, jaw) {
@@ -3821,6 +3841,7 @@ mod recorded_tests {
         calls: usize,
         bad_words: std::collections::BTreeMap<usize, usize>,
         notes: Vec<String>,
+        resets: usize,
     }
 
     /// The steering input of a recorded frame. The step stores it at +24 and its rate (input - old) / dt at +40; a state's
@@ -3854,10 +3875,11 @@ mod recorded_tests {
         }
         let mut seq = da::Seq::default();
         let dur = |c: da::ClipId| durs.get(c as usize).copied().unwrap_or(0.0);
-        let mut o = Outcome { states: 0, frames: 0, bad_state: 0, bad_calls: 0, calls: 0, bad_words: Default::default(), notes: Vec::new() };
+        let mut o = Outcome { states: 0, frames: 0, bad_state: 0, bad_calls: 0, calls: 0, bad_words: Default::default(), notes: Vec::new(), resets: 0 };
         let hex = |s: &str| u32::from_str_radix(s, 16).unwrap();
         let lines: Vec<&str> = fix.lines().collect();
         let (mut i, mut first, mut started) = (0, true, false);
+        let mut prev_b: Vec<u32> = Vec::new();
         while i + 3 < lines.len() {
             let fw: Vec<u32> = lines[i].split_whitespace().skip(1).map(hex).collect();
             let a: Vec<u32> = lines[i + 1].split_whitespace().skip(1).map(hex).collect();
@@ -3872,6 +3894,15 @@ mod recorded_tests {
             let f = |x: u32| f32::from_bits(x);
             let dt = f(fw[0]);
             let mut c = ctx_of(&a);
+            // (the driver instance's reset F-94693 between two updates - the ticket scene's ResetWithDamageIntact: the
+            // context recorded before this update is the reset one and not the last update's own)
+            let mut r0 = c;
+            r0.reset(&k);
+            if !first && prev_b != a && words_of(&r0, &a) == a {
+                seq = da::Seq::default();
+                m.reset();
+                o.resets += 1;
+            }
             if first {
                 m.state = dm::STATES.iter().find(|s| s.1 == state).map(|s| s.0).unwrap();
                 first = false;
@@ -3897,7 +3928,7 @@ mod recorded_tests {
             let mut env = dm::Env { remaining: seq.remaining(), phase: seq.phase(), cutscene: false };
             let r = dm::Racer { human: true, mode3: fw[3] == 3, alarm: 0.0, engine_off: fw[4] & 0x20 != 0, jaw: false };
             m.rng = [fw[1], fw[2]];
-            let overlay_was = m.overlay;
+            let overlay_was = m.overlay_sets;
             let mut cmds = Vec::new();
             let mut done = 0;
             m.step_live(&mut c, &k, &mut env, &r, &mut cmds, &mut |face, pan, out, e| {
@@ -3906,6 +3937,7 @@ mod recorded_tests {
                 e.remaining = seq.remaining();
                 e.phase = seq.phase();
             });
+            prev_b = b.clone();
             let b8 = |x: f32| format!("{:08x}", x.to_bits());
             let name = |n: &str| format!("{prefix}{}", n.to_ascii_lowercase());
             let mut got: Vec<String> = Vec::new();
@@ -3927,7 +3959,7 @@ mod recorded_tests {
                     dm::Cmd::EngineStart | dm::Cmd::EngineStop | dm::Cmd::HandBack => continue,
                 });
             }
-            if m.overlay != overlay_was {
+            if m.overlay_sets != overlay_was {
                 got.push(format!("ovly {}", m.overlay.map_or("-".to_string(), name)));
             }
             seq.update(dt);
@@ -3980,13 +4012,13 @@ mod recorded_tests {
                 durs.push(a.duration);
             }
         }
-        for run in ["chase", "pov", "idle", "lookback", "drive", "crash"] {
+        for run in ["chase", "pov", "idle", "lookback", "drive", "crash", "drive2"] {
             let Ok(fix) = std::fs::read_to_string(dir.join(format!("{run}.fix"))) else {
                 eprintln!("no {run}.fix, skipped");
                 continue;
             };
             let o = replay(&fix, &dict, &durs, "aud_r8_08_");
-            eprintln!("{run}: {} frames ({} from the first clip), {} calls; state differs on {}, calls on {}, context words {:?}", o.states, o.frames, o.calls, o.bad_state, o.bad_calls, o.bad_words);
+            eprintln!("{run}: {} frames ({} from the first clip), {} calls, {} resets; state differs on {}, calls on {}, context words {:?}", o.states, o.frames, o.calls, o.resets, o.bad_state, o.bad_calls, o.bad_words);
             for n in &o.notes {
                 eprintln!("  {n}");
             }

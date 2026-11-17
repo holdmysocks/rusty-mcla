@@ -75,6 +75,15 @@ pub struct Ctx {
 }
 
 /// Context +8 bits (the readers' masks).
+impl Ctx {
+    /// F-81756, run by the driver instance's reset F-94693: the gesture 20, the ease target +52 and the steering scale +64
+    /// 1, +56 / +60 the tune's cruising rates (+64 / +68), byte +74 (to the right) 1, every other word and byte 0; +16 and
+    /// the opponent byte +49 are kept.
+    pub fn reset(&mut self, k: &Tune) {
+        *self = Ctx { gesture: 20, ease_to: 1.0, smooth_k: k.cruise_k, wheel_scale: 1.0, to_right: true, opponent: self.opponent, ..Ctx::default() };
+    }
+}
+
 pub const F_IMPACT_LEFT: u32 = 1 << 0;
 pub const F_IMPACT_RIGHT: u32 = 1 << 1;
 pub const F_IMPACT_FRONT_SOFT: u32 = 1 << 2;
@@ -1248,6 +1257,8 @@ pub struct Machine {
     pub rng: [u32; 2],
     /// the game manager's +300 (a global): the find_sh_04 gesture is playing
     pub find_sh: bool,
+    /// how many times the overlay setter F-63058 has been called (it sets the clip whether or not it changes)
+    pub overlay_sets: u32,
 }
 
 impl Machine {
@@ -1264,7 +1275,22 @@ impl Machine {
             racer_684: 0,
             rng,
             find_sh: false,
+            overlay_sets: 0,
         }
+    }
+
+    /// F-50857 (the driver instance's reset F-94693): the current state back to the first made, "start here" (F-20966),
+    /// the jaw flap bytes +44 / +45 cleared. (Its +40, +48 / +60 / +64 and the expression table's +252 are not modelled.)
+    pub fn reset(&mut self) {
+        self.state = State::StartHere;
+        self.jaw_on = false;
+        self.jawflap = false;
+    }
+
+    /// F-63058: the driver's overlay clip (+112).
+    fn set_overlay(&mut self, v: Option<Clip>) {
+        self.overlay = v;
+        self.overlay_sets = self.overlay_sets.wrapping_add(1);
     }
 
     /// F-58452: the current state's update, then up to three transitions (exit, action, enter, update).
@@ -1317,7 +1343,7 @@ impl Machine {
 
     /// F-56423 with F-63058: the pan overlay for the human, 0 for the others.
     fn pan(&mut self, r: &Racer) {
-        self.overlay = r.human.then_some(PAN);
+        self.set_overlay(r.human.then_some(PAN));
     }
 
     /// The start's action F-34905.
@@ -1514,7 +1540,7 @@ impl Machine {
             }
             // F-23694
             IntoReverse => {
-                self.overlay = None;
+                self.set_overlay(None);
                 play(out, REV);
             }
             // F-28459
@@ -1564,7 +1590,7 @@ impl Machine {
             }
             // F-28455 (its picker F-34469 steps the counter before it indexes)
             Fidget => {
-                self.overlay = None;
+                self.set_overlay(None);
                 self.counters[7] = self.counters[7].wrapping_add(1);
                 let clip = FIDGET[(self.counters[7] % 2) as usize];
                 play(out, clip);
@@ -1583,7 +1609,7 @@ impl Machine {
 
     /// The gesture switch's enter F-20767: the context's gesture (+4) picks the clip.
     fn gesture(&mut self, c: &mut Ctx, r: &Racer, out: &mut Vec<Cmd>) {
-        self.overlay = None;
+        self.set_overlay(None);
         let skip_right = r.mode3 && r.human;
         let clip: Option<Clip> = match c.gesture as u32 {
             // F-80898: one skip of the response the racer does not make
