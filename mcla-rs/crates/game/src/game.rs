@@ -11422,11 +11422,9 @@ impl Game {
             }
         }
 
-        // ---- police status (top centre), only without the HUD movie: with it the strip under the cluster is the
-        // original's one police text (F-76838's cop_hud_msg_* by the tactic's kind); nothing of the original draws the
-        // arrest's word or the fine over the world during the Busted hold - the ARRESTED panel (form 46) comes after
-        // the scene ----
-        if info.heat > 0 && !flash {
+        // ---- police status (top centre); with the HUD movie the strip under the
+        // cluster shows pull-over / pursuit / searching (arrest is still drawn here) ----
+        if info.heat > 0 && !(flash && info.heat <= 3) {
             let blink = (ctx.input(|i| i.time) * 4.0) as i64 % 2 == 0;
             let red = egui::Color32::from_rgb(255, 60, 50);
             let blue = egui::Color32::from_rgb(80, 140, 255);
