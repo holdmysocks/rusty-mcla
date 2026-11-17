@@ -1138,8 +1138,6 @@ impl App {
                     self.cine.reanimate("cut_drv01", "cut_cop_alert_02", "cut_drv01");
                     // (then StopStreamPrimary, PlayStreamSecondary and DeTriggerState(POLICE_SCRIPT_TRIGGERED))
                     self.sound.pullover_mix = false;
-                    let at = self.vehicles.player().map(|c| c.state.pos).unwrap_or_default();
-                    self.police.suspect_fled(t, at);
                     // (StopStreamPrimary, PlayStreamSecondary: the walk's stream stops and CUT_COP_ALERT, prepared before the
                     // walk (F-11568 -> F-56810), plays (F-85444 -> F-16885 -> F-58551, which stops the speech and the police
                     // radio by the object's flags); the walk's end stops it (StopStreamSecondary F-45468, the bail's 0xb6c) -
@@ -1147,14 +1145,6 @@ impl App {
                     if self.audio.as_mut().is_some_and(|a| a.obj_cutscene("CUT_COP_ALERT", true, true)) {
                         self.speech.stop();
                         self.radio.stop();
-                    }
-                    if !self.speech.busy() {
-                        self.speech.say("PLAYER_COPS_ESCAPE_TICKET");
-                    }
-                    if self.radio.loaded() {
-                        let rctx = radio_ctx(&self.vehicles, world, self.time_of_day);
-                        self.radio.note(&rctx, world.nav.as_ref());
-                        self.radio.say("REPORT_SUSPECT_FLEES", &rctx);
                     }
                 } else if bolt.is_some_and(|b| t >= b + 1.5) {
                     self.cine.kill_camera();
@@ -1165,6 +1155,19 @@ impl App {
                 self.ticket_run = None;
                 // (0xb51: the walk's script done - Graphics_SetCopCamera(0))
                 self.police_cam = false;
+                // (0xb6c: only now, the walk's script over, PoliceManager_SuspectFleeing F-72120 - the Pursuit with the cop's
+                // halt of fPullOverFleeDelayScale x the bail's time, REPORT_SUSPECT_FLEES and PLAYER_COPS_ESCAPE_TICKET; started at
+                // the bail, the scene still running ended it at once - F-54211's cine branch)
+                let at = self.vehicles.player().map(|c| c.state.pos).unwrap_or_default();
+                self.police.suspect_fled(bolt.unwrap_or(0.0), at);
+                if !self.speech.busy() {
+                    self.speech.say("PLAYER_COPS_ESCAPE_TICKET");
+                }
+                if self.radio.loaded() {
+                    let rctx = radio_ctx(&self.vehicles, world, self.time_of_day);
+                    self.radio.note(&rctx, world.nav.as_ref());
+                    self.radio.say("REPORT_SUSPECT_FLEES", &rctx);
+                }
                 // (0xb6c -> 0xcf8: the fade up fn 0x11a6(0, 1, 1.0, 0), not waited - it lifts the walk's own fade_to_black
                 // at 5.867 s, which the walk plays after a bolt too; Racer_Activate again, scramble 0)
                 self.scene_fade.release(1.0);
