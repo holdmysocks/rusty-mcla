@@ -515,7 +515,9 @@ fn fscommand(p: &mut Player, cmd: &str, arg: &str, strings: &StringTable, logic:
             p.set_global("t_stringID", Value::str(&text));
         }
         // the menu movies move the game's camera between the tuned pause cameras
-        "setpolarcam" => logic.set_polar_cam(p, arg),
+        // (the movie's handler has no level here: every piece of the path counts as clear - approx., the race end's
+        // camera runs the probe itself, main.rs)
+        "setpolarcam" => logic.set_polar_cam(p, arg, &mut |_, _| false),
         _ => log::debug!("flash: FSCommand {} {}", cmd, arg),
     }
 }

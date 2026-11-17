@@ -442,7 +442,6 @@ struct App {
     /// view held once the game is paused
     race_end_cam: Option<(menu3d::PauseCam, menu3d::PauseCam)>,
     race_end_from: Option<(Vec3, Vec3, f32)>,
-    race_end_way: Option<f32>,
     /// the parts the car in the garage was last built with: a change shows at once
     garage_built: Option<(usize, vehicle_model::CarConfig, u8)>,
     /// the garage's vehicle under the list's cursor whose files were last read ahead (D59: taking it builds it)
@@ -1613,7 +1612,6 @@ impl App {
             cine_lamps: None,
             race_end_cam: None,
             race_end_from: None,
-            race_end_way: None,
             garage_built: None,
             garage_read: None,
             soak_swap: None,
@@ -10418,7 +10416,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 if !race_end_on {
                     self.race_end_cam = None;
                     self.race_end_from = None;
-                    self.race_end_way = None;
                 }
                 if self.game.mode == Mode::Garage && self.cuts.playing.is_none() && std::env::var("MCLA_NO_GARAGE_CAM").is_err() {
                     if self.garage_views.as_ref().map_or(true, |v| v.0 != car.model.name) {
@@ -11450,8 +11447,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // standings form's 2 (PauseCamera3; its mirror 13 when a line from it to its look-at
                 // point is blocked, else 1 - F-32014), `fs_LerpFactor` += (1 - it) / 10 a movie
                 // frame; the game's camera mixed into it by `player0_cam_ctrl` = sin(acos(1 - temp /
-                // 100)), temp += 3 a frame; both mixes as SetPolarCam's F-22967 (the angles and
-                // length of eye - look-at, the look-at and the lens straight). Movie frames 30 a
+                // 100)), temp += 3 a frame (that mix is the scene camera's F-15166, not read here: the
+                // port's own polar mix below). Movie frames 30 a
                 // second (the settling seen in the original: 0.9 a frame at 30). The pause at 1.2 s
                 // does not stop the movie: the camera settles on. At 2.4 s the race-over panel's
                 // camera is the movie's next `cur_camera`: the same lerp from where it stands, the
@@ -11489,8 +11486,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             let n = (since * 30.0).floor();
                             let f = 1.0 - 0.9f32.powf(n);
                             let k = (1.0 - (n * 3.0).min(100.0) / 100.0).clamp(-1.0, 1.0).acos().sin();
-                            let view = |c: &menu3d::PauseCam| (place(c.position), place(c.lookat), c.fovy.to_radians());
-                            let movie = mix(view(&from), view(&to), f, false);
+                            // (the movie's SetPolarCam each movie frame, F-32916: the polar blend F-22967, the short way
+                            // when the line probe F-96274 finds its path clear, else the long way, else a cut; blended
+                            // in the world, where the original blends in the pause frame and maps the probe's points
+                            // into the world - the same up to rounding, the frame being a turn about y and a move)
+                            let (mv, _) = boomcam::polar_cam(f, (from.fovy, to.fovy), (place(from.position), place(from.lookat)), (place(to.position), place(to.lookat)), &mut |p, q| cam_level.line_blocked(p, q, to.fovy));
+                            let movie = (mv.eye, mv.look, mv.fov.to_radians());
                             let out = mix((self.chase.pos, self.chase.look, self.cam.fov_y), movie, k, false);
                             (self.chase.pos, self.chase.look, self.cam.fov_y) = out;
                             self.race_end_from = Some(out);
@@ -11498,21 +11499,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     } else if let Some(since) = self.game.race_end_menu().filter(|&m| !race_end_swing && m < 5.0) {
                         if let Some(from) = self.race_end_from {
                             let to = (self.chase.pos, self.chase.look, self.cam.fov_y);
-                            if self.race_end_way.is_none() {
-                                let blocked = |long: bool| {
-                                    [0.25, 0.5, 0.75].iter().any(|&k| {
-                                        let (e, l, _) = mix(from, to, k, long);
-                                        world.collider.raycast(l, (e - l).normalize_or(Vec3::Z), l.distance(e)).is_some()
-                                    })
-                                };
-                                self.race_end_way = Some(if !blocked(false) { 0.0 } else if !blocked(true) { 1.0 } else { -1.0 });
-                            }
                             let n = (since * 30.0).floor();
                             let f = 1.0 - 0.9f32.powf(n);
-                            match self.race_end_way {
-                                Some(w) if w >= 0.0 => (self.chase.pos, self.chase.look, self.cam.fov_y) = mix(from, to, f, w > 0.5),
-                                _ => {}
-                            }
+                            // (SetPolarCam each movie frame, F-32916 with the line probe F-96274 as above; a cut leaves
+                            // the camera where it is)
+                            let (fa, fb) = (from.2.to_degrees(), to.2.to_degrees());
+                            let (v, _) = boomcam::polar_cam(f, (fa, fb), (from.0, from.1), (to.0, to.1), &mut |p, q| cam_level.line_blocked(p, q, fb));
+                            (self.chase.pos, self.chase.look, self.cam.fov_y) = (v.eye, v.look, v.fov.to_radians());
                         }
                     }
                 }

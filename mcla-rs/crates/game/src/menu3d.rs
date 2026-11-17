@@ -135,30 +135,19 @@ impl UiLogic {
         p.set_global("camera_coord", arr);
     }
 
-    /// `FSCommand:SetPolarCam` (`F-32916`): `fs_SrcCamIndex`, `fs_DstCamIndex`
-    /// and `fs_LerpFactor` pick a place between two cameras, written to the
-    /// camera object named by the argument.
-    ///
-    /// (approx.) The original's blend (`F-22967`) is a polar one about the
-    /// car; here the eye turns about the blended look-at point at a blended
-    /// distance, which is the same at both ends.
-    pub fn set_polar_cam(&self, p: &mut Player, target: &str) {
-        let idx = |p: &mut Player, n: &str| p.get_global(n).map_or(0, |v| v.to_i32()).max(0) as usize;
-        let (src, dst) = (idx(p, "fs_SrcCamIndex"), idx(p, "fs_DstCamIndex"));
-        let t = p.get_global("fs_LerpFactor").map_or(1.0, |v| v.to_f32()).clamp(0.0, 1.0);
+    /// `FSCommand:SetPolarCam` (`F-32916`): `fs_SrcCamIndex` (0 when the movie has none), `fs_DstCamIndex` (1) and
+    /// `fs_LerpFactor` (0.5) pick a place between two cameras of the table, written to the camera object named by the
+    /// argument (position, lookat, fovy): `boomcam::polar_cam` - the polar blend F-22967 the short way round when its
+    /// path is clear, else the long way, else a cut to the destination. `blocked` is the line probe F-96274 in the
+    /// table's frame (the original maps the points by the coord frame 14 into the world first).
+    pub fn set_polar_cam(&self, p: &mut Player, target: &str, blocked: &mut dyn FnMut(Vec3, Vec3) -> bool) {
+        let idx = |p: &mut Player, n: &str, d: i32| p.get_global(n).map_or(d, |v| v.to_i32()).max(0) as usize;
+        let (src, dst) = (idx(p, "fs_SrcCamIndex", 0), idx(p, "fs_DstCamIndex", 1));
+        let t = p.get_global("fs_LerpFactor").map_or(0.5, |v| v.to_f32());
         let Some(b) = self.pause_cams.get(dst).copied() else { return };
         let a = self.pause_cams.get(src).copied().unwrap_or(b);
-        let look = a.lookat.lerp(b.lookat, t);
-        let (da, db) = (a.position - a.lookat, b.position - b.lookat);
-        let dist = da.length() + (db.length() - da.length()) * t;
-        let dir = if da.length() > 1e-3 && db.length() > 1e-3 {
-            let q = glam::Quat::from_rotation_arc(da.normalize(), db.normalize());
-            glam::Quat::IDENTITY.slerp(q, t) * da.normalize()
-        } else {
-            db.normalize_or(Vec3::Z)
-        };
-        let pos = look + dir * dist;
-        let fov = a.fovy + (b.fovy - a.fovy) * t;
+        let (v, _) = crate::boomcam::polar_cam(t, (a.fovy, b.fovy), (a.position, a.lookat), (b.position, b.lookat), blocked);
+        let (pos, look, fov) = (v.eye, v.look, v.fov);
         for (i, v) in [pos.x, pos.y, pos.z].into_iter().enumerate() {
             p.set_path(&format!("{target}.position.{i}"), Value::Float(v));
         }

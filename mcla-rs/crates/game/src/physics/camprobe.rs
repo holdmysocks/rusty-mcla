@@ -4080,6 +4080,26 @@ impl<'a> CamLevel<'a> {
         self.sweep_city(a, b, r, false).or_else(|| self.sweep_city(b, a, r, false))
     }
 
+    /// F-96274, the pause cameras' line probe (SetPolarCam's path test): a capsule of radius 0.25 from `a` to `b` (both
+    /// already in the world: the original maps them by the coord frame 14 first) through the set-up F-55975 (one record,
+    /// the material mask 512 << the material manager's shift 8) and the driver F-91312 - include 0x1816, types -1, states
+    /// 7, player 0's car skipped (`skip`). `f30` is the caller's f30 (F-56569's: camera B's lens), the polygon test's
+    /// stack word. Blocked when the answer (the list's +44) is above 0. Without the level (the tests): the city sweep.
+    pub fn line_blocked(&self, a: Vec3, b: Vec3, f30: f32) -> bool {
+        let r = 0.25;
+        if let Some(level) = self.level {
+            let filter = LevelFilter { include: 0x1816, states: 7, excluded: &[], types: u32::MAX, exclude_types: 0, skip: self.skip };
+            let f30_high = ((f30 as f64).to_bits() >> 32) as u32;
+            let mut out = false;
+            level.near((a + b) * 0.5, a.distance(b) * 0.5 + r, &mut |objs| {
+                out = capsule_level(a, b, r, 512 << 8, 1, f30_high, &filter, objs.iter().copied()).list.done > 0;
+                out
+            });
+            return out;
+        }
+        self.sweep_city(a, b, r, false).is_some()
+    }
+
     /// The old sweep: directed over the city's triangles (and the other cars' hulls with `cars`); the cameras' sweep
     /// without the level (the tests).
     pub fn sweep_city(&self, a: Vec3, b: Vec3, r: f32, cars: bool) -> Option<SweepHit> {

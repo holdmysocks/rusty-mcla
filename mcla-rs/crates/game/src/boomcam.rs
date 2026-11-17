@@ -1719,6 +1719,95 @@ pub fn rows_of_zxy(e: [f32; 3]) -> [Vec3; 3] {
     ]
 }
 
+/// A camera of the pause scene as SetPolarCam reads and writes it: eye, look-at point, vertical lens (degrees); `up` is
+/// the blend's row 1 (F-22967 hands it back, F-32916 does not use it).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PolarView {
+    pub eye: Vec3,
+    pub look: Vec3,
+    pub up: Vec3,
+    pub fov: f32,
+}
+
+/// F-22967, SetPolarCam's blend of camera A into camera B at `t`: each camera's rows by the look-at F-97951 (eye - look,
+/// up (0, 1, 0)) and its distance |eye - look| (the scalar unit: (z z + x x) then + y y, rounded square root); its
+/// look-at point again as eye - row 2 x distance; its angles F-33934 "zxy". B's x, y and z angle each moved by 2 pi
+/// when A's minus B's is above pi (or not a number) / below -pi; with `long_way` B's y then goes the other way round
+/// (2 pi added when B's y - A's y is below 0 or not a number, taken off when above 0). The angles, the distance and the
+/// lens by fused multiply-adds ((B - A) t + A), the look-at point by the vector unit's unfused one; the rows of the
+/// angles F-62659 and the eye = look + row 2 x distance (unfused). Checked against the original's code run offline
+/// (`polar_blend_matches_the_original`).
+pub fn polar_blend(t: f32, long_way: bool, fov: (f32, f32), a: (Vec3, Vec3), b: (Vec3, Vec3)) -> PolarView {
+    use crate::physics::exact::fma;
+    let (pi, tau) = (f32::from_bits(0x4049_0FDB), f32::from_bits(0x40C9_0FDB));
+    let frame = |(eye, look): (Vec3, Vec3)| {
+        let m = look_rows(eye - look, Vec3::Y);
+        let d = eye - look;
+        let dist = fma(d.y, d.y, fma(d.z, d.z, d.x * d.x)).sqrt();
+        (m, dist, eye - m[2] * dist)
+    };
+    let (ma, da, la) = frame(a);
+    let (mb, db, lb) = frame(b);
+    let ea = euler_zxy(&ma);
+    let eb = euler_zxy(&mb);
+    let wrap = |a: f32, b: f32| {
+        let d = a - b;
+        if !(d <= pi) {
+            b + tau
+        } else if !(d >= -pi) {
+            b - tau
+        } else {
+            b
+        }
+    };
+    let bx = wrap(ea[0], eb[0]);
+    let mut by = wrap(ea[1], eb[1]);
+    let bz = wrap(ea[2], eb[2]);
+    if long_way {
+        let d = by - ea[1];
+        if !(d >= 0.0) {
+            by += tau;
+        } else if !(d <= 0.0) {
+            by -= tau;
+        }
+    }
+    // (x as the code forms it: -((-B) - (-A)) t - A, negated)
+    let x = -fma(-bx - -ea[0], t, -ea[0]);
+    let y = fma(by - ea[1], t, ea[1]);
+    let z = fma(bz - ea[2], t, ea[2]);
+    let dist = fma(db - da, t, da);
+    let look = (lb - la) * t + la;
+    let r = rows_of_zxy([x, y, z]);
+    PolarView { eye: r[2] * dist + look, look, up: r[1], fov: fma(fov.1 - fov.0, t, fov.0) }
+}
+
+/// F-56569, SetPolarCam's path test: the blend's eyes at t = 0.25, 0.5 and 0.75 (with `long_way`) and the line probe
+/// (F-96274, `blocked`) of the four pieces eye A -> P25 -> P50 -> P75 -> eye B, all four asked in that order; clear
+/// only when none is blocked.
+pub fn polar_path_clear(long_way: bool, fov: (f32, f32), a: (Vec3, Vec3), b: (Vec3, Vec3), blocked: &mut dyn FnMut(Vec3, Vec3) -> bool) -> bool {
+    let p = |t: f32| polar_blend(t, long_way, fov, a, b).eye;
+    let (p1, p2, p3) = (p(0.25), p(0.5), p(0.75));
+    let mut ok = true;
+    for (u, v) in [(a.0, p1), (p1, p2), (p2, p3), (p3, b.0)] {
+        if blocked(u, v) {
+            ok = false;
+        }
+    }
+    ok
+}
+
+/// F-32916's choice (FSCommand SetPolarCam): A to B at `t` the short way round when its path is clear, else the long way
+/// when that is clear, else B as it is (a cut: B's eye, look-at point and lens). Returns the view and whether it was a
+/// cut.
+pub fn polar_cam(t: f32, fov: (f32, f32), a: (Vec3, Vec3), b: (Vec3, Vec3), blocked: &mut dyn FnMut(Vec3, Vec3) -> bool) -> (PolarView, bool) {
+    for long_way in [false, true] {
+        if polar_path_clear(long_way, fov, a, b, blocked) {
+            return (polar_blend(t, long_way, fov, a, b), false);
+        }
+    }
+    (PolarView { eye: b.0, look: b.1, up: Vec3::Y, fov: fov.1 }, true)
+}
+
 /// The black mask of a cut (TRANSITIONMOVIE as F-28091 starts it: mask_color 0,
 /// fade_speed_in, fade_speed_out, wait_delay). The movie (30 frames a second) adds
 /// 3.333 / fade_speed_in to its alpha each frame up to 100, waits until 3.333 / wait_delay a
@@ -5982,6 +6071,74 @@ SSFovMin 60
     /// `TrackCam::lens`. Not ported, with no effect: the weight k kept at +180 (handed to the viewport by F-12344 and F-98562,
     /// which the port's projection does not take) and the probe's mask bit 0x200 below 22.35 m/s (no archetype has it,
     /// camprobe.rs CamQuery::CARS).
+    /// F-22967 (the blend) and F-56569 (the path test) against the original's code run offline
+    /// (tools/polar_blend_reference.py -> testdata/polar_blend_ref.txt, 4,000 random camera pairs, t inside and outside
+    /// 0..1, the long way or not, same cameras and eyes straight above the look-at point among them): eye, look-at point,
+    /// row 1 and lens equal word for word; the path test's four probes (from, to) and its answer under every pattern
+    /// of blocked pieces.
+    #[test]
+    fn polar_blend_matches_the_original() {
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let v = |w: &[u32]| Vec3::new(f32::from_bits(w[0]), f32::from_bits(w[1]), f32::from_bits(w[2]));
+        let bits = |p: Vec3| [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()];
+        let (mut nb, mut np, mut blocked) = (0, 0, 0);
+        for line in include_str!("testdata/polar_blend_ref.txt").lines() {
+            let (tag, rest) = line.split_at(2);
+            let (a, b) = rest.split_once(" -> ").unwrap();
+            let c: Vec<u32> = a.split_whitespace().map(h).collect();
+            let o: Vec<u32> = b.split_whitespace().map(h).collect();
+            let fov = (f32::from_bits(c[2]), f32::from_bits(c[3]));
+            let (ca, cb) = ((v(&c[4..]), v(&c[7..])), (v(&c[10..]), v(&c[13..])));
+            match tag {
+                "PB" => {
+                    let r = polar_blend(f32::from_bits(c[0]), c[1] != 0, fov, ca, cb);
+                    let got: Vec<u32> = [bits(r.eye), bits(r.look), bits(r.up)].concat().into_iter().chain([r.fov.to_bits()]).collect();
+                    // (a NaN compares by being a NaN: the guest's and the host's quiet NaN payloads differ)
+                    let same = got.iter().zip(&o).all(|(&g, &w)| g == w || (f32::from_bits(g).is_nan() && f32::from_bits(w).is_nan()));
+                    assert!(same, "{line}
+ got {got:08x?}");
+                    nb += 1;
+                }
+                "PP" => {
+                    let answers = c[16];
+                    let mut log = Vec::new();
+                    let ok = polar_path_clear(c[1] != 0, fov, ca, cb, &mut |p, q| {
+                        let k = log.len();
+                        log.push([bits(p), bits(q)].concat());
+                        (answers >> k) & 1 != 0
+                    });
+                    assert_eq!(ok as u32, o[0], "{line}");
+                    assert_eq!(log.len() as u32, o[1], "{line}");
+                    for (k, l) in log.iter().enumerate() {
+                        let w = &o[2 + 6 * k..8 + 6 * k];
+                        let same = l.iter().zip(w).all(|(&g, &w)| g == w || (f32::from_bits(g).is_nan() && f32::from_bits(w).is_nan()));
+                        assert!(same, "{line}
+ probe {k} got {l:08x?}");
+                    }
+                    blocked += (o[0] == 0) as usize;
+                    np += 1;
+                }
+                _ => unreachable!(),
+            }
+        }
+        assert!(nb == 4000 && np == 4000 && blocked > 1000, "{nb} {np} {blocked}");
+    }
+
+    /// F-32916's choice on top: short way when clear, else the long way, else B as it is.
+    #[test]
+    fn polar_cam_takes_the_short_way_then_the_long_way_then_cuts() {
+        let a = (Vec3::new(5.0, 2.0, 0.0), Vec3::ZERO);
+        let b = (Vec3::new(-5.0, 2.0, 0.5), Vec3::new(0.0, 0.5, 0.0));
+        let fov = (40.0, 50.0);
+        let (v, cut) = polar_cam(0.5, fov, a, b, &mut |_, _| false);
+        assert!(!cut && v == polar_blend(0.5, false, fov, a, b));
+        let mut n = 0;
+        let (v, cut) = polar_cam(0.5, fov, a, b, &mut |_, _| { n += 1; n <= 4 });
+        assert!(!cut && v == polar_blend(0.5, true, fov, a, b) && n == 8);
+        let (v, cut) = polar_cam(0.5, fov, a, b, &mut |_, _| true);
+        assert!(cut && v.eye == b.0 && v.look == b.1 && v.fov == 50.0);
+    }
+
     /// F-81967's bit as F-14014 sets it: below 22.35 m/s or paused; the threshold is the
     /// image's float, a NaN speed only by the pause.
     #[test]
