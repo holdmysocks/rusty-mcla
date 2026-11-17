@@ -2038,6 +2038,16 @@ fn ch_nm(nn: vec3<f32>, t: vec3<f32>, b: vec3<f32>, x: f32, y: f32, m: f32) -> v
 // colour, d the diffuse (decoded), nm the normal map (stored), det the detail map (decoded, at
 // uv x scale), m4 the fourth map at uv (spec map), m4b at 20 uv (skin_arm's offset map), s the
 // shadow (the full-screen collector), fast the top-down mask's raw value, ff front facing.
+// (MCLA_DEBUG_VIEW=797, GitHub #57: a character term that is not a number or infinite - exponent bits, which no
+// compiler folds - marks the pixel magenta; an input from the vertex stage cyan. NVIDIA clamps a NaN to 0 where AMD
+// gives 1, so this finds on any card what shows white on AMD)
+var<private> ch_bad: u32 = 0u;
+fn ch_nf(x: vec3<f32>) -> bool {
+    return any((bitcast<vec3<u32>>(x) & vec3<u32>(0x7f800000u)) == vec3<u32>(0x7f800000u));
+}
+fn ck(x: vec3<f32>) { if (ch_nf(x)) { ch_bad = ch_bad | 1u; } }
+fn ck1(x: f32) { ck(vec3<f32>(x)); }
+
 fn char_shade(fx: u32, pw: vec3<f32>, nv: vec3<f32>, tf: vec4<f32>, vcol: vec4<f32>, d: vec4<f32>, nm: vec4<f32>, det: f32, m4: vec4<f32>, m4b: vec4<f32>, s: f32, fast: f32, ff: bool, pedl: vec3<f32>, cvl: vec4<f32>) -> vec3<f32> {
     let k0 = car.area_a[4];
     let k1 = car.area_b[4];
@@ -2091,6 +2101,8 @@ fn char_shade(fx: u32, pw: vec3<f32>, nv: vec3<f32>, tf: vec4<f32>, vcol: vec4<f
             let sp = c0 * pow(clamp(dot(n, normalize(v + l0.xyz)), 0.0, 1.0), se) * clamp(16.0 * w0, 0.0, 1.0)
                    + c1 * pow(clamp(dot(n, normalize(v + l1.xyz)), 0.0, 1.0), se) * clamp(16.0 * w1, 0.0, 1.0);
             let lit = ch_screen(amb, ch_screen(d1, d0));
+            ck(n); ck1(fres); ck(env); ck(d0); ck(d1); ck(sp); ck(lit);
+            if (1.0 - clamp(abs(vn), 0.0, 1.0) <= 0.0 && k2.y <= 0.0) { ch_bad = ch_bad | 2u; }
             return dt * ch_screen(lit * k1.x, sp * k1.w) + k4.x * fres * envc;
         }
         let e0 = c0 * clamp(dot(n, l0.xyz), 0.0, 1.0) * l0.w * s;
@@ -2101,6 +2113,8 @@ fn char_shade(fx: u32, pw: vec3<f32>, nv: vec3<f32>, tf: vec4<f32>, vcol: vec4<f
                + c1 * pow(clamp(dot(n, normalize(v + l1.xyz)), 0.0, 1.0), se) * clamp(16.0 * dot(n, l1.xyz), 0.0, 1.0)
                + c2 * pow(clamp(dot(n, normalize(v + l2.xyz)), 0.0, 1.0), se) * clamp(16.0 * dot(n, l2.xyz), 0.0, 1.0);
         let lit = ch_screen(amb, dsum * 0.5 * k1.x);
+        ck(n); ck1(fres); ck(env); ck(e0); ck(e1); ck(e2); ck(sp); ck(lit);
+        if (1.0 - clamp(abs(vn), 0.0, 1.0) <= 0.0 && k2.y <= 0.0) { ch_bad = ch_bad | 2u; }
         let cc = dt * ch_screen(lit, sp * k1.w);
         return mix(cc, envc, fres);
     }
@@ -2120,6 +2134,7 @@ fn char_shade(fx: u32, pw: vec3<f32>, nv: vec3<f32>, tf: vec4<f32>, vcol: vec4<f
         let env = env_soft(normalize(2.0 * vn * n - v));
         let rimc = mix(d.rgb * dot(env, lum), env, pow(1.0 - clamp(vn, 0.0, 1.0), 2.0));
         let sp = pow(abs(rimc), vec3<f32>(1.25)) * (0.0625 + 1.9375 * pow(1.0 - clamp(abs(vn), 0.0, 1.0), 4.0)) * d.a * ambw * (0.5 * n.y + 0.5) * (0.5 + 0.666665 * sh);
+        ck(n); ck(d0); ck(d1); ck(lit); ck(env); ck(rimc); ck(sp); ck(vl); ck1(ambw);
         return ch_screen(lit * d.rgb, sp);
     }
     let shm = 0.75 * s + 0.25;
@@ -2147,6 +2162,7 @@ fn char_shade(fx: u32, pw: vec3<f32>, nv: vec3<f32>, tf: vec4<f32>, vcol: vec4<f
     var mask = det * d.a;
     if (fx == 3u || fx == 4u) { mask = det * m4.x; }
     let sp = (k1.w * mask * fres * aoh * ssum + k2.x * pow(abs(rimc), vec3<f32>(k1.y + 1.0))) * (0.5 + 0.5 * n.y);
+    ck(nn); ck(t); ck(b); ck(n); ck1(fres); ck(env); ck(dl0); ck(dl1); ck(dl2); ck(sl0); ck(sl1); ck(sl2); ck1(aoh); ck(lt); ck(base); ck(rimc); ck(rim); ck(sp); ck(vl); ck1(detf);
     return ch_screen(ch_screen(base, sp), rim);
 }
 
@@ -5514,6 +5530,12 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
         // (761: the shadow term; 762: sat(n.L) of the first light x its colour)
         if (g.params.w > 760.5 && g.params.w < 761.5) { lit = vec3<f32>(ch_s); }
         if (g.params.w > 761.5 && g.params.w < 762.5) { lit = car.area_b[0].rgb * clamp(dot(normalize(in.normal), ch_light(0, in.wpos).xyz), 0.0, 1.0) * ch_light(0, in.wpos).w; }
+        if (g.params.w > 796.5 && g.params.w < 797.5) {
+            if (ch_nf(in.normal) || ch_nf(in.fill.xyz) || ch_nf(in.cvl.xyz) || ch_nf(in.color.xyz) || ch_nf(second.xyz) || ch_nf(ch_dd.xyz)) { lit = vec3<f32>(0.0, 1.0, 1.0); }
+            else if ((ch_bad & 1u) != 0u || ch_nf(lit)) { lit = vec3<f32>(1.0, 0.0, 1.0); }
+            else if ((ch_bad & 2u) != 0u) { lit = vec3<f32>(1.0, 1.0, 0.0); }
+            else { lit = lit * 0.25; }
+        }
     }
     if (mat.mode == 9u && in.uv1.y > 76.5 && in.uv1.y < 77.5 && car.lamp_b[0].w > 1.5 && !(g.params.w > 749.5 && g.params.w < 750.5)) {
         var fl = vec3<f32>(0.0);

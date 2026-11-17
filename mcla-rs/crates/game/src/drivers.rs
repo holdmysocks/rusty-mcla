@@ -2101,6 +2101,16 @@ impl Drivers {
             }
         }
         let want = |n: &(String, bool, bool, bool)| n.3 && n.1 == s.bike && n.2 == (s.cop && !s.bike) && !n.0.ends_with("_set_h");
+        // (test hook MCLA_PLAYER_SET=<character or set> - GH_05, drv_mb_010_set: that driver in the player's car, so his
+        // hi-res set is drawn there; GitHub #57)
+        if s.player {
+            if let Some(set) = std::env::var("MCLA_PLAYER_SET").ok().filter(|v| !v.trim().is_empty()) {
+                let want = crate::cinedriver::driver_set(set.trim(), false, s.bike).unwrap_or(set.trim());
+                if let Some(i) = self.sets.iter().position(|n| n.0.eq_ignore_ascii_case(want)) {
+                    return Some(i);
+                }
+            }
+        }
         if s.player {
             // "mp" is the player character
             if let Some(i) = self.sets.iter().position(|n| n.3 && n.0.to_ascii_lowercase().starts_with("drv_mp_") && n.1 == s.bike && !n.0.to_ascii_lowercase().ends_with("_set_h")) {
