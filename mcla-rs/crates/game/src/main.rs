@@ -8002,8 +8002,16 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             {
                 let mut flash = std::mem::take(&mut self.flash) || (std::env::var("MCLA_ROAM_TEST").map_or(false, |v| v != "once" || self.game.career.completed() == 0) && self.tick_no % 30 < 2 && self.roam.challenge.is_none());
                 // (test hook MCLA_CAREER_RACE=<mission>: its man flashed in the cruise until the mission is complete -
-                // `roamers::career_race_hook`)
-                flash = flash || (self.tick_no % 30 == 0 && self.game.mode == Mode::FreeRoam && self.game.race.is_none() && self.roam.challenge.is_none() && self.vehicles.cars.iter().any(|c| c.racer) && roamers::career_race_hook().is_some_and(|m| !self.game.career.state_at_least(&m, 5)));
+                // `roamers::career_race_hook`; not while a scene or an arrest runs - a player's flash is deactivated then - nor in the 10 s
+                // after a race, while its leave runs: the hook reaches 2 km, a player 30)
+                let cruise_ticks;
+                {
+                    use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
+                    static CRUISE: AtomicU32 = AtomicU32::new(0);
+                    if self.game.mode == Mode::FreeRoam && self.game.race.is_none() { CRUISE.fetch_add(1, Relaxed); } else { CRUISE.store(0, Relaxed); }
+                    cruise_ticks = CRUISE.load(Relaxed);
+                }
+                flash = flash || (self.tick_no % 30 == 0 && self.game.mode == Mode::FreeRoam && self.game.race.is_none() && self.roam.challenge.is_none() && cruise_ticks >= 600 && self.vehicles.cars.iter().any(|c| c.racer) && self.cuts.idle() && self.cine.playing.is_none() && !self.arrest_deact && !self.arrest_wait && self.police.heat != police::Heat::Busted && roamers::career_race_hook().is_some_and(|m| !self.game.career.state_at_least(&m, 5)));
                 // (a hookman who only races a certain class of car says so)
                 // (step 19d: nobody can be flashed while the police are doing something with the
                 // player - CruisingHookmanCore 0x745: PoliceManager_CheckPoliceActivity(1) < 2)
@@ -14878,6 +14886,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         }
         if action == MenuAction::None {
             return;
+        }
+        if action == MenuAction::StartRace {
+            log::info!("action: StartRace (race {:?}, mode {:?}, climb {}, warp_with_cut {}, flash menu {})", self.game.current_race.and_then(|i| self.game.race_defs.get(i)).map(|d| d.id.clone()), self.game.mode, self.climb.is_some() || self.climb_end.is_some() || self.climb_wait.is_some(), self.game.warp_with_cut, self.game.flash_menu.is_some());
         }
         // (a run to the line's QUIT RACE / GO TO GARAGE - its pause menu, `Game` pause tab 0)
         match action {

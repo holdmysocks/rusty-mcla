@@ -416,7 +416,7 @@ pub fn core_loop(sco: &mcla_formats::sco::Sco) -> Option<(Vec<Vec3>, Option<f32>
 /// hw_ordered_jp_11 0x7ca..0x830) and `0x7efbea76` (GREETING_MEET_ME_THERE_EVENT 0x3b5,
 /// 0x403..0x416). The 19 cores with RACE_TO_START run to the line (beat me there); the
 /// OrderedSeriesCore cores and FIND_SH_04's scene give None.
-/// Test hook MCLA_CAREER_RACE=<mission id> (RACE_GH_06, RACE_GH_02, REDLIGHT_GH_01, ...): a career race started the
+/// Test hook MCLA_CAREER_RACE=<mission id> (RACE_GH_06, RACE_GH_02, REDLIGHT_GH_01, ...) or a man key prefix (slot:0 = Hollywood's hookmen): a career race started the
 /// way the player starts it, for the test driver `--auto` to drive to the finish. Only that mission's man is put on the
 /// road (near the player, as MCLA_HOOKMAN_TEST does), he is flashed while the cruise goes on and the mission is not
 /// complete (main.rs), a meet-me-there run puts the player on its line after 6 s (as MCLA_ROAM_TEST does); the race,
@@ -1702,8 +1702,9 @@ impl Roamers {
                 continue;
             }
             let d = if test && !c.driver.is_empty() { d * 0.01 } else { d };
-            // (MCLA_CAREER_RACE: that mission's man is flashed wherever he is within 400 m)
-            let hooked = career_race.as_deref().is_some_and(|mis| d < 400.0 && self.men.iter().any(|m| m.mission.eq_ignore_ascii_case(mis) && m.owns(c)));
+            // (MCLA_CAREER_RACE: that mission's man - or a man whose key starts with it, `slot:0` for Hollywood's
+            // hookmen - is flashed wherever he is within 2 km: after an arrest the station is far from him)
+            let hooked = career_race.as_deref().is_some_and(|mis| d < 2000.0 && self.men.iter().any(|m| (m.mission.eq_ignore_ascii_case(mis) || m.key.starts_with(mis)) && m.owns(c)));
             if (ok || hooked || (test && d < 400.0)) && best.map_or(true, |b| d < b.1) {
                 best = Some((i, d));
             }
