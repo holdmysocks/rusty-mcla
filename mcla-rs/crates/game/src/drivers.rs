@@ -3696,7 +3696,9 @@ mod ride_tests {
 /// the context kept them) and its random generator's state run through the port's context step, machine and sequencer
 /// (the R8's own pack); the context after the update, the state and every call to the anim player are compared. Run
 /// `lookback` (2026-11-16): the R8 standing 170 s with the right stick held down, right, left through the pad file (look -1 /
-/// -1 / +1: the stopped idle and its fidgets under the look-back). The
+/// -1 / +1: the stopped idle and its fidgets under the look-back). Runs `drive` and `crash` (2026-11-16): the R8 driven through
+/// the pad file (full throttle, brake, full lock both ways, reverse; `crash` then twice into a wall): shifting, the hand over
+/// hand winds, slips and unwinds, and impact soft. The
 /// fixtures (`work/driverlight/cmp/*.fix`, made by `fix.py`) are not in the repository: skipped without them.
 #[cfg(test)]
 mod recorded_tests {
@@ -3788,6 +3790,21 @@ mod recorded_tests {
         notes: Vec<String>,
     }
 
+    /// The steering input of a recorded frame. The step stores it at +24 and its rate (input - old) / dt at +40; a state's
+    /// enter can rewrite +24 after the step (the slip out of hand over hand), so where +24 does not give the stored rate the
+    /// input is the one, within a few ulps of old + rate x dt, that does.
+    fn steer_in(old: f32, after: f32, rate: f32, dt: f32) -> f32 {
+        let inv = 1.0 / dt;
+        if ((after - old) * inv).to_bits() == rate.to_bits() {
+            return after;
+        }
+        let guess = old + rate * dt;
+        (-8i32..=8)
+            .map(|d| f32::from_bits((guess.to_bits() as i32 + d) as u32))
+            .find(|x| ((x - old) * inv).to_bits() == rate.to_bits())
+            .unwrap_or(after)
+    }
+
     fn replay(fix: &str, dict: &HashMap<String, u32>, durs: &[f32], prefix: &str) -> Outcome {
         let k = dm::Tune::original();
         let mut m = dm::Machine::new("drv_mp_01_set", [0, 0]);
@@ -3831,7 +3848,7 @@ mod recorded_tests {
                 flags: fw[5],
                 gesture: fw[6] as i32,
                 goal: bf(20),
-                steer: bf(24),
+                steer: steer_in(c.steer, bf(24), bf(40), dt),
                 smooth: bf(44),
                 add: -bf(32),
                 to_limit: bf(36),
@@ -3930,7 +3947,7 @@ mod recorded_tests {
                 durs.push(a.duration);
             }
         }
-        for run in ["chase", "pov", "idle", "lookback"] {
+        for run in ["chase", "pov", "idle", "lookback", "drive", "crash"] {
             let Ok(fix) = std::fs::read_to_string(dir.join(format!("{run}.fix"))) else {
                 eprintln!("no {run}.fix, skipped");
                 continue;
