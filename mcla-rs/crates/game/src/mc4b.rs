@@ -446,7 +446,8 @@ pub fn content_flags(data_dir: &str, car: &str) -> u32 {
     t.get(&car.to_ascii_lowercase()).copied().unwrap_or(0)
 }
 
-/// The photo album's slot files (the port's PHOTO_ALBUM): `<data>/../photos/album/slot_NN.png`.
+/// The photo album's slot files (the port's PHOTO_ALBUM): `<data>/../photos/album/slot_NN.jpg` (an older build's
+/// `slot_NN.png` still counts - `photoalbum::slot_file`).
 /// (test runs: MCLA_ALBUM_DIR puts the album elsewhere)
 pub fn album_dir(data_dir: &str) -> std::path::PathBuf {
     if let Ok(d) = std::env::var("MCLA_ALBUM_DIR") {
@@ -664,7 +665,7 @@ impl Game {
     /// MCLA_PHOTO_TEST=album; the game's own flow chooses the slot (`photoalbum`).
     pub fn mc4b_photo_path(&mut self) -> String {
         let dir = album_dir(&self.data_dir);
-        let used: Vec<bool> = (0..ALBUM_SLOTS).map(|k| dir.join(format!("slot_{k:02}.png")).exists()).collect();
+        let used: Vec<bool> = (0..ALBUM_SLOTS).map(|k| crate::photoalbum::slot_file(&dir, k).is_some()).collect();
         let slot = used.iter().position(|u| !u).unwrap_or(0);
         self.mc4b_photo_save(slot)
     }
@@ -675,7 +676,7 @@ impl Game {
     pub fn mc4b_photo_save(&mut self, slot: usize) -> String {
         let dir = album_dir(&self.data_dir);
         let _ = std::fs::create_dir_all(&dir);
-        let used: Vec<bool> = (0..ALBUM_SLOTS).map(|k| dir.join(format!("slot_{k:02}.png")).exists()).collect();
+        let used: Vec<bool> = (0..ALBUM_SLOTS).map(|k| crate::photoalbum::slot_file(&dir, k).is_some()).collect();
         let slot = slot.min(ALBUM_SLOTS - 1);
         if !used[slot] {
             let count = used.iter().filter(|u| **u).count() + 1;
@@ -686,7 +687,7 @@ impl Game {
         self.mc4_stat_add("tPTS", 0, 1.0);
         self.dirty = true;
         log::info!("photo: album slot {} (tPTS {})", slot, self.mc4_stat("tPTS", 0));
-        dir.join(format!("slot_{slot:02}.png")).to_string_lossy().to_string()
+        dir.join(format!("slot_{slot:02}.jpg")).to_string_lossy().to_string()
     }
 
     /// AudioManager_SetActiveTimeSlow's state: on from a tutorial's SetActiveTimeSlow(1) (before

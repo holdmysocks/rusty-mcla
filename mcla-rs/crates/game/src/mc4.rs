@@ -20115,11 +20115,11 @@ mod tests {
         g.data_dir = data.to_string_lossy().to_string();
         for k in 0..16 {
             let p = g.mc4b_photo_path();
-            assert!(p.ends_with(&format!("slot_{k:02}.png")));
+            assert!(p.ends_with(&format!("slot_{k:02}.jpg")));
             assert_eq!(g.mc4_awarded("aFAB"), k == 15);
             std::fs::write(&p, b"png").unwrap();
         }
-        assert!(g.mc4b_photo_path().ends_with("slot_00.png"));
+        assert!(g.mc4b_photo_path().ends_with("slot_00.jpg"));
         assert_eq!(g.mc4_stat("tPTS", 0), 17.0);
         let _ = std::fs::remove_dir_all(&dir);
         // the vehicle table +48 (ContentDownloadFlags, else ContentFlags) for aTDV

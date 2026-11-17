@@ -11,8 +11,12 @@
 //! Notes: `work/career2/gasphoto/notes.md` section 2, `work/career2/photo/`; log in
 //! `docs/CAREER_RACES.md` ("Photo album").
 //!
-//! The port keeps the pictures as PNG files, `<data>/../photos/album/slot_NN.png`
-//! (`mc4b::album_dir`); the snapshot waiting for a slot is `snapshot.png` there.
+//! The pictures are JPEG files as the original's slots hold them (`<data>/../photos/album/slot_NN.jpg`,
+//! `mc4b::album_dir`; the snapshot waiting for a slot is `snapshot.jpg` there): the shot is encoded by
+//! libjpeg 6b at quality 85, then at 0.9 times that until it is under 0x31FFF bytes (F-81373, F-98738,
+//! F-52399, F-82745 - `jpeg6b`), and what is shown is the JPEG decoded again (F-73137, F-71898); a
+//! slot's picture in the grid is that decoded picture scaled to 64 x 32 by the game's bilinear scaler
+//! (F-25422, F-85906 - `scale_bilinear`). Slot files of older builds (`slot_NN.png`) are still read.
 
 use crate::flash_ui::FlashMovie;
 use crate::game::{Game, MenuAction};
@@ -186,6 +190,10 @@ pub struct PhotoAlbum {
     shot: Option<egui::TextureHandle>,
     /// pictures still to read while PA_LoadFile stands
     to_load: Vec<usize>,
+    /// a used slot's picture to decode into PreviewPicture (F-73137 through sub_8263C9C8), and a slot
+    /// whose grid picture is to be made again after a save - both done where the textures are made
+    want_preview: Option<usize>,
+    reload: Option<usize>,
     /// for the host (main.rs): the frame to write, a debug shot, sounds, leave photo mode
     pub capture: Option<String>,
     pub debug_shot: Option<String>,
@@ -213,6 +221,8 @@ impl Default for PhotoAlbum {
             preview: None,
             shot: None,
             to_load: Vec::new(),
+            want_preview: None,
+            reload: None,
             capture: None,
             debug_shot: None,
             sounds: Vec::new(),
@@ -250,11 +260,123 @@ impl PhotoAlbum {
 }
 
 fn snapshot_path(data_dir: &str) -> PathBuf {
-    crate::mc4b::album_dir(data_dir).join("snapshot.png")
+    crate::mc4b::album_dir(data_dir).join("snapshot.jpg")
 }
 
+/// The file a slot's picture is written to.
 fn slot_path(data_dir: &str, k: usize) -> PathBuf {
-    crate::mc4b::album_dir(data_dir).join(format!("slot_{k:02}.png"))
+    crate::mc4b::album_dir(data_dir).join(format!("slot_{k:02}.jpg"))
+}
+
+/// The file slot k's picture is read from: its JPEG, else the PNG an older build wrote.
+pub fn slot_file(dir: &std::path::Path, k: usize) -> Option<PathBuf> {
+    let jpg = dir.join(format!("slot_{k:02}.jpg"));
+    let png = dir.join(format!("slot_{k:02}.png"));
+    if jpg.exists() {
+        Some(jpg)
+    } else if png.exists() {
+        Some(png)
+    } else {
+        None
+    }
+}
+
+/// The size of the original's snapshot: its screen buffer (F-38121 sets the picture to the display's
+/// width and height - 1280 x 720 on the console).
+pub const SHOT_W: usize = 1280;
+pub const SHOT_H: usize = 720;
+/// F-98738: the JPEG must come out under this many bytes (`cmplw size, 0x31FFF` / `bge`)
+pub const SHOT_MAX_BYTES: usize = 0x31FFF;
+
+/// The game's image scaler F-85906 (used by F-25422 to make a slot's 64 x 32 picture): bilinear in 15-bit
+/// fixed point. The steps are ((size - 1) << 15) / (new size - 1) - 1 (signed division, truncated), the
+/// four weights ((32768 - fx)(32768 - fy)) >> 15 and so on, each byte (sum of byte x weight) >> 15, the
+/// low 8 bits kept. 4 bytes a pixel; `pitch` in bytes. The new size must be at least 2 x 2.
+pub fn scale_bilinear(src: &[u8], sw: usize, sh: usize, pitch: usize, dw: usize, dh: usize) -> Vec<u8> {
+    let mut out = vec![0u8; dw * dh * 4];
+    if sw < 2 || sh < 2 || dw < 2 || dh < 2 {
+        return out;
+    }
+    let xstep = ((((sw as i32) << 15) - 32768) / (dw as i32 - 1)) - 1;
+    let ystep = ((((sh as i32) << 15) - 32768) / (dh as i32 - 1)) - 1;
+    let mut fy: i32 = 0;
+    let mut d = 0usize;
+    for _ in 0..dh {
+        let yi = (fy >> 15) as usize;
+        let yf = (fy & 0x7fff) as u32;
+        let row0 = yi * pitch;
+        let row1 = row0 + pitch;
+        let mut fx: i32 = 0;
+        for _ in 0..dw {
+            let xf = (fx & 0x7fff) as u32;
+            let xo = ((fx >> 15) as usize) * 4;
+            let w00 = ((32768 - xf).wrapping_mul(32768 - yf)) >> 15;
+            let w01 = (xf.wrapping_mul(32768 - yf)) >> 15;
+            let w10 = ((32768 - xf).wrapping_mul(yf)) >> 15;
+            let w11 = (xf.wrapping_mul(yf)) >> 15;
+            for c in 0..4 {
+                let p = |o: usize| *src.get(o).unwrap_or(&0) as u32;
+                let s = p(row0 + xo + c).wrapping_mul(w00)
+                    .wrapping_add(p(row0 + xo + 4 + c).wrapping_mul(w01))
+                    .wrapping_add(p(row1 + xo + c).wrapping_mul(w10))
+                    .wrapping_add(p(row1 + xo + 4 + c).wrapping_mul(w11));
+                out[d + c] = (s >> 15) as u8;
+            }
+            d += 4;
+            fx += xstep;
+        }
+        fy += ystep;
+    }
+    out
+}
+
+/// F-81373 / F-98738 / F-52399: the shot as a JPEG of the original's slot - quality 85 first, then the
+/// quality (a float) times 0.9, truncated to an integer for libjpeg, until the file is under
+/// `SHOT_MAX_BYTES`. `rgba` is the frame (4 bytes a pixel); a frame of another size than the original's
+/// screen is first scaled to it with `scale_bilinear` (the port's step: the console's buffer was always
+/// that size).
+pub fn encode_snapshot(rgba: &[u8], w: usize, h: usize) -> Vec<u8> {
+    let scaled;
+    let px: &[u8] = if (w, h) == (SHOT_W, SHOT_H) {
+        rgba
+    } else {
+        scaled = scale_bilinear(rgba, w, h, w * 4, SHOT_W, SHOT_H);
+        &scaled
+    };
+    let rgb: Vec<u8> = px.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+    let mut q: f32 = 85.0;
+    let mut jpg = crate::jpeg6b::encode(&rgb, SHOT_W, SHOT_H, 85);
+    while jpg.len() >= SHOT_MAX_BYTES && q > 0.0 {
+        q *= 0.9;
+        jpg = crate::jpeg6b::encode(&rgb, SHOT_W, SHOT_H, q as i32);
+    }
+    jpg
+}
+
+/// The frame written as the snapshot (the host's capture, main.rs).
+pub fn write_snapshot(path: &str, rgba: &[u8], w: usize, h: usize) -> std::io::Result<()> {
+    std::fs::write(path, encode_snapshot(rgba, w, h))
+}
+
+/// A picture file as 4 bytes a pixel: a JPEG decoded as F-71898 does it (RGB, alpha 255; a file not
+/// starting FF D8 is no picture - F-73137, F-25422), or an older build's PNG.
+pub fn load_picture(path: &std::path::Path) -> Option<(Vec<u8>, usize, usize)> {
+    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("png")) {
+        let img = load_png(path)?;
+        let [w, h] = img.size;
+        return Some((img.pixels.iter().flat_map(|c| c.to_array()).collect(), w, h));
+    }
+    let data = std::fs::read(path).ok()?;
+    if data.len() < 2 || data[0] != 0xff || data[1] != 0xd8 {
+        return None;
+    }
+    let (rgb, w, h) = crate::jpeg6b::decode(&data)?;
+    Some((rgb.chunks_exact(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect(), w, h))
+}
+
+/// A slot's picture in the grid: 64 x 32 (F-25422).
+fn grid_picture(px: &[u8], w: usize, h: usize) -> egui::ColorImage {
+    egui::ColorImage::from_rgba_unmultiplied([64, 32], &scale_bilinear(px, w, h, w * 4, 64, 32))
 }
 
 /// A PNG picture for the movie, cut down by whole steps to at most 1024 wide.
@@ -335,7 +457,7 @@ impl Game {
 
     fn pa_used_from_disk(&mut self) {
         for k in 0..SLOTS {
-            self.album.used[k] = slot_path(&self.data_dir, k).exists();
+            self.album.used[k] = slot_file(&crate::mc4b::album_dir(&self.data_dir), k).is_some();
         }
     }
 
@@ -365,7 +487,8 @@ impl Game {
 
     /// The slot's picture read again (after a load or a save).
     fn pa_load_thumb(&mut self, ctx: &egui::Context, k: usize) {
-        let t = if self.album.used[k] { load_png(&slot_path(&self.data_dir, k)).map(|img| ctx.load_texture(format!("photoalbum:slot{k}"), img, egui::TextureOptions::LINEAR)) } else { None };
+        let pic = if self.album.used[k] { slot_file(&crate::mc4b::album_dir(&self.data_dir), k).and_then(|p| load_picture(&p)) } else { None };
+        let t = pic.map(|(px, w, h)| ctx.load_texture(format!("photoalbum:slot{k}"), grid_picture(&px, w, h), egui::TextureOptions::LINEAR));
         self.album.thumbs[k] = t.clone();
         self.pa_bind(&thumb_clip(k), 1 + k as u32, t);
     }
@@ -395,8 +518,8 @@ impl Game {
     /// sub_8263C9C8: a used slot's picture becomes PreviewPicture; a free one sets `empty_slot`.
     fn pa_show_slot(&mut self, k: usize) {
         if self.album.used[k] {
-            self.album.preview = self.album.thumbs[k].clone();
-            self.pa_bind_preview();
+            // (the slot's file decoded whole, F-73137: done where the textures are made - `photo_album_ui`)
+            self.album.want_preview = Some(k);
         } else {
             self.pa_set_int("empty_slot", 1);
         }
@@ -492,11 +615,11 @@ impl Game {
         let from = snapshot_path(&self.data_dir);
         if std::fs::copy(&from, &to).is_ok() {
             let _ = std::fs::remove_file(&from);
+            // (an older build's PNG of that slot goes: the JPEG is the slot's picture now)
+            let _ = std::fs::remove_file(to.with_extension("png"));
         }
         self.album.used[k] = to.exists();
-        self.album.thumbs[k] = self.album.shot.clone();
-        let t = self.album.shot.clone();
-        self.pa_bind(&thumb_clip(k), 1 + k as u32, t);
+        self.album.reload = Some(k);
         self.album.pending = false;
         self.pa_leave_choose();
         // PA_SaveFile: overwritemode 0, helptext Save_Dialog_Saving, WaitingForSaveMode, 3 s
@@ -600,6 +723,15 @@ impl Game {
                 }
             }
         }
+        // a used slot's picture into PreviewPicture (decoded whole), a saved slot's grid picture again
+        if let Some(k) = self.album.want_preview.take() {
+            let pic = slot_file(&crate::mc4b::album_dir(&self.data_dir), k).and_then(|p| load_picture(&p));
+            self.album.preview = pic.map(|(px, w, h)| ctx.load_texture("photoalbum:preview", egui::ColorImage::from_rgba_unmultiplied([w, h], &px), egui::TextureOptions::LINEAR));
+            self.pa_bind_preview();
+        }
+        if let Some(k) = self.album.reload.take() {
+            self.pa_load_thumb(ctx, k);
+        }
         if self.album.stage == Stage::Off {
             return MenuAction::None;
         }
@@ -688,7 +820,8 @@ impl Game {
                 let p = snapshot_path(&self.data_dir);
                 if p.exists() || n > 30 {
                     // snapshotTaken: SnapShot unfocused (prompt 0, framing 0), SS_SeeFullScreenPhoto
-                    self.album.shot = load_png(&p).map(|img| ctx.load_texture("photoalbum:snapshot", img, egui::TextureOptions::LINEAR));
+                    // (F-73137: the JPEG decoded again is what is shown)
+                    self.album.shot = load_picture(&p).map(|(px, w, h)| ctx.load_texture("photoalbum:snapshot", egui::ColorImage::from_rgba_unmultiplied([w, h], &px), egui::TextureOptions::LINEAR));
                     self.album.preview = self.album.shot.clone();
                     self.pa_bind_preview();
                     self.pa_set_int("cur_visibility_framing", 0);
@@ -949,7 +1082,7 @@ mod tests {
         // fifteen slots, out of order, then an overwrite of one of them
         for k in (1..16).rev() {
             let p = g.mc4b_photo_save(k);
-            assert!(p.ends_with(&format!("slot_{k:02}.png")));
+            assert!(p.ends_with(&format!("slot_{k:02}.jpg")));
             std::fs::write(&p, b"png").unwrap();
         }
         assert!(!g.mc4_awarded("aFAB"));
@@ -960,6 +1093,32 @@ mod tests {
         std::fs::write(g.mc4b_photo_save(0), b"png").unwrap();
         assert!(g.mc4_awarded("aFAB"));
         assert_eq!(g.mc4_stat("tPTS", 0), 17.0);
+        // an older build's PNG counts as a used slot; the JPEG is read first
+        let album = crate::mc4b::album_dir(&g.data_dir);
+        std::fs::remove_file(album.join("slot_03.jpg")).unwrap();
+        std::fs::write(album.join("slot_03.png"), b"png").unwrap();
+        assert_eq!(slot_file(&album, 3), Some(album.join("slot_03.png")));
+        assert_eq!(slot_file(&album, 4), Some(album.join("slot_04.jpg")));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// F-85906 by hand on a 3 x 2 picture to 2 x 2: the steps are ((3 - 1) << 15) / 1 - 1 = 65535 and
+    /// (1 << 15) / 1 - 1 = 32767, so the last column samples 0.99997 of the way to x = 2 and the last row
+    /// 0.99997 of the way to y = 1 - each weight truncated, each sum shifted down.
+    #[test]
+    fn scaler_steps_and_weights() {
+        let mut src = vec![0u8; 3 * 2 * 4];
+        for (i, v) in [0u8, 100, 200, 50, 150, 250].iter().enumerate() {
+            src[i * 4..i * 4 + 4].copy_from_slice(&[*v; 4]);
+        }
+        let out = scale_bilinear(&src, 3, 2, 12, 2, 2);
+        let px: Vec<u8> = out.chunks_exact(4).map(|p| p[0]).collect();
+        // (0,0): row 0, x 0 exactly. (1,0): x = 1 + 32767/32768: w00 = (1 * 32768) >> 15 = 1, w01 = 32767.
+        // (0,1): y frac 32767: w00 = (32768 * 1) >> 15 = 1, w10 = 32767.
+        let x1 = (100u32 * 1 + 200 * 32767) >> 15;
+        let y1 = (0u32 * 1 + 50 * 32767) >> 15;
+        let w = |a: u32, b: u32| (a * b) >> 15;
+        let xy = (100 * w(1, 1) + 200 * w(32767, 1) + 150 * w(1, 32767) + 250 * w(32767, 32767)) >> 15;
+        assert_eq!(px, vec![0, x1 as u8, y1 as u8, xy as u8]);
     }
 }

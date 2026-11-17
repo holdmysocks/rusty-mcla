@@ -11,6 +11,7 @@ static ALLOC: heapcensus::Census = heapcensus::Census;
 mod boot;
 mod bootload;
 mod carpic;
+mod jpeg6b;
 mod figlight;
 mod hooks;
 mod mc4;
@@ -14780,6 +14781,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     if let Some(code) = self.carpic.take(&cfg, phase, rgba, w, h) {
                         hooks::flush_log();
                         std::process::exit(code);
+                    }
+                } else if path.ends_with(".jpg") {
+                    // (the photo album's snapshot: a JPEG as the original's slot holds it - photoalbum.rs)
+                    match photoalbum::write_snapshot(&path, &rgba, w as usize, h as usize) {
+                        Ok(()) => log::info!("photo: snapshot written to {}", path),
+                        Err(e) => log::warn!("photo: {}: {}", path, e),
                     }
                 } else if let Ok(f) = std::fs::File::create(&path) {
                     let mut enc = png::Encoder::new(std::io::BufWriter::new(f), w, h);

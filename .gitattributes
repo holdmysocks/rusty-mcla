@@ -4,3 +4,5 @@
 *.ico binary
 *.zip binary
 *.exe binary
+*.jpg binary
+*.rgb binary
