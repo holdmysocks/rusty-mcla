@@ -1850,9 +1850,11 @@ impl Roamers {
         // within 250 of the player, "COPS ARE TOO CLOSE" and no run to the line - `mc4_meet`)
         self.accepted = true;
         self.rival_challenged = !vehicles.cars[ri].driver.is_empty();
-        // (MCLA_ROAM_TEST=nocops: the self-test runs to the line whatever police are about)
+        // (MCLA_ROAM_TEST=nocops: the self-test runs to the line whatever police are about; test hook MCLA_COPS_CLOSE=1:
+        // as if police were within 250 m - COPS ARE TOO CLOSE, the race at its grid)
         // (PoliceManager_IsAnyPoliceCloseToPlayer(250), F-91297: the units on the road, squared and fused, strictly under)
-        let s19d_cops = crate::police::any_police_close(Some(pp), vehicles.cars.iter().filter(|c| c.cop).map(|c| c.state.pos), 250.0) && std::env::var("MCLA_ROAM_TEST").map_or(true, |v| v != "nocops");
+        let s19d_cops = crate::police::any_police_close(Some(pp), vehicles.cars.iter().filter(|c| c.cop).map(|c| c.state.pos), 250.0) && std::env::var("MCLA_ROAM_TEST").map_or(true, |v| v != "nocops")
+            || std::env::var("MCLA_COPS_CLOSE").is_ok();
         let s19d_man = man.as_ref().map(|m| (m.name.clone(), m.car.clone(), m.config.clone()));
         game.man_mod = man.as_ref().map(|m| (m.name.clone(), m.mod_value));
         game.man_diff = man.as_ref().map(|m| m.difficulty);
