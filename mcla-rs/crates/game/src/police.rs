@@ -571,6 +571,16 @@ fn search_clock_runs(clock: f32) -> bool {
     f64::from(clock) > 0.0
 }
 
+/// A ticket scene's `ticket_splash` event (its start, its length): form 45 with `cop_ticket` (the scene event handler F-91263's start,
+/// event 65; its end half F-26895 closes form 45). The scenes' event tables: docs/reference/hookmen/pullover_face_reaction.md
+pub fn ticket_splash(scene: &str) -> Option<(f32, f32)> {
+    match scene {
+        "cut_cop_fidget_02" | "sc_cut_cop_ticket_suv" => Some((1.9667, 4.0)),
+        "cut_cop_fidget_bike" => Some((1.6333, 4.3333)),
+        _ => None,
+    }
+}
+
 /// What the Search state's tick (F-40917, the Arrow Trap's F-32025) does with its clock +16 in one update.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum SearchStep {

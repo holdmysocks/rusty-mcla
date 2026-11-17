@@ -612,6 +612,8 @@ struct App {
     cine_caption: Option<String>,
     /// test hook MCLA_SHOT_AT_GO: taken
     shot_at_go: bool,
+    /// frames the police banner has been up (the MCLA_SHOT_ON_BANNER test hook)
+    banner_frames: u32,
     /// the original's start-scene picker (its shuffle bags last the session)
     prerace_picker: Option<prerace::Picker>,
     /// the start scene's events on the racers (prerace.rs `slot_events`): its script runs to the clip's end
@@ -1687,6 +1689,7 @@ impl App {
             tour_field: None,
             cine_caption: None,
             shot_at_go: false,
+            banner_frames: 0,
             prerace_picker: None,
             prerace_acts: None,
             prerace_last: None,
@@ -5990,6 +5993,23 @@ impl App {
                 self.game.police_on_player = true;
             }
             self.game.police_fine = if self.police.goons { 0 } else { self.police.fine as i64 };
+            // (the arrest's banner, form 45 with cop_arrest: shown by the police manager's step (F-22530) when the arrest
+            // is posted - StateArrest's start, manager +68 = the target - for the player's tactic, and closed by CopArrest.sco
+            // at 0x6ac once its fade down is full, with Racer_Deactivate: the port's `arrest_deact`. Recorded: work/hookmen2/dp
+            // cap/r1_shots, the banner from the first update of the arrest over the fade's black)
+            let arrest = self.police.heat == police::Heat::Busted && !self.police.goons && self.police.target.is_none() && !self.arrest_deact && self.cine.playing.is_none();
+            // (the ticket scenes' ticket_splash: form 45 with cop_ticket from the event's start for its length - 1.9667 s + 4.0 in
+            // cut_cop_fidget_02 / sc_cut_cop_ticket_suv, 1.6333 s + 4.3333 in cut_cop_fidget_bike; pullover_face_reaction.md)
+            let ticket = self.cine.playing.as_ref().and_then(|sc| police::ticket_splash(&sc.name).map(|(t0, len)| sc.t >= t0 && sc.t < t0 + len)).unwrap_or(false);
+            self.game.arrest_banner = if arrest { Some("cop_arrest") } else if ticket { Some("cop_ticket") } else { None };
+            // (test hook MCLA_SHOT_ON_BANNER=n: the screenshot on the banner's n-th frame up)
+            if self.game.arrest_banner.is_some() {
+                self.banner_frames += 1;
+                if std::env::var("MCLA_SHOT_ON_BANNER").ok().and_then(|v| v.parse::<u32>().ok()) == Some(self.banner_frames) {
+                    log::info!("shot on banner frame {} ({:?}, scene {:?})", self.banner_frames, self.game.arrest_banner, self.cine.playing.as_ref().map(|sc| (sc.name.clone(), sc.t)));
+                    self.game.shot_now = true;
+                }
+            }
             // (step 23: the slow motion, the tutorials, the statistics and achievements)
             // (StartTactic's stat: gCPA + 1 a start, F-33550)
             for _ in 0..std::mem::take(&mut self.police.stat_cpa) {
@@ -8855,9 +8875,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             self.game.write_save(&self.opt.data_dir);
                             // (Form_ShowForm(46) opens after the scene, CopArrest.sco 0x106f: the panel waits for it)
                             self.arrest_form = Some((chase, f));
-                            let st = |k: &str, fb: &str| self.game.career.strings.get(k).map(|s| s.to_uppercase()).unwrap_or_else(|| fb.to_string());
-                            let m = format!("{}   {} ${}", st("arrest_title", "ARRESTED"), st("cop_fine_header", "FINE:"), f);
-                            self.game.show_message(&m);
+                            // (no splash here: the HUD's forms are closed and form 45, the arrest's banner, is up -
+                            // `Game::arrest_banner`; the fine is shown on form 46 after the scene)
                         }
                         // (CopArrest.sco 0x36f: fn 0x37c(1, 1, 1.0, 0) - a 1 s fade to black, waited, before anything else;
                         // the scene starts under the full black, below)

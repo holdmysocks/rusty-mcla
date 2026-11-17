@@ -827,6 +827,13 @@ pub struct Game {
     /// the ARRESTED panel: seconds until it comes up (the arrest's scene first), the
     /// pursuit's length in seconds and the fine
     pub arrest_panel: Option<(f32, f32, i64)>,
+    /// The police banner, form 45 (the popup movie's template 59 ArrestedPanel) with its text key: `cop_arrest` when an arrest
+    /// is posted (the police manager's step, manager +68 set) until CopArrest.sco closes it once its fade down is full (0x6ac),
+    /// drawn over that black; `cop_ticket` in a ticket scene's ticket_splash event (the scene event handler's start, event 65).
+    /// main sets it each frame
+    pub arrest_banner: Option<&'static str>,
+    /// the banner shown last frame (to hide the popup movie once when it goes)
+    arrest_banner_on: bool,
     /// the panel is a ticket's: what it is for (1 reckless driving, 2 traffic violation,
     /// 4 destruction of property)
     pub ticket_for: Option<u32>,
@@ -1664,6 +1671,8 @@ impl Game {
             race_favs: Vec::new(),
             cfgs: Default::default(),
             arrest_panel: None,
+            arrest_banner: None,
+            arrest_banner_on: false,
             ticket_for: None,
             reward_panel: false,
             replay_rec: Default::default(),
@@ -5398,7 +5407,7 @@ impl Game {
         // the tail -, so the ARRESTED / TICKETED panel (form 46/47, shown after the scene) stands over a tutorial box still up from
         // the pursuit's start (form 103, F-24639): the tutorial waits under it, not drawn, its time held, and the panel's A is
         // the panel's alone - also in the frame it closes the panel)
-        let tut_under = self.arrest_panel.is_some();
+        let tut_under = self.arrest_panel.is_some() || self.arrest_banner.is_some();
         self.load_ui(ctx);
         crate::uiprof::mark("load_ui");
         // (the start-up movie, boot.rs: once the UI's shared textures are there)
@@ -11228,6 +11237,24 @@ impl Game {
             ctx.move_to_top(layer);
             ctx.layer_painter(layer).rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha((self.place_mask.max(self.title_mask).max(self.intro_mask).clamp(0.0, 1.0) * 255.0).round() as u8));
         }
+        // the arrest's banner over everything, the fade down's black included (form 45 is closed only after it, CopArrest 0x6ac)
+        if let Some(key) = self.arrest_banner.filter(|_| self.flash_popup.is_some()) {
+            let title = self.career.strings.get(key).map(|v| v.to_uppercase()).unwrap_or_else(|| key.to_string());
+            let page = crate::flash_ui::MenuPage { layout: crate::flash_ui::MenuLayout::Arrested, title, select: usize::MAX, ..Default::default() };
+            let dt = ctx.input(|i| i.stable_dt).min(0.1);
+            let layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("arrest_banner"));
+            ctx.move_to_top(layer);
+            if let Some(fp) = self.flash_popup.as_mut() {
+                fp.show(&page);
+                fp.movie.player.update(dt);
+                fp.movie.paint(ctx, &ctx.layer_painter(layer));
+            }
+            self.arrest_banner_on = true;
+        } else if std::mem::take(&mut self.arrest_banner_on) {
+            if let Some(fp) = self.flash_popup.as_mut() {
+                fp.hide();
+            }
+        }
         self.message_timer = (self.message_timer - ctx.input(|i| i.stable_dt)).max(0.0);
         action
     }
@@ -11422,9 +11449,9 @@ impl Game {
             }
         }
 
-        // ---- police status (top centre); with the HUD movie the strip under the
-        // cluster shows pull-over / pursuit / searching (arrest is still drawn here) ----
-        if info.heat > 0 && !(flash && info.heat <= 3) {
+        // ---- police status (top centre), only without the HUD movie: with it the strip under the cluster carries the
+        // pursuit's texts and the arrest has its banner on the popup movie (`arrest_banner`) ----
+        if info.heat > 0 && !flash {
             let blink = (ctx.input(|i| i.time) * 4.0) as i64 % 2 == 0;
             let red = egui::Color32::from_rgb(255, 60, 50);
             let blue = egui::Color32::from_rgb(80, 140, 255);
