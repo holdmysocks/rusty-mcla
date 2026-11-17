@@ -12,7 +12,8 @@
 //! * `CALL` / `REPLY` / `ACKNOWLEDGE` -> the officer's plain line (`CALL_DISPATCH`, `REPLY`), or the
 //!   dispatcher's with the other party's call sign (`CALL_3ADAM5`)
 //! * `PRE_SQUELCH` / `POST_SQUELCH` -> the clicks of the dispatcher's or the car's set
-//! (`CALL_NEIGHBORHOOD` and a few rare ones have no recognisable assets: left out.)
+//! * `CALL_NEIGHBORHOOD` / `SUSPECT_LAST_SEEN` -> `CALL_NEIGHBORHOOD_HW_SS`: the district part of his street
+//! (`VEHICLE_REACQUIRE` is left out.)
 //!
 //! Who speaks (docs/reference/audio/POLICE_RADIO_VOICES.md): a call has one sender and one receiver voice for all
 //! its lines (F-95157 keeps them at mgr +2200 / +2204; a step of type Sender or Receiver takes that side's voice,
@@ -116,6 +117,9 @@ pub struct Radio {
     queue: VecDeque<(String, f32)>,
     wait: f32,
     rng: u32,
+    /// each script step's last take (the asset record's +20 of F-70477, global per record, 0 at load): (scenario,
+    /// wording, step)
+    last_take: HashMap<(String, usize, usize), i32>,
     /// the player's speaker plays a scenario (the one speech manager's +2260 with +2252 the player's, `speech::PLAYER`,
     /// rank 1 against the radio's 0): set by the game before the radio's requests
     pub speech_on: bool,
@@ -429,9 +433,9 @@ impl Radio {
         let is_dispatch = |v: &Option<String>| v.as_ref().is_some_and(|v| disp.contains(v));
         let dir = direction(ctx.heading, self.road_dir);
         // (clip, role) in order; squelches are filled in afterwards
-        let mut line: Vec<(Option<String>, u8, bool)> = Vec::new();
+        let mut line: Vec<(Option<String>, u8, bool, usize)> = Vec::new();
         let mut said: Vec<String> = Vec::new();
-        for st in &steps {
+        for (si, st) in steps.iter().enumerate() {
             let (asset, role): (String, u8) = match st {
                 Step::Play { asset, role, .. } => (asset.clone(), *role),
                 Step::Special { name, role } => {
@@ -444,7 +448,7 @@ impl Radio {
                     };
                     let a = match name.as_str() {
                         "PRE_SQUELCH" | "POST_SQUELCH" => {
-                            line.push((None, *role, name == "PRE_SQUELCH"));
+                            line.push((None, *role, name == "PRE_SQUELCH", si));
                             continue;
                         }
                         "FREEWAY_ENTER" | "FREEWAY_EXIT" if !self.ramp.is_empty() => format!("{name}_{}", self.ramp),
@@ -452,6 +456,9 @@ impl Radio {
                         // F-84504: the street whole when a freeway / ramp, else after its district part
                         "LOCATION1" if !self.street.is_empty() => format!("LOCATION1_{}", if whole_name(&self.street) { &self.street[..] } else { self.street.get(6..).unwrap_or("") }),
                         "LOCATION2" if self.cross.is_some() => format!("LOCATION2_{}", self.cross.as_deref().unwrap_or("")),
+                        // F-73009 / F-26958 (CALL_NEIGHBORHOOD_%s / SUSPECT_LAST_SEEN_%s): the context's district (+188), none
+                        // when it is empty
+                        "CALL_NEIGHBORHOOD" | "SUSPECT_LAST_SEEN" if !self.district.is_empty() => format!("{name}_{}", self.district),
                         "VEHICLE_MODEL" if !ctx.car.is_empty() => format!("MODEL_{}", ctx.car.to_ascii_uppercase()),
                         "CALL" => with("CALL", "CALL_DISPATCH"),
                         "REPLY" => with("REPLY", "REPLY"),
@@ -469,15 +476,15 @@ impl Radio {
             if takes.is_empty() {
                 continue;
             }
-            let k = takes[self.rand() as usize % takes.len()].clone();
+            let k = takes[self.take(&key, pick, si, takes.len())].clone();
             said.push(format!("{v}:{asset}"));
-            line.push((Some(k), role, false));
+            line.push((Some(k), role, false, si));
         }
         if !line.iter().any(|l| l.0.is_some()) {
             return false;
         }
         self.playing = priority;
-        for (clip, role, pre) in line {
+        for (clip, role, pre, si) in line {
             match clip {
                 Some(k) => self.queue.push_back((k, 0.7)),
                 None => {
@@ -485,7 +492,7 @@ impl Radio {
                     let bank = format!("police_radio/0x{:08x}", joaat(if is_dispatch(&voice[role as usize]) { "POLICE_RADIO_SQUELCH_DISPATCH" } else { "POLICE_RADIO_SQUELCH_OFFICER" }));
                     let takes: Vec<String> = self.takes(if pre { "PRE_SQUELCH" } else { "POST_SQUELCH" }).into_iter().filter(|k| bank_of(k) == bank).collect();
                     if !takes.is_empty() {
-                        let k = takes[self.rand() as usize % takes.len()].clone();
+                        let k = takes[self.take(&key, pick, si, takes.len())].clone();
                         self.queue.push_back((k, 0.5));
                     }
                 }
@@ -493,6 +500,16 @@ impl Radio {
         }
         log::info!("police radio: {} (wording {} of {}): {}", key, pick + 1, n, said.join(" / "));
         true
+    }
+
+    /// A step's take (F-70477, as the speech's lines): v = rand(1, n) on the audio's shared state; when v is the step
+    /// record's last take and n > 1, one on (past n: 1); v is its new last take. The index into the takes (v - 1).
+    fn take(&mut self, scenario: &str, wording: usize, step: usize, n: usize) -> usize {
+        let n = n as i32;
+        let rec = (scenario.to_string(), wording, step);
+        let v = bump_take(crate::sndobj::audio_rand(1, n), self.last_take.get(&rec).copied().unwrap_or(0), n);
+        self.last_take.insert(rec, v);
+        v as usize - 1
     }
 
     pub fn stop(&mut self) {
@@ -529,8 +546,35 @@ impl Radio {
     }
 }
 
+/// F-70477's bump: the drawn take v (1..n) when it is not the record's last, else the next (past n: 1); n = 1 keeps it.
+fn bump_take(v: i32, last: i32, n: i32) -> i32 {
+    if v == last && n > 1 {
+        if v + 1 > n {
+            1
+        } else {
+            v + 1
+        }
+    } else {
+        v
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    /// The radio's take picks recorded on the running original (r1, one pursuit, 79 picks of F-70477 with 8 bumps):
+    /// drawn v, n, the step record's last take, the take said. The record is the script step (the same LOCATION2 step
+    /// keeps its last take over different streets; another wording of the scenario starts at 0).
+    #[test]
+    fn radio_takes_bump_as_recorded() {
+        let mut bumps = 0;
+        for l in include_str!("testdata/radio_take_ref.txt").lines() {
+            let f: Vec<i32> = l.split_whitespace().map(|x| x.parse().unwrap()).collect();
+            assert_eq!(super::bump_take(f[0], f[2], f[1]), f[3], "{l}");
+            bumps += (f[0] != f[3]) as i32;
+        }
+        assert_eq!(bumps, 8);
+    }
+
     /// The player's speaker playing (rank 1 above the radio's 0): a report is refused; a queued one goes to the speech
     /// manager's ring.
     #[test]

@@ -676,6 +676,8 @@ pub struct SoundLib {
     /// while a `wait_load` request is made: the files it waits for
     make_wait: Option<Vec<(PathBuf, i32)>>,
     clip_uses: u64,
+    /// D59: seconds to the next idle-clip trim of `update` (also run at once when a load came in)
+    trim_wait: f32,
     rng: SharedMwc,
     /// the audio controller's three timers (F-46276: engine+572 + 12 k: time, rate, paused): a sound on a paused timer is
     /// not updated (F-89113 skips it; its voice holds). Timer 0 is paused while the game is (F-99037, `sound.rs`).
@@ -973,6 +975,7 @@ impl SoundLib {
             resident: Default::default(),
             make_wait: None,
             clip_uses: 0,
+            trim_wait: 0.0,
             rng: SharedMwc,
             timer_paused: [false; 3],
             timer_ms: [0.0; 3],
@@ -1519,7 +1522,9 @@ impl SoundLib {
     }
 
     /// The loader's finished files into the clips (a file that could not be read is kept as none, as a read here).
-    fn take_loaded(&mut self) {
+    /// The loader's finished reads into the cache; whether any was new.
+    fn take_loaded(&mut self) -> bool {
+        let mut new = false;
         for (file, c) in self.loader.take() {
             if self.clips.contains_key(&file) {
                 continue;
@@ -1527,7 +1532,9 @@ impl SoundLib {
             self.clip_uses += 1;
             let c = c.map(Arc::new);
             self.clips.insert(file, (c, self.clip_uses));
+            new = true;
         }
+        new
     }
 
     /// The banks resident from the engine's start read on the loader's thread (F-31713 loads each wave slot with a
@@ -2101,12 +2108,16 @@ impl SoundLib {
                 self.timer_ms[t] += ms as f64;
             }
         }
-        self.take_loaded();
+        let loaded = self.take_loaded();
         // D59: the idle clips trimmed to their budget here too, not only on an on-the-spot read (the loader's clips and the
         // clips the sounds let go took the idle part ~100 MB over it, docs/PERFORMANCE.md 2026-11-16). Not while a sound
-        // waits for its waves: a wave already in for it is not held yet, and dropped it would be asked for again.
-        if self.insts.iter().all(|i| i.loading.is_empty()) {
+        // waits for its waves: a wave already in for it is not held yet, and dropped it would be asked for again. When a
+        // load came in, else once a second (the clips a sound lets go): the scan reads every clip, ~850 heap blocks, and a
+        // paged-out heap faults on it (Performance's A/B, 2026-11-16)
+        self.trim_wait -= dt;
+        if (loaded || self.trim_wait <= 0.0) && self.insts.iter().all(|i| i.loading.is_empty()) {
             self.trim_clips();
+            self.trim_wait = 1.0;
         }
         crate::ticktimes::pt("lib: scenes, loads");
         let mut insts = std::mem::take(&mut self.insts);
