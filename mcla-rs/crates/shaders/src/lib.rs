@@ -1,13 +1,13 @@
-//! `mcla-shaders`: the game's own sky, road and ocean shader programs, translated on the user's machine.
+//! `mcla-shaders`: the game's own sky, road, ocean and UI gloss shader programs, translated on the user's machine.
 //!
 //! The original game draws its sky dome, the night road and the sea with Xbox 360 shader microcode that sits in the effect files of the
 //! user's disc (and, for the cloud noise pass, inside `default.xex`). The port runs those programs on the GPU as WGSL. The WGSL is a
 //! mechanical translation of the microcode ([`xenos`]), so it is a derivative of the game's data and is NOT part of the source
-//! repository: the installer ([`translate_shaders`], install stage "Translate shaders") writes the ten files below into the user's
+//! repository: the installer ([`translate_shaders`], install stage "Translate shaders") writes the eleven files below into the user's
 //! data folder and the game loads them from there at start-up.
 //!
-//! Inputs (relative to the data folder `data/cache`, written by the extract stage): four effect files below `shaders/city/fxl_final/`
-//! and the Perlin pass cut out of the executable, `shaders/exe/exe_82801b00` ([`cut_exe_effect`]). Output: `shaders_wgsl/xs_*.wgsl`.
+//! Inputs (relative to the data folder `data/cache`, written by the extract stage): six effect files below `shaders/city/fxl_final/`,
+//! the UI's Gloss effect below `shaders/ui/fxl_final/` and the Perlin pass cut out of the executable, `shaders/exe/exe_82801b00` ([`cut_exe_effect`]). Output: `shaders_wgsl/xs_*.wgsl`.
 //! `tools/xs2wgsl.py` (+ `xsh.py`, `xsrun.py`) stay in the repository as the readable Python reference of [`xenos`].
 
 pub mod xenos;
@@ -19,8 +19,20 @@ use xenos::{translate, Translated};
 /// Folder (below the data folder) the translated programs are written to and the game reads them from.
 pub const OUT_DIR: &str = "shaders_wgsl";
 
-/// The ten output files, in the order the installer writes them.
-pub const OUTPUTS: [&str; 10] = ["xs_sky.wgsl", "xs_perlin.wgsl", "xs_sky_cheap.wgsl", "xs_sky_env.wgsl", "xs_minisky.wgsl", "xs_road.wgsl", "xs_roadn.wgsl", "xs_water.wgsl", "xs_pond.wgsl", "xs_shore.wgsl"];
+/// The eleven output files, in the order the installer writes them.
+pub const OUTPUTS: [&str; 11] = [
+    "xs_sky.wgsl",
+    "xs_perlin.wgsl",
+    "xs_sky_cheap.wgsl",
+    "xs_sky_env.wgsl",
+    "xs_minisky.wgsl",
+    "xs_road.wgsl",
+    "xs_roadn.wgsl",
+    "xs_water.wgsl",
+    "xs_pond.wgsl",
+    "xs_shore.wgsl",
+    "xs_gloss.wgsl",
+];
 
 /// Where the executable's Perlin effect is kept (below the data folder), cut out of `default.xex` by [`cut_exe_effect`].
 pub const EXE_EFFECT: &str = "shaders/exe/exe_82801b00";
@@ -34,6 +46,8 @@ const OCEAN: &str = "shaders/city/fxl_final/0x487d7df0";
 const OCEAN_LOD: &str = "shaders/city/fxl_final/0x25bee0f2";
 const POND: &str = "shaders/city/fxl_final/0x5a516d4c";
 const SHORE: &str = "shaders/city/fxl_final/0x6940ee63";
+/// The UI's Gloss effect (the pause menu's frames and screen, the garage and GPS frames).
+const UI_GLOSS: &str = "shaders/ui/fxl_final/0x35719848";
 
 /// First line of every translated file.
 const FIRST_LINE: &str = "// GENERATED on this machine from your own game disc by Rusty MCLA (mcla-shaders, install stage \"Translate shaders\") - do not edit, do not share.";
@@ -199,6 +213,35 @@ pub fn build(data: &Path, name: &str) -> Result<String> {
 {}
 {}", vs.wgsl, body))
         }
+        "xs_gloss.wgsl" => {
+            let fx = read_input(data, UI_GLOSS)?;
+            let vs = tr(out, &fx, "VS_TransformAndTextureAlpha", "xs_gloss_vs")?;
+            let ps = tr(out, &fx, "PS_TexturedGloss", "xs_gloss_ps")?;
+            let mut body = word_renamed(&ps.wgsl, |n| format!("xs_gloss_s{n}"));
+            // The Xenos multiplies 0 x inf to 0, so x^shininess (log2, mul, exp2) is 1 for a shininess of 0 even where x is 0;
+            // IEEE gives NaN there (and AMD's compilers clamp it to 1, NVIDIA's do not).
+            let pw = "let v = (r[9]).yyyy * (xs_c[106]).xxxx;";
+            if body.matches(pw).count() != 1 {
+                return Err(ShaderError::Translate { output: out, reason: "PS_TexturedGloss: the shininess multiply is not where expected".into() });
+            }
+            body = body.replace(pw, "let v = select((r[9]).yyyy * (xs_c[106]).xxxx, vec4<f32>(0.0), (xs_c[106]).xxxx == vec4<f32>(0.0));");
+            let used: Vec<String> = ps.samplers.iter().map(|u| u.replace("xs_s", "xs_gloss_s")).collect();
+            let head = format!(
+                "{FIRST_LINE}
+// The UI's Gloss programs (effect ui/0x35719848), microcode instruction by instruction.
+// VS_TransformAndTextureAlpha reads constants {}
+// (VS_TransformSkinned, the frame's, indexes its bone constants by the vertex: the port stretches the frame on the CPU and
+// draws it with VS_TransformAndTextureAlpha, game/src/menugloss.rs)
+// PS_TexturedGloss reads constants {} and samplers {}
+",
+                cs(&vs.consts),
+                cs(&ps.consts),
+                used.join(" ")
+            );
+            Ok(format!("{head}
+{}
+{}", vs.wgsl, body))
+        }
         "xs_pond.wgsl" => {
             // the fountain basins' and ponds' water (effect CityPondWater): VSCityPondWater + PSCityPondWater
             let fx = read_input(data, POND)?;
@@ -272,12 +315,12 @@ pub fn write_output(data: &Path, name: &'static str) -> Result<FileReport> {
     Ok(FileReport { name, bytes: text.len(), written: true })
 }
 
-/// Translate all ten programs of the data folder `data` (`data/cache`) into `data/shaders_wgsl/`.
+/// Translate all eleven program files of the data folder `data` (`data/cache`) into `data/shaders_wgsl/`.
 pub fn translate_shaders(data: &Path) -> Result<Vec<FileReport>> {
     OUTPUTS.iter().map(|n| write_output(data, n)).collect()
 }
 
-/// Are all ten output files present and non-empty? (A cheap check for the game's start-up; the installer's verify compares content.)
+/// Are all eleven output files present and non-empty? (A cheap check for the game's start-up; the installer's verify compares content.)
 pub fn outputs_present(data: &Path) -> bool {
     OUTPUTS.iter().all(|n| std::fs::metadata(output_path(data, n)).map(|m| m.len() > 0).unwrap_or(false))
 }

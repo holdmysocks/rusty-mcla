@@ -9645,7 +9645,7 @@ impl Game {
                                 }
                                 p.set_path("cur_Menuscale.0", Value::Float(scale[0]));
                                 p.set_path("cur_Menuscale.1", Value::Float(scale[1]));
-                                Some(crate::menu3d::View { vp, frame })
+                                Some(crate::menu3d::View { vp, frame, view_inverse: None })
                             }
                             _ => None,
                         };
@@ -14155,7 +14155,7 @@ impl Game {
             {
                 match (crate::menu3d::read_scene(&mut fm.movie.player), self.ui_meshes.as_mut()) {
                     // (the movie's world meshes - the cursor - through the map camera)
-                    (Some(scene), Some(meshes)) => crate::menu3d::paint(ctx, &lp, meshes, &mut fm.movie, &scene, map_vp.filter(|_| self.hm.is_some()).map(|vp| crate::menu3d::View { vp, frame: glam::Mat4::IDENTITY })),
+                    (Some(scene), Some(meshes)) => crate::menu3d::paint(ctx, &lp, meshes, &mut fm.movie, &scene, map_vp.filter(|_| self.hm.is_some()).map(|vp| crate::menu3d::View { vp, frame: glam::Mat4::IDENTITY, view_inverse: None })),
                     _ => fm.movie.paint(ctx, &lp),
                 }
             }

@@ -84,6 +84,7 @@ mod controls_ref;
 mod hud;
 mod flash_ui;
 mod selfmovie;
+mod menugloss;
 mod flashpic;
 mod minimap_gpu;
 mod toparrow_gpu;
@@ -12919,6 +12920,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             if let Some(s) = r.callback_resources.get_mut::<selfmovie::SelfRes>() {
                 s.new_frame();
             }
+            // (the cars' environment cube, read by the Gloss meshes' dpFront - menugloss.rs)
+            if let Some(g) = r.callback_resources.get::<menugloss::GlossRes>() {
+                if let Ok(mut sh) = g.shared().lock() {
+                    sh.set_env(&gpu.env_tex);
+                }
+            }
             r.update_buffers(&gpu.device, &gpu.queue, &mut enc, &jobs, &desc);
             let ms = |a: Instant, b: Instant| (b - a).as_secs_f32() * 1000.0;
             self.fl_ui = [ms(tu0, tu1), ms(tu1, tu2), ms(tu2, tu3), ms(tu3, tu3a), ms(tu4, Instant::now()), ms(tu3a, tu3b), ms(tu3b, tu4)];
@@ -16755,14 +16762,19 @@ impl App {
         renderer.callback_resources.insert(hudmap_gpu::XrayRes::new(device, queue, plain, 1, true));
         let selfs = selfmovie::Shared::new(device);
         renderer.callback_resources.insert(selfmovie::SelfRes::new(device, selfs.clone(), plain, 1, true));
+        // (the pause menu's Gloss meshes with the original's programs - menugloss.rs)
+        let gloss = menugloss::Shared::new(device);
+        renderer.callback_resources.insert(menugloss::GlossRes::new(device, gloss.clone(), selfmovie::Pics(selfs.clone()), plain, 1, true));
         // (the menus' pass: 4 samples, no depth attachment - uipass.rs)
         let mut renderer4 = egui_wgpu::Renderer::new(device, plain, None, uipass::SAMPLES, false);
         renderer4.callback_resources.insert(hudmap_gpu::XrayRes::new(device, queue, plain, uipass::SAMPLES, false));
         renderer4.callback_resources.insert(selfmovie::SelfRes::new(device, selfs.clone(), plain, uipass::SAMPLES, false));
+        renderer4.callback_resources.insert(menugloss::GlossRes::new(device, gloss.clone(), selfmovie::Pics(selfs.clone()), plain, uipass::SAMPLES, false));
         // (also the UI pass at ANTI-ALIASING 2X: the same callbacks as the others)
         let mut renderer2 = egui_wgpu::Renderer::new(device, plain, None, selfmovie::samples(), false);
         renderer2.callback_resources.insert(hudmap_gpu::XrayRes::new(device, queue, plain, selfmovie::samples(), false));
         renderer2.callback_resources.insert(selfmovie::SelfRes::new(device, selfs.clone(), plain, selfmovie::samples(), false));
+        renderer2.callback_resources.insert(menugloss::GlossRes::new(device, gloss, selfmovie::Pics(selfs.clone()), plain, selfmovie::samples(), false));
         // (the 3D icons' and the minimap's pipelines - flashpic.rs, minimap_gpu.rs)
         // (the navigation mesh, read on first use: ~40 ms in the tick the START warp begins)
         std::thread::spawn(|| { offroad::mesh(); });

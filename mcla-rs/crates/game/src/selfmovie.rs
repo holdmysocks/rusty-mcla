@@ -2,10 +2,10 @@
 //! texture, as the original does it.
 //!
 //! The original (`work/ui-sharp/agent_msaa/notes.md` sections 2 and 6; UI.md "UI edge smoothing"): a movie with a
-//! `dyn3Ds` variable (sub_82724E68) and a `player0mesh` (sub_827232E8 / sub_82722B00) renders itself into the
-//! shared 960 x 640 8888 target "fullscreenself" (0x8290A9A8, 2x MSAA, sub_821F8960): cleared, the stage drawn
-//! flat and squeezed onto the whole picture, resolved (sub_82720C58 -> sub_827237C0 -> sub_82722C00). The mesh
-//! that has `useMovieAsTexture` or is the `player0mesh` then samples that picture (sub_82724220) in the UI pass:
+//! `dyn3Ds` variable (F-33097) and a `player0mesh` (F-75204 / F-40247) renders itself into the
+//! shared 960 x 640 8888 target "fullscreenself" (0x8290A9A8, 2x MSAA, F-31236): cleared, the stage drawn
+//! flat and squeezed onto the whole picture, resolved (F-68803 -> F-73932 -> F-59168). The mesh
+//! that has `useMovieAsTexture` or is the `player0mesh` then samples that picture (F-14472) in the UI pass:
 //! linear / linear, level 0 only, wrap, no anisotropy. Self movies: pause, garage, navsys, navsys_cursor,
 //! raceeditor, 3dicons, sidekick, 0xc10aaf41.
 //!
@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 /// The original's fullscreenself size.
 pub const W: u32 = 960;
 pub const H: u32 = 640;
-/// Its sample count (sub_821F8960's block: 2). A device without 2-sample colour targets (WebGPU guarantees 1 and 4)
+/// Its sample count (F-31236's block: 2). A device without 2-sample colour targets (WebGPU guarantees 1 and 4)
 /// gets 4 instead *(approx.)*.
 pub fn samples() -> u32 {
     if TWO.load(std::sync::atomic::Ordering::Relaxed) { 2 } else { 4 }
@@ -113,6 +113,17 @@ impl Shared {
             self.pics.insert(key.to_string(), Pic { resolve: rv, bg });
         }
         (&self.pics[key], &self.msaa[&format])
+    }
+}
+
+/// The movies' pictures for the other drawers of the meshes that carry them (menugloss.rs).
+#[derive(Clone)]
+pub struct Pics(pub Arc<Mutex<Shared>>);
+
+impl Pics {
+    /// The resolved picture of `key`'s movie (once it has been drawn).
+    pub fn view(&self, key: &str) -> Option<wgpu::TextureView> {
+        self.0.lock().ok()?.pics.get(key).map(|p| p.resolve.clone())
     }
 }
 
@@ -252,14 +263,20 @@ impl egui_wgpu::CallbackTrait for Paint {
     }
 }
 
-/// Queue `movie`'s flat picture (once a frame) and paint a mesh with it: `clip` (of the rectangle `rect`) and `uv`
-/// per vertex of a triangle list (uv over the stage, 0..1), `alpha` the mesh's own.
-pub fn paint_mesh(ctx: &egui::Context, painter: &egui::Painter, rect: egui::Rect, movie: &mut crate::flash_ui::FlashMovie, list: &mcla_flash::draw::DrawList, tris: &[(glam::Vec4, [f32; 2])], alpha: f32) {
+/// Queue `movie`'s flat picture (once a frame); its key.
+pub fn queue_movie(ctx: &egui::Context, movie: &mut crate::flash_ui::FlashMovie, list: &mcla_flash::draw::DrawList) -> String {
     let key = movie.name.clone();
     if !queued(&key) {
         let shapes = movie.self_shapes(ctx, list, [W as f32, H as f32]);
         queue(&key, shapes);
     }
+    key
+}
+
+/// Queue `movie`'s flat picture (once a frame) and paint a mesh with it: `clip` (of the rectangle `rect`) and `uv`
+/// per vertex of a triangle list (uv over the stage, 0..1), `alpha` the mesh's own.
+pub fn paint_mesh(ctx: &egui::Context, painter: &egui::Painter, rect: egui::Rect, movie: &mut crate::flash_ui::FlashMovie, list: &mcla_flash::draw::DrawList, tris: &[(glam::Vec4, [f32; 2])], alpha: f32) {
+    let key = queue_movie(ctx, movie, list);
     let verts = tris.iter().map(|(c, uv)| Vtx { pos: c.to_array(), uv: *uv, alpha }).collect();
     painter.add(egui_wgpu::Callback::new_paint_callback(rect, Paint::new(&key, verts)));
 }

@@ -335,6 +335,8 @@ pub struct UiMesh {
     pub skinned: bool,
     pub min: Vec3,
     pub max: Vec3,
+    /// the material when its shader is the Gloss effect (menugloss.rs)
+    pub gloss: Option<crate::menugloss::GlossMat>,
 }
 
 impl UiMesh {
@@ -371,12 +373,13 @@ impl UiMesh {
                 }
             }
         }
-        let mut m = UiMesh { pos: Vec::new(), normal: Vec::new(), uv: Vec::new(), bone: Vec::new(), indices: Vec::new(), texture: String::new(), skinned: false, min: Vec3::splat(f32::MAX), max: Vec3::splat(f32::MIN) };
+        let mut m = UiMesh { pos: Vec::new(), normal: Vec::new(), uv: Vec::new(), bone: Vec::new(), indices: Vec::new(), texture: String::new(), skinned: false, min: Vec3::splat(f32::MAX), max: Vec3::splat(f32::MIN), gloss: None };
         for model in &d.models {
             for (mesh, si) in &model.parts {
                 let base = m.pos.len() as u32;
                 if m.texture.is_empty() {
                     m.texture = d.shader_group.shaders.get(*si as usize).and_then(|s| s.diffuse()).unwrap_or("").to_ascii_lowercase();
+                    m.gloss = d.shader_group.shaders.get(*si as usize).and_then(crate::menugloss::GlossMat::of);
                 }
                 for i in 0..mesh.positions.len() {
                     let p = mesh.positions[i];
@@ -386,6 +389,10 @@ impl UiMesh {
                     m.normal.push(mesh.normals.get(i).copied().unwrap_or(Vec3::Y));
                     m.uv.push(mesh.uv0.get(i).map_or([0.0, 0.0], |u| [u.x, u.y]));
                     let mut b = Vec3::ZERO;
+                    // (approx.) the vertex follows its heaviest bone. VS_TransformSkinned blends all four by their
+                    // weights; done so here (p + sum(w * bone) * (scale - 1)) the frame's front sheet comes to lie over
+                    // the movie's panels and lightens them (night pause, panel 40 -> 61): the stretch is not decoded yet
+                    // (menugloss.rs, OPEN)
                     if let (Some(bi), Some(bw), false) = (mesh.blend_indices.get(i), mesh.blend_weights.get(i), bones.is_empty()) {
                         let w = bw.to_array();
                         let slot = (0..4).max_by(|a, c| w[*a].total_cmp(&w[*c])).unwrap_or(0);
@@ -412,11 +419,12 @@ pub struct Meshes {
     meshes: HashMap<String, Option<UiMesh>>,
     dict: Option<HashMap<String, Texture>>,
     handles: HashMap<String, Option<TextureHandle>>,
+    rgba: HashMap<String, Option<([u32; 2], std::sync::Arc<Vec<u8>>)>>,
 }
 
 impl Meshes {
     pub fn new(data_dir: &str) -> Meshes {
-        Meshes { data_dir: data_dir.to_string(), meshes: HashMap::new(), dict: None, handles: HashMap::new() }
+        Meshes { data_dir: data_dir.to_string(), meshes: HashMap::new(), dict: None, handles: HashMap::new(), rgba: HashMap::new() }
     }
 
     pub fn mesh(&mut self, name: &str) -> Option<&UiMesh> {
@@ -433,14 +441,12 @@ impl Meshes {
             .as_ref()
     }
 
-    fn texture(&mut self, ctx: &egui::Context, name: &str) -> Option<TextureHandle> {
-        if let Some(h) = self.handles.get(name) {
-            return h.clone();
-        }
-        let dict = self.dict.get_or_insert_with(|| {
+    fn dict(&mut self) -> &HashMap<String, Texture> {
+        let dir = self.data_dir.clone();
+        self.dict.get_or_insert_with(|| {
             use mcla_formats::rage::{Dictionary, Rd};
             let mut out = HashMap::new();
-            if let Ok(res) = crate::assets::load_resource_file(&Path::new(&self.data_dir).join("resources/ui/meshtextures.r9")) {
+            if let Ok(res) = crate::assets::load_resource_file(&Path::new(&dir).join("resources/ui/meshtextures.r9")) {
                 let rd = Rd::new(&res);
                 if let Ok(d) = Dictionary::parse(&rd, 0) {
                     for o in d.values.iter().flatten() {
@@ -451,13 +457,33 @@ impl Meshes {
                 }
             }
             out
-        });
-        // dictionary names carry the mesh's folder ("pause_screen/pausebg_ps3.dds")
-        let h = dict.iter().find(|(k, _)| k.rsplit(['/', '\\']).next() == Some(name)).map(|(_, t)| {
+        })
+    }
+
+    /// dictionary names carry the mesh's folder ("pause_screen/pausebg_ps3.dds")
+    fn find<'a>(dict: &'a HashMap<String, Texture>, name: &str) -> Option<&'a Texture> {
+        dict.iter().find(|(k, _)| k.rsplit(['/', '\\']).next() == Some(name)).map(|(_, t)| t)
+    }
+
+    fn texture(&mut self, ctx: &egui::Context, name: &str) -> Option<TextureHandle> {
+        if let Some(h) = self.handles.get(name) {
+            return h.clone();
+        }
+        let h = Self::find(self.dict(), name).map(|t| {
             let img = crate::flash_ui::plain_image(t.width, t.height, &t.to_rgba8());
             ctx.load_texture(format!("uimesh:{name}"), img, egui::TextureOptions::LINEAR_REPEAT)
         });
         self.handles.insert(name.to_string(), h.clone());
+        h
+    }
+
+    /// A mesh texture's size and RGBA (for menugloss.rs, which uploads it once).
+    pub fn rgba(&mut self, name: &str) -> Option<([u32; 2], std::sync::Arc<Vec<u8>>)> {
+        if let Some(h) = self.rgba.get(name) {
+            return h.clone();
+        }
+        let h = Self::find(self.dict(), name).map(|t| ([t.width as u32, t.height as u32], std::sync::Arc::new(t.to_rgba8())));
+        self.rgba.insert(name.to_string(), h.clone());
         h
     }
 }
@@ -513,6 +539,8 @@ pub struct View {
     pub vp: Mat4,
     /// the `coord` frame's matrix (identity when the camera is given in that frame)
     pub frame: Mat4,
+    /// the camera's own matrix (eye, axes) in the meshes' space, when known: the Gloss programs need it (menugloss.rs)
+    pub view_inverse: Option<Mat4>,
 }
 
 impl View {
@@ -520,7 +548,7 @@ impl View {
     pub fn look(position: Vec3, lookat: Vec3, fovy: f32, aspect: f32) -> View {
         let v = Mat4::look_at_rh(position, lookat, Vec3::Y);
         let p = Mat4::perspective_rh(fovy.clamp(0.5, 170.0).to_radians(), aspect.max(0.1), 0.05, 2000.0);
-        View { vp: p * v, frame: Mat4::IDENTITY }
+        View { vp: p * v, frame: Mat4::IDENTITY, view_inverse: Some(v.inverse()) }
     }
 }
 
@@ -567,6 +595,10 @@ pub fn paint_scene(ctx: &egui::Context, painter: &egui::Painter, meshes: &mut Me
     let glass = scene.nodes.iter().any(|n| n.file == "pause_screen" && n.alpha > 0.004);
     let mut order: Vec<&Node> = scene.nodes.iter().filter(|n| n.alpha > 0.004).collect();
     order.sort_by_key(|n| rank(n));
+    // the Gloss meshes, drawn with the original's programs in one callback (menugloss.rs); handed over before the
+    // next mesh that is not one of them, so the drawing order stays
+    let gloss_on = crate::menugloss::enabled();
+    let mut gloss: Vec<crate::menugloss::Draw> = Vec::new();
     for n in order {
         let view = if n.view == "world" { world.unwrap_or(own) } else { own };
         // (approx.) The black backdrop mesh (`pause_blackBG`, switched on by the 2D
@@ -579,6 +611,39 @@ pub fn paint_scene(ctx: &egui::Context, painter: &egui::Painter, meshes: &mut Me
         if std::env::var("MCLA_MENU3D_ONLY").map_or(false, |v| (v == "movie") != n.movie) {
             continue;
         }
+        if gloss_on {
+            if let (Some(vi), Some((mat, tex_name, skinned))) = (view.view_inverse, meshes.mesh(&n.file).and_then(|m| m.gloss.map(|g| (g, m.texture.clone(), m.skinned)))) {
+                let tex = if n.movie { Some(crate::menugloss::Tex::Movie(crate::selfmovie::queue_movie(ctx, movie, &list))) } else { meshes.rgba(&tex_name).map(|(sz, px)| crate::menugloss::Tex::Mesh(tex_name.clone(), sz, px)) };
+                if let (Some(tex), Some(mesh)) = (tex, meshes.mesh(&n.file)) {
+                    let verts = mesh
+                        .indices
+                        .iter()
+                        .map(|&i| {
+                            let i = i as usize;
+                            let p = if skinned { mesh.pos[i] + mesh.bone[i] * (n.scale - Vec3::ONE) } else { mesh.pos[i] };
+                            crate::menugloss::Vtx { pos: p.extend(1.0).to_array(), normal: mesh.normal[i].to_array(), uv: mesh.uv.get(i).copied().unwrap_or([0.0; 2]) }
+                        })
+                        .collect();
+                    let c = |k: usize| n.color[k] as f32 / 255.0;
+                    if std::env::var("MCLA_MENU3D_LOG").is_ok() {
+                        log::info!("menu3d: {} drawn with the Gloss programs: {:?}, hue {:?} {:.2}", n.file, mat, n.color, n.alpha);
+                    }
+                    gloss.push(crate::menugloss::Draw {
+                        verts,
+                        world: view.frame * if skinned { n.rt } else { n.srt },
+                        vp: view.vp,
+                        view_inverse: vi,
+                        mat,
+                        hue: Vec4::new(c(0), c(1), c(2), n.alpha),
+                        ambient: Vec3::splat(scene.ambient).extend(1.0),
+                        light: Vec3::splat(scene.diffuse).extend(-1.0),
+                        tex,
+                    });
+                    continue;
+                }
+            }
+        }
+        crate::menugloss::paint(painter, screen, std::mem::take(&mut gloss));
         let Some(mesh) = meshes.mesh(&n.file) else { continue };
         if n.movie {
             // the stage lies on the mesh by its texture coordinates (u, v = stage x, y over
@@ -706,6 +771,7 @@ pub fn paint_scene(ctx: &egui::Context, painter: &egui::Painter, meshes: &mut Me
             painter.add(egui::Shape::mesh(out));
         }
     }
+    crate::menugloss::paint(painter, screen, gloss);
 }
 
 #[cfg(test)]
@@ -756,3 +822,4 @@ mod tests {
         assert!((br.x - 538.0).abs() < 6.0 && (br.y - 501.0).abs() < 6.0, "bottom right {br:?}");
     }
 }
+

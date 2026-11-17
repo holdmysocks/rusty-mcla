@@ -8,7 +8,7 @@ use mcla_shaders::{build, OUTPUTS};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 
-const EXPECTED: [(&str, &str); 10] = [
+const EXPECTED: [(&str, &str); 11] = [
     ("xs_sky.wgsl", "ba82a9046f57e467e3dfee44ab3fd337b78baa0c10e065a4022e06d395336942"),
     ("xs_perlin.wgsl", "bce1ea5d95543b6b0ad238ba7e6593d13c5c45100b171cee1e3010127a3ebe8c"),
     ("xs_sky_cheap.wgsl", "00100cc4364916953859452451e25229c4aff7a0ed4b9ba3e80566da405ae314"),
@@ -19,6 +19,9 @@ const EXPECTED: [(&str, &str); 10] = [
     ("xs_water.wgsl", "9f7cf194d48c1502968b017f81bb8aae66e49663020725349e96f1a725150de0"),
     ("xs_pond.wgsl", "a4439d5bcf19a08dc6022342fa8103e353a487e1078eb124d728aece66f920dc"),
     ("xs_shore.wgsl", "328e649de5b0e2024c4015cbc11ca2d698bc75fd4021859188c77748896ceb7d"),
+    // (the reference translation of VS_TransformAndTextureAlpha and PS_TexturedGloss with its names given, and the
+    // shininess multiply guarded for an exponent of 0 - the Xenos's 0 x inf = 0)
+    ("xs_gloss.wgsl", "2425efc7795f348296d809e139241d07c9ab081bbca862fd194b478506db2504"),
 ];
 
 fn data_dir() -> Option<PathBuf> {
@@ -28,7 +31,7 @@ fn data_dir() -> Option<PathBuf> {
 }
 
 #[test]
-fn the_ten_programs_match_the_reference_translation() {
+fn the_programs_match_the_reference_translation() {
     let Some(d) = data_dir() else {
         eprintln!("skipped: no extracted game data with shaders/exe/exe_82801b00 (set MCLA_DATA)");
         return;
@@ -47,3 +50,4 @@ fn an_unknown_output_is_refused() {
     let r = build(std::path::Path::new("."), "xs_nothing.wgsl");
     assert!(r.is_err());
 }
+
