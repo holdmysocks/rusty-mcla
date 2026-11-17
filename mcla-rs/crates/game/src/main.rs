@@ -3716,6 +3716,32 @@ impl App {
             } else {
                 WRECKED.store(0, Relaxed);
             }
+            // (and a tutorial form waiting for CONTINUE - SST_Tutorial's forms 78 / 79 in RACE_GH_06's race hold the
+            // race eased to a pause until closed - answered with A after 120 ticks, and again every 120)
+            static TUT: AtomicU32 = AtomicU32::new(0);
+            // (only a form that CONTINUE closes - the target / slipstream forms and `mc4_tut_continue`'s, as game.rs reads A;
+            // the others go by their own time)
+            let continue_box = self.game.tutorial_box.as_ref().is_some_and(|t| t.0.contains("target") || t.0 == "tutorial_slipstream_title" || self.game.mc4_tut_continue(&t.0));
+            if continue_box && self.game.message_box.is_none() {
+                if (TUT.fetch_add(1, Relaxed) + 1) % 120 == 0 {
+                    log::info!("--auto: CONTINUE on the tutorial form {:?}", self.game.tutorial_box.as_ref().map(|t| t.0.clone()));
+                    self.game.nav_enter = true;
+                }
+            } else {
+                TUT.store(0, Relaxed);
+            }
+            // (RACE_GH_02's lesson: box 76 holds the cruise eased to a pause until Back opens the mission log on its
+            // lesson; in the guided log A sets the target (box 77, answered above) - each after 120 ticks)
+            static LESSON: AtomicU32 = AtomicU32::new(0);
+            let mlog_box = self.game.tutorial_box.as_ref().is_some_and(|t| t.0.contains("tutorial_mission_log"));
+            if (mlog_box || (self.game.mlog_guided && self.game.tutorial_box.is_none())) && self.game.message_box.is_none() {
+                if (LESSON.fetch_add(1, Relaxed) + 1) % 120 == 0 {
+                    log::info!("--auto: {} in RACE_GH_02's lesson", if mlog_box { "Back on box 76" } else { "A in the guided mission log" });
+                    if mlog_box { self.game.nav_map = true } else { self.game.nav_enter = true }
+                }
+            } else {
+                LESSON.store(0, Relaxed);
+            }
         }
         let frozen_now = self.vehicles.frozen || self.vehicles.grid_hold.is_some();
         // (the test driver --auto drives only a car that answers its pad: a deactivated one - the arrest's Racer_Deactivate
@@ -3765,7 +3791,16 @@ impl App {
                 }
                 if let Some((p, yaw)) = drv.reset_to.take() {
                     log::info!("auto driver: put back on the line");
-                    car.state = physics::CarState::new(p, yaw);
+                    // (the car's sim kept: its pose set as the brain's off-mesh teleport sets it (F-86308, `vehsim::set_pose`) -
+                    // a fresh CarState has no vehicle sim, and the car stood in the air from then on, never stepped again)
+                    let fresh = physics::CarState::new(p, yaw);
+                    match car.params().veh.clone().filter(|_| car.state.veh.is_some()) {
+                        Some(vt) => {
+                            let r = fresh.rot;
+                            physics::vehsim::set_pose(&mut car.state, &vt, &world.collider, [r * Vec3::X, r * Vec3::Y, r * Vec3::Z, p], Vec3::ZERO, Vec3::ZERO);
+                        }
+                        None => car.state = fresh,
+                    }
                     // (its wheels under their mounts at the suspension's rest length, as `Vehicles::pose_car` seats an
                     // unset car: a fresh state has them at the world's origin until the physics runs, and when the race
                     // ends on that tick the paused game draws the car without wheels, floating)
@@ -7275,6 +7310,29 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                 }
             }
+            // (test hook MCLA_CAREER_RACE=<mission>, `roamers::career_race_hook`: a mission that waits in READY_TO_START for
+            // its garage's entry event - REDLIGHT_GH_01's HW_GARAGE_ENTER, `career::EVENT_SCENES` - gets GO TO GARAGE from
+            // the cruise (every 600 ticks until it is past READY_TO_START - also before it is given: GARAGE_HOLLYWOOD gives it on the same entry, LOCATION_EVENT hw_garage); in the garage, its scene over, B then A take the
+            // way out after 300 / 360 ticks)
+            if let Some(mis) = roamers::career_race_hook() {
+                use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
+                static IN_GARAGE: AtomicU32 = AtomicU32::new(0);
+                let waits = crate::career::EVENT_SCENES.iter().any(|e| e.0.eq_ignore_ascii_case(&mis) && e.1.contains("GARAGE")) && !self.game.career.state_at_least(&mis, 3);
+                if waits && self.tick_no % 600 == 300 && self.game.mode == Mode::FreeRoam && self.game.race.is_none() && self.garage_in.is_none() && self.goto_garage.is_none() && self.cuts.idle() && self.pending_action == MenuAction::None {
+                    log::info!("career race test: GO TO GARAGE for {mis}");
+                    self.pending_action = MenuAction::GoToGarage;
+                }
+                if self.game.mode == Mode::Garage && self.cuts.idle() && self.game.message_box.is_none() && self.garage_in.is_none() {
+                    match IN_GARAGE.fetch_add(1, Relaxed) + 1 {
+                        300 => { log::info!("career race test: B in the garage"); self.game.nav_back = true; }
+                        360 => { log::info!("career race test: A in the garage"); self.game.nav_enter = true; }
+                        n if n > 600 => IN_GARAGE.store(0, Relaxed),
+                        _ => {}
+                    }
+                } else if self.game.mode != Mode::Garage {
+                    IN_GARAGE.store(0, Relaxed);
+                }
+            }
             // (test hook MCLA_GOTO_GARAGE=tick: GO TO GARAGE at that tick in free roam)
             if std::env::var("MCLA_GOTO_GARAGE").ok().and_then(|v| v.parse::<u64>().ok()) == Some(self.tick_no as u64) {
                 log::info!("go to garage test: mode {:?}", self.game.mode);
@@ -7942,6 +8000,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             crate::ticktimes::mark(crate::ticktimes::S::Roamers);
             {
                 let mut flash = std::mem::take(&mut self.flash) || (std::env::var("MCLA_ROAM_TEST").map_or(false, |v| v != "once" || self.game.career.completed() == 0) && self.tick_no % 30 < 2 && self.roam.challenge.is_none());
+                // (test hook MCLA_CAREER_RACE=<mission>: its man flashed in the cruise until the mission is complete -
+                // `roamers::career_race_hook`)
+                flash = flash || (self.tick_no % 30 == 0 && self.game.mode == Mode::FreeRoam && self.game.race.is_none() && self.roam.challenge.is_none() && self.vehicles.cars.iter().any(|c| c.racer) && roamers::career_race_hook().is_some_and(|m| !self.game.career.state_at_least(&m, 5)));
                 // (a hookman who only races a certain class of car says so)
                 // (step 19d: nobody can be flashed while the police are doing something with the
                 // player - CruisingHookmanCore 0x745: PoliceManager_CheckPoliceActivity(1) < 2)

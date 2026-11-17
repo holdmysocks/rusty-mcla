@@ -416,6 +416,15 @@ pub fn core_loop(sco: &mcla_formats::sco::Sco) -> Option<(Vec<Vec3>, Option<f32>
 /// hw_ordered_jp_11 0x7ca..0x830) and `0x7efbea76` (GREETING_MEET_ME_THERE_EVENT 0x3b5,
 /// 0x403..0x416). The 19 cores with RACE_TO_START run to the line (beat me there); the
 /// OrderedSeriesCore cores and FIND_SH_04's scene give None.
+/// Test hook MCLA_CAREER_RACE=<mission id> (RACE_GH_06, RACE_GH_02, REDLIGHT_GH_01, ...): a career race started the
+/// way the player starts it, for the test driver `--auto` to drive to the finish. Only that mission's man is put on the
+/// road (near the player, as MCLA_HOOKMAN_TEST does), he is flashed while the cruise goes on and the mission is not
+/// complete (main.rs), a meet-me-there run puts the player on its line after 6 s (as MCLA_ROAM_TEST does); the race,
+/// its set-up, results, rewards and the save are the career's own. Test hook only.
+pub fn career_race_hook() -> Option<String> {
+    std::env::var("MCLA_CAREER_RACE").ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+}
+
 pub fn core_warp(sco: &mcla_formats::sco::Sco) -> Option<String> {
     use mcla_formats::sco::Tok;
     let t = sco.consts();
@@ -1032,7 +1041,7 @@ impl Roamers {
             return;
         }
         let Some(pp) = vehicles.player().map(|c| c.state.pos) else { return };
-        let only = std::env::var("MCLA_HOOKMAN_TEST").is_ok() || std::env::var("MCLA_ROAM_TEST").is_ok();
+        let only = std::env::var("MCLA_HOOKMAN_TEST").is_ok() || std::env::var("MCLA_ROAM_TEST").is_ok() || career_race_hook().is_some();
         let streaming = men_on && !only && self.challenge.is_none() && !self.suspended;
         let mut list = vec![Some(StreamRacer { load_state: LOADED, pin: 0, reset_on_eviction: false, not_counted: true, x: pp.x, z: pp.z })];
         for (uid, st) in &self.starters {
@@ -1161,7 +1170,8 @@ impl Roamers {
         }
         // (test hooks: MCLA_HOOKMAN_TEST=<key prefix> - `tt:0`, `tour`, `slot:0:1` - puts that man
         // near the player; the self-test MCLA_ROAM_TEST alone takes a slot hookman)
-        let only = std::env::var("MCLA_HOOKMAN_TEST").ok().or_else(|| std::env::var("MCLA_ROAM_TEST").ok().map(|_| "slot".to_string()));
+        // (MCLA_CAREER_RACE=<mission>: the man of that mission alone - `career_race_hook`)
+        let only = std::env::var("MCLA_HOOKMAN_TEST").ok().or_else(|| std::env::var("MCLA_ROAM_TEST").ok().map(|_| "slot".to_string())).or_else(career_race_hook);
         // ---- the men go round their loops; those near the player are cars ----
         // (step 19d: a cruising brain that was given no speed drives at its rail's own -
         // F-90476: the road's, `mc4::RAIL_SPEED`)
@@ -1250,7 +1260,7 @@ impl Roamers {
                         ahead.push((m.car.clone(), m.config.clone()));
                     }
                     // (test hook MCLA_HOOKMAN_TEST=<key prefix>: that man alone, put near the player)
-                    let wanted = only.as_deref().map_or(true, |o| m.key.starts_with(o) && !vehicles.cars.iter().any(|c| c.racer));
+                    let wanted = only.as_deref().map_or(true, |o| (m.key.starts_with(o) || m.mission.eq_ignore_ascii_case(o)) && !vehicles.cars.iter().any(|c| c.racer));
                     if only.is_some() {
                         if wanted && spawn.is_none() && self.challenge.is_none() {
                             spawn = Some(k);
@@ -1634,7 +1644,7 @@ impl Roamers {
                     c.placed = false;
                 }
             }
-            if std::env::var("MCLA_ROAM_TEST").map_or(false, |v| v != "late") && ch.time > 6.0 && near.is_none() {
+            if (std::env::var("MCLA_ROAM_TEST").map_or(false, |v| v != "late") || career_race_hook().is_some()) && ch.time > 6.0 && near.is_none() {
                 let goal = ch.goal;
                 if let Some(c) = vehicles.player_mut() {
                     c.state = crate::physics::CarState::new(goal + Vec3::Y * 0.8, 0.0);
@@ -1667,6 +1677,7 @@ impl Roamers {
         // someone to flash? Racer_CanFlashHookman: within 30 m, ahead, at about our speed
         // (`mc4::can_flash`; its line-of-sight ray is not cast here)
         let test = std::env::var("MCLA_ROAM_TEST").is_ok();
+        let career_race = career_race_hook();
         let mut best: Option<(usize, f32)> = None;
         for (i, c) in vehicles.cars.iter().enumerate() {
             // (a man driving away has left the slot system: `drive_away`)
@@ -1691,7 +1702,9 @@ impl Roamers {
                 continue;
             }
             let d = if test && !c.driver.is_empty() { d * 0.01 } else { d };
-            if (ok || (test && d < 400.0)) && best.map_or(true, |b| d < b.1) {
+            // (MCLA_CAREER_RACE: that mission's man is flashed wherever he is within 400 m)
+            let hooked = career_race.as_deref().is_some_and(|mis| d < 400.0 && self.men.iter().any(|m| m.mission.eq_ignore_ascii_case(mis) && m.owns(c)));
+            if (ok || hooked || (test && d < 400.0)) && best.map_or(true, |b| d < b.1) {
                 best = Some((i, d));
             }
         }
