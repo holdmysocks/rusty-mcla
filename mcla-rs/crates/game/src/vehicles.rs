@@ -1515,6 +1515,9 @@ pub struct Vehicles {
     amb_rng2: parked::Mwc,
     /// the cruising ghosts: the ambient request pool and the proxy cars on their routes (traffic.rs `Ghosts`)
     pub ghosts: traffic::Ghosts,
+    /// the request pool was stepped this frame by the manager's update (`spawn_traffic`, F-52865 before the spawner);
+    /// `ghost_frame` steps it only when that did not run
+    pool_stepped: bool,
     park_dump_frame: u32,
     /// (diagnostics, MCLA_PARK_DUMP) parked spawn tries turned down, by reason
     park_why: [u32; 5],
