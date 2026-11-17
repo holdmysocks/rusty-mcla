@@ -13481,7 +13481,8 @@ impl Game {
             };
             let text = self.career.strings.get(key).map(|v| v.to_uppercase()).unwrap_or_else(|| "LOADING".into());
             // (the race's badge is the popup movie's too: it stays while it is up)
-            let badge_up = self.start_badge_on || self.tutorial_box.as_ref().map_or(false, |t| t.2 <= 0.0);
+            // (and the police banner, form 45: drawn on it after this - `arrest_banner`; hidden here every frame it was rebuilt and never seen)
+            let badge_up = self.start_badge_on || self.arrest_banner.is_some() || self.tutorial_box.as_ref().map_or(false, |t| t.2 <= 0.0);
             if let Some(fp) = self.flash_popup.as_mut() {
                 if fp.is_shown() && !badge_up {
                     fp.hide();

@@ -8095,7 +8095,7 @@ mod tests {
     #[test]
     fn search_tick_matches_the_recordings() {
         let h = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
-        let (mut n, mut either, mut seen, mut glimpses, mut founds, mut reports, mut runs) = (0, 0, 0, 0, 0, 0, 0);
+        let (mut n, mut either, mut seen, mut glimpses, mut founds, mut reports, mut runs, mut escapes) = (0, 0, 0, 0, 0, 0, 0, 0);
         for line in include_str!("testdata/search_rec.txt").lines().filter(|l| !l.starts_with('#')) {
             let w: Vec<&str> = line.split('\t').collect();
             let (dt, clock) = (h(w[3]), h(w[4]));
@@ -8113,7 +8113,7 @@ mod tests {
             let run = |found: bool| {
                 let mut c = clock;
                 let s = search_step(&mut c, found, started, dt, 35.0);
-                let stays = matches!(s, SearchStep::Stay | SearchStep::Glimpse);
+                let stays = matches!(s, SearchStep::Stay | SearchStep::Glimpse | SearchStep::Escaped); // (Escaped: the state stays, the tactic's result is 2)
                 (s, stays != left && (!stays || format!("{:08X}", c.to_bits()) == want))
             };
             let (s, ok) = run(found);
@@ -8130,8 +8130,9 @@ mod tests {
             founds += matches!(s, SearchStep::Found { .. }) as u32;
             reports += (s == SearchStep::Found { report: true }) as u32;
             runs += (s == SearchStep::Stay && started) as u32;
+            escapes += (s == SearchStep::Escaped) as u32;
         }
-        assert!(n == 12_634 && either == 9_099 && seen == 104 && founds == 30 && reports == 2 && runs == 3_102, "{n} {either} {seen} {glimpses} {founds} {reports} {runs}");
+        assert!(n == 17_828 && either == 9_099 && seen == 104 && founds == 34 && reports == 4 && runs == 5_225 && escapes == 1, "{n} {either} {seen} {glimpses} {founds} {reports} {runs} {escapes}");
     }
 
     /// The cop brain's output F-88118 per frame in the running original (testdata/cop_input_rec.txt: the e5 recording's
