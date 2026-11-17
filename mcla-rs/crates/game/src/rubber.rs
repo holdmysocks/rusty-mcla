@@ -316,6 +316,50 @@ pub fn next_dist(car: glam::Vec3, cps: &[glam::Vec3], k: usize, unordered: bool,
 mod tests {
     use super::*;
 
+    /// The race set-up F-51033 against the original run offline (tools/rubber_setup_reference.py, 4,000 cases): the step
+    /// (+60) equals `Adaptive::step(desired, odd)` - odd the first entry not the local player's (type != 0) whose
+    /// difficulty is not the race's - when not replaying, and the replay header's word then takes the step; replaying,
+    /// the step is that word (the port's replays do not keep it: AI.md open item). The count and the segment lengths
+    /// equal `segments` (12 words compared, the ones past the count untouched).
+    #[test]
+    fn race_setup_matches_the_original() {
+        let mut n = 0;
+        for l in include_str!("testdata/rubber_setup_ref.txt").lines() {
+            let (inp, out) = l.split_once(" -> ").unwrap();
+            let p: Vec<&str> = inp.split('|').map(str::trim).collect();
+            let h: Vec<i32> = p[0].split_whitespace().skip(1).map(|t| t.parse().unwrap()).collect();
+            let (level, desired, unordered, replaying, rword) = (h[1], h[2], h[3] != 0, h[4] != 0, h[5]);
+            let types: Vec<i32> = p[1].split_whitespace().map(|t| t.parse().unwrap()).collect();
+            let diffs: Vec<i32> = p[2].split_whitespace().map(|t| t.parse().unwrap()).collect();
+            let c: Vec<&str> = p[3].split_whitespace().collect();
+            let cps: Vec<glam::Vec3> = c[1..].chunks(3).map(|q| {
+                let f = |t: &str| f32::from_bits(u32::from_str_radix(t, 16).unwrap());
+                glam::Vec3::new(f(q[0]), f(q[1]), f(q[2]))
+            }).collect();
+            let (o, segs) = out.split_once('|').unwrap();
+            let o: Vec<i32> = o.split_whitespace().map(|t| t.parse().unwrap()).collect();
+            let segs: Vec<u32> = segs.split_whitespace().map(|t| u32::from_str_radix(t, 16).unwrap()).collect();
+            let odd = types.iter().zip(&diffs).find(|(t, d)| **t != 0 && **d != desired).map(|(_, d)| *d);
+            let step = crate::rewards::Adaptive { level, points: 0 }.step(desired, odd) as i32;
+            if replaying {
+                assert_eq!((o[0], o[1]), (rword, rword), "{l}");
+            } else if odd.is_none() && desired > 0 && !(0..=10).contains(&level) {
+                // (the plain level is passed on unclamped; a level is always 0..10 - it starts at 0 and the race-end
+                // account F-20820 keeps it there - so the port's clamp never shows)
+                assert_eq!((o[0], o[1]), (level, level), "{l}");
+            } else {
+                assert_eq!((o[0], o[1]), (step, step), "{l}");
+            }
+            assert_eq!(o[2] as usize, cps.len(), "{l}");
+            let want = segments(&cps, unordered);
+            for k in 0..12 {
+                assert_eq!(segs[k], want.get(k).map_or(0xEEEE_EEEE, |v| v.to_bits()), "{l}");
+            }
+            n += 1;
+        }
+        assert_eq!(n, 4000);
+    }
+
     /// The defaults against the original's F-36408 run offline (`work/racerai/rbdef/defaults.bin`: the 140-byte tuning after
     /// it, memory filled with 0xAB before): +0 .. +72 word for word, +76 .. +100 and +108 .. +132 zero, +104 / +136 untouched.
     #[test]

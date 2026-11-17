@@ -269,6 +269,23 @@ impl Samples {
 mod tests {
     use super::*;
 
+    /// The race-end account against the original run offline (tools/adaptive_result_reference.py, 33,048 cases: level
+    /// -3..13, points -40..40, the won byte's low 8 bits, difficulty -1..4): level (+56, and +60 when written) and points
+    /// (+64) equal to `Adaptive::result`.
+    #[test]
+    fn adaptive_result_matches_the_original() {
+        let mut n = 0;
+        for l in include_str!("testdata/adaptive_result_ref.txt").lines() {
+            let v: Vec<i64> = l.split_whitespace().filter(|t| *t != "->").map(|t| t.parse().unwrap()).collect();
+            let mut a = Adaptive { level: v[0] as i32, points: v[1] as i32 };
+            a.result(v[2] & 0xFF != 0, v[3] as i32);
+            assert_eq!((a.level, a.points), (v[4] as i32, v[6] as i32), "{l}");
+            assert!(v[5] == 77777 || v[5] == v[4], "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 33_048);
+    }
+
     #[test]
     fn curve_matches_the_career_length() {
         assert_eq!(rep_curve(1.0) as i64, 33_500);
