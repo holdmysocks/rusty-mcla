@@ -679,6 +679,7 @@ impl Search {
         self.recs[ri].heap = i;
         self.recs[rj].heap = j;
     }
+    /// F-24680: parents move down while parent > item (`ble` also branches on unordered: a NaN key stays).
     fn sift_up(&mut self, mut i: usize) {
         while i > 1 && self.heap[i / 2].0 > self.heap[i].0 {
             self.swap(i / 2, i);
@@ -689,6 +690,8 @@ impl Search {
         let n = self.heap.len() - 1;
         loop {
             let mut c = i;
+            // (F-53789: a child is taken when child < chosen, the left first; `bge` also branches on unordered, so a NaN
+            // child is not taken)
             if 2 * i <= n && self.heap[2 * i].0 < self.heap[c].0 {
                 c = 2 * i;
             }
@@ -1084,6 +1087,68 @@ impl NavMesh {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The open list against the original run offline (tools/nav_heap_reference.py, 600 sequences, 19,798 ops): push
+    /// F-37875, pop F-82094, a key lowered in place then the sift-up F-24680 (as the record update F-27773), the sift-down
+    /// F-53789; keys with ties, -0 / +0, NaN. A node in the heap is not pushed again (the update lowers its key instead). After every op the count, each entry's key bits and node, and each entry's
+    /// record back index equal `Search`'s (record = node).
+    #[test]
+    fn open_list_matches_the_original() {
+        let mut s = None;
+        let mut ops = 0;
+        for l in include_str!("testdata/nav_heap_ref.txt").lines() {
+            if l.starts_with("seq") {
+                s = Some(Search { recs: (0..40).map(|_| Rec { g: 0.0, h: 0.0, parent: NONE, edge: Edge::None, heap: 0 }).collect(), map: HashMap::new(), heap: vec![(0.0, 0, 0)] });
+                continue;
+            }
+            let s = s.as_mut().unwrap();
+            let (op, rest) = l.split_once(" -> ").unwrap();
+            let o: Vec<&str> = op.split_whitespace().collect();
+            let mut parts = rest.split(" | ");
+            let ret = parts.next().unwrap();
+            let hx = |t: &str| u32::from_str_radix(t, 16).unwrap();
+            match o[1] {
+                "0" => {
+                    let n: u32 = o[2].parse().unwrap();
+                    assert_eq!(ret == "skip", s.recs[n as usize].heap != 0, "{l}");
+                    if ret != "skip" {
+                        s.push(f32::from_bits(hx(o[3])), n, n as usize);
+                    }
+                }
+                "1" => {
+                    let got = s.heap.get(1).map(|e| (e.0.to_bits(), e.1));
+                    let popped = s.pop();
+                    let r: Vec<&str> = ret.split_whitespace().collect();
+                    if r[0] == "0" {
+                        assert!(popped.is_none(), "{l}");
+                    } else {
+                        assert_eq!(got, Some((hx(r[1]), r[2].parse().unwrap())), "{l}");
+                    }
+                }
+                _ => {
+                    if ret != "-" {
+                        let i: usize = o[2].parse().unwrap();
+                        s.heap[i].0 = f32::from_bits(hx(o[3]));
+                        s.sift_up(i);
+                    }
+                }
+            }
+            // (the count, then key bits in hex and node in decimal per entry)
+            let heap: Vec<&str> = parts.next().unwrap().split_whitespace().collect();
+            assert_eq!(heap[0].parse::<usize>().unwrap(), s.heap.len() - 1, "{l}");
+            for (k, e) in s.heap.iter().enumerate().skip(1) {
+                assert_eq!((e.0.to_bits(), e.1), (hx(heap[2 * k - 1]), heap[2 * k].parse().unwrap()), "{l}");
+            }
+            for (k, t) in parts.next().unwrap_or("").split_whitespace().enumerate() {
+                let (nd, ix) = t.split_once(':').unwrap();
+                let nd: usize = nd.parse().unwrap();
+                assert_eq!(s.heap[k + 1].1 as usize, nd, "{l}");
+                assert_eq!(s.recs[nd].heap, ix.parse::<usize>().unwrap(), "{l}");
+            }
+            ops += 1;
+        }
+        assert_eq!(ops, 19_798);
+    }
 
     /// F-27305's answers (nav polygon filter, true for the sidewalk flag) recorded in the running original by
     /// the object-dump recorder (docs/reference/map/objdump_signals.md, 300 calls): `NavPoly::sidewalk` agrees
