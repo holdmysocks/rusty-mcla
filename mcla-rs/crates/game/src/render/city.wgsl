@@ -561,7 +561,7 @@ struct Object {
     fill: vec4<f32>,      // added to the ambient: the night fill light at the object's place
     neon_si: vec4<f32>,                // siColor2 (c59): the car's exterior neon, F-96984 (vehicles.rs ExtNeon::si_color)
     trim: array<vec4<f32>, 12>,        // the cabin trim's colours: m_vBaseColor[0 .. 9] as stored, gauge colours A / B (F-19629)
-    brushed: vec4<f32>,                // BrushedMetalTintDownload[0]: the record's m_vBrushedMetalColorA as stored, w 1 = given (F-91597)
+    brushed: vec4<f32>,                // BrushedMetalTintDownload[0]: the record's m_vBrushedMetalColorA as stored, w 1 = given (F-91597); a caliper's: its tint
 };
 // ... and its car block (render::CarUniform, group 3 binding 2): the rows equal for every object of one car, written
 // once for the car; the all-default block for everything else
@@ -575,6 +575,7 @@ struct CarBlock {
     glass_tint: array<vec4<f32>, 9>,   // a car's TintColors by window zone 0 .. 8 (F-50822, damagemap::glass_vars) ...
     glass_bumped: array<vec4<f32>, 9>, // ... and BumpedTintColors, the lamps' lenses'
     rest_rot: array<vec4<f32>, 72>,    // a set-up car's rest rotations, 9 floats each (vehicles.rs rest_mark)
+    metal_bc: array<vec4<f32>, 2>,     // BrushedMetalTintDownload[1], [2]: m_vBrushedMetalColorB, C as stored, w 1 = given (zones 1, 2)
 };
 @group(3) @binding(0) var<uniform> obj: Object;
 @group(3) @binding(2) var<uniform> car: CarBlock;
@@ -3823,13 +3824,16 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             // PS_BrakeRotor of brushedmetal.fxc (cars/0xb140ff44: brake discs, suspension arms,
             // door and trim metal, some exhaust tips), exact against the program:
             //   out = tint x (0.125 x ambient x k^2 + SOFT surroundings x ReflectColorMod x k)
-            // k = 0.25 + 0.75 x baked occlusion; tint = BrushedMetalTintDownload[0] (VS c209 -> o4), which F-91597
-            // fills from the vehicle's record, m_vBrushedMetalColorA as stored (0.75 on the R8 and every recorded
-            // draw; 40 set-ups have another); 0.75 where a car has none (traffic). ReflectColorMod the material's
+            // k = 0.25 + 0.75 x baked occlusion; tint = BrushedMetalTintDownload[a0] (VS_BrakeRotor instr. 54 a0 =
+            // trunc(the vertex's zone, uv1.x), 57 o4 = c209 + a0 relative), which F-91597 fills from the vehicle's record,
+            // m_vBrushedMetalColorA..C as stored (0.75 on the R8; the Monster's fork tubes are zone 2, row C); 0.75 where a
+            // car has none (traffic). (The zone is clamped to 0..2 - no car mesh has another.) ReflectColorMod the material's
             // (uv2.x - 1). No light, no collector, no own-lamp term in the pixel program - and the blurred map, not
             // the sharp one. (MCLA_DEBUG_VIEW=785: 0.75 on every car, as before)
             let k7 = 0.25 + 0.75 * in.color1.a;
-            let bm7 = select(vec3<f32>(0.75), obj.brushed.rgb, obj.brushed.w > 0.5 && !(g.params.w > 784.5 && g.params.w < 785.5));
+            let z7 = clamp(i32(trunc(in.uv1.x)), 0, 2);
+            let row7 = select(car.metal_bc[max(z7 - 1, 0)], obj.brushed, z7 == 0);
+            let bm7 = select(vec3<f32>(0.75), row7.rgb, row7.w > 0.5 && !(g.params.w > 784.5 && g.params.w < 785.5));
             lit = bm7 * (0.125 * hemi * k7 * k7 + env_soft(r) * ((in.uv2.x - 1.0) * k7));
             spec_k = 0.0;
         } else if (mat.mode == 13u && in.uv2.x > 1.5 && cp_on) {

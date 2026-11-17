@@ -5303,20 +5303,22 @@ impl Game {
 
     /// The brushed metal's tint for the renderer (`ObjectUniform::brushed`): F-91597 hands the vehicle record's
     /// m_vBrushedMetalColorA..C as stored to BrushedMetalTintDownload, of which VS_BrakeRotor and VS_BumpedBrushedmetal
-    /// read row 0 (c209). The record's, else the set-up file's; w 1 = given. The garage has no row for it.
-    pub fn brushed_tint(&self) -> [f32; 4] {
+    /// read row a0 = the vertex's zone (c209 + a0, relative). The record's, else the set-up file's; w 1 = given. The
+    /// garage has no row for them.
+    pub fn brushed_tint(&self) -> [[f32; 4]; 3] {
         let cur = if self.car_x.car.is_empty() { self.mc4_car_name(self.current_car) } else { self.car_x.car.clone() };
         if let Some(rec) = self.mc4.as_ref().and_then(|m| m.car(&cur)) {
-            return rgb_of(&rec.visual.m_vBrushedMetalColorA).map_or([0.0; 4], |c| [c[0], c[1], c[2], 1.0]);
+            let v = &rec.visual;
+            return [&v.m_vBrushedMetalColorA, &v.m_vBrushedMetalColorB, &v.m_vBrushedMetalColorC].map(|r| rgb_of(r).map_or([0.0; 4], |c| [c[0], c[1], c[2], 1.0]));
         }
-        static CACHE: std::sync::Mutex<Option<(String, [f32; 4])>> = std::sync::Mutex::new(None);
+        static CACHE: std::sync::Mutex<Option<(String, [[f32; 4]; 3])>> = std::sync::Mutex::new(None);
         let mut c = CACHE.lock().unwrap_or_else(|e| e.into_inner());
         if c.as_ref().map_or(true, |(n, _)| *n != cur) {
             let model = crate::catalog::model_of(&cur);
-            let row = crate::render::car_lamps::setup_file(std::path::Path::new(&self.data_dir), model).and_then(|f| std::fs::read(f).ok()).and_then(|b| setup_look(&b)).map_or([0.0; 4], |l| l.look.brushed);
+            let row = crate::render::car_lamps::setup_file(std::path::Path::new(&self.data_dir), model).and_then(|f| std::fs::read(f).ok()).and_then(|b| setup_look(&b)).map_or([[0.0; 4]; 3], |l| l.look.brushed);
             *c = Some((cur.clone(), row));
         }
-        c.as_ref().map_or([0.0; 4], |(_, r)| *r)
+        c.as_ref().map_or([[0.0; 4]; 3], |(_, r)| *r)
     }
 
     /// The cabin trim's rows for the renderer (`ObjectUniform::trim`): the vehicle record's ten m_vBaseColor rows as
@@ -9261,7 +9263,7 @@ pub fn setup_look(b: &[u8]) -> Option<SetupLook> {
     let body_a = rgb(0x660)?;
     let body = paint_as_drawn(area(0));
     let body_b = to_linear(body.b);
-    let mut look = crate::vehicles::CarLook { paint_type: body.ty, color2: [body_b[0], body_b[1], body_b[2], body.fade as f32], tint: [0.0, 0.0035, 0.005, 0.372], interior: [[0.0; 4]; 5], area_a: [[0.0; 4]; 5], area_b: [[0.0; 4]; 5], rim_finish: [[0.0; 4]; 3], cabin_light: [[0.0; 4]; 2], glass: [0x120, 0x130, 0x140, 0x150].map(|o| [f(o), f(o + 4), f(o + 8), f(o + 12)]), ext_neon: [[f(0x50), f(0x54), f(0x58), f(0x5c)], [f(0x170), b[0x18c] as i8 as f32, 0.0, 0.0]], trim: [[0.0; 4]; 12], rim_raw: [[0.0; 4]; 5], brushed: [0.0; 4], caliper: [0.0; 4] };
+    let mut look = crate::vehicles::CarLook { paint_type: body.ty, color2: [body_b[0], body_b[1], body_b[2], body.fade as f32], tint: [0.0, 0.0035, 0.005, 0.372], interior: [[0.0; 4]; 5], area_a: [[0.0; 4]; 5], area_b: [[0.0; 4]; 5], rim_finish: [[0.0; 4]; 3], cabin_light: [[0.0; 4]; 2], glass: [0x120, 0x130, 0x140, 0x150].map(|o| [f(o), f(o + 4), f(o + 8), f(o + 12)]), ext_neon: [[f(0x50), f(0x54), f(0x58), f(0x5c)], [f(0x170), b[0x18c] as i8 as f32, 0.0, 0.0]], trim: [[0.0; 4]; 12], rim_raw: [[0.0; 4]; 5], brushed: [[0.0; 4]; 3], caliper: [0.0; 4] };
     // (the cabin trim's rows as stored - F-19629: m_vBaseColor at 0x5c0 + 0x10 g, the gauge colours A / B at 0x70 / 0x80)
     for (k, o) in (0..10).map(|g| 0x5c0 + 0x10 * g).chain([0x70, 0x80]).enumerate() {
         let c = [f(o), f(o + 4), f(o + 8)];
@@ -9293,10 +9295,12 @@ pub fn setup_look(b: &[u8]) -> Option<SetupLook> {
         }
     }
     // (the brushed metal's tint as stored - F-91597 hands m_vBrushedMetalColorA..C (0xe0 / 0xf0 / 0x100) to
-    // BrushedMetalTintDownload; the brushed programs read row 0 only)
-    let bm = [f(0xe0), f(0xe4), f(0xe8)];
-    if bm.iter().all(|v| v.is_finite()) {
-        look.brushed = [bm[0], bm[1], bm[2], 1.0];
+    // BrushedMetalTintDownload; the brushed programs read row a0 = the vertex's zone)
+    for k in 0..3 {
+        let bm = [f(0xe0 + 0x10 * k), f(0xe4 + 0x10 * k), f(0xe8 + 0x10 * k)];
+        if bm.iter().all(|v| v.is_finite()) {
+            look.brushed[k] = [bm[0], bm[1], bm[2], 1.0];
+        }
     }
     // (m_vBrakeCaliperColor at 0x110 -> brakeCaliperTintColor, F-91597)
     let cc = [f(0x110), f(0x114), f(0x118)];
@@ -14649,6 +14653,44 @@ mod tests {
     /// pink slip GTO's set-up has 0x878 = 2 with the switch off: no side pipe (as the original's garage shows it,
     /// work/carparts2/cmp/orig_vpd_pon_gto_66.png); with the switch on the piece is 0x878's. An imported record
     /// with the switch off loses the side exhaust the importer once took from 0x878 alone; one the port fitted stays.
+    /// The intercooler is drawn by UseIntercooler alone (F-92759), the stock one (`ic_00_stk`) too: the Solstice set-up
+    /// GH_24_1 (intercooler byte 2, switch 0) has none - the original's MANAGE VEHICLES shows none - and the 350Z pink
+    /// slip (byte 3, switch 1) only intercooler3, not the stock one under it.
+    #[test]
+    fn the_intercooler_needs_its_switch() {
+        let assets = crate::assets::Assets::new(&data_dir());
+        for (car, set, want) in [("vp_pon_solstice_06", "GH_24_1_vp_pon_solstice_06", vec![]), ("vp_nsn_350z_06", "pinkslip_vp_nsn_350z_06", vec!["intercooler3"])] {
+            let Ok(b) = std::fs::read(std::path::Path::new(&data_dir()).join(format!("resources/vehicle/configs/{set}.xcc"))) else { return };
+            let a = crate::vehicle_model::load_car(&assets, &std::path::Path::new(&data_dir()).join("resources/vehicle").join(car)).unwrap();
+            let cfg = setup_parts(&b).unwrap().0;
+            let got: Vec<String> = a.placed_parts_for(&cfg).into_iter().map(|(p, _)| p.primary.clone()).filter(|p| p.starts_with("intercooler")).collect();
+            assert_eq!(got, want, "{car}");
+        }
+    }
+
+    /// BrushedMetalTintDownload is read at c209 + a0, a0 = the vertex's zone (VS_BrakeRotor instr. 54 / 57,
+    /// VS_BumpedBrushedmetal 67): the Monster S4R's fork tubes (armfl0, BrushedMetal) are zone 2, so they take
+    /// m_vBrushedMetalColorC - green in the set-up GH_15_4 (as the original's MANAGE VEHICLES shows them), gold on the
+    /// stock bike - and the sliders zone 0, row A.
+    #[test]
+    fn brushed_metal_takes_the_row_of_its_zone() {
+        let assets = crate::assets::Assets::new(&data_dir());
+        let Ok(b) = std::fs::read(std::path::Path::new(&data_dir()).join("resources/vehicle/configs/GH_15_4_vp_duc_monster_s4r_07.xcc")) else { return };
+        let look = setup_look(&b).unwrap().look;
+        assert_eq!(look.brushed[2].map(f32::to_bits), [0x3d008081, 0x3eb8b8b9, 0, 1.0f32.to_bits()]);
+        let a = crate::vehicle_model::load_car(&assets, &std::path::Path::new(&data_dir()).join("resources/vehicle/vp_duc_monster_s4r_07")).unwrap();
+        let mut zones = std::collections::BTreeSet::new();
+        for p in a.parts.iter().filter(|p| p.names.iter().any(|n| n == "armfl0")) {
+            for (m, si) in &p.meshes {
+                let sh = if p.from_parent && !a.shaders_parent.is_empty() { a.shaders_parent.get(*si as usize) } else { a.shaders.get(*si as usize) };
+                if sh.map_or(false, |s| s.name.eq_ignore_ascii_case("BrushedMetal")) {
+                    zones.extend(m.uv1.iter().map(|u| u.x as i32));
+                }
+            }
+        }
+        assert_eq!(zones.into_iter().collect::<Vec<_>>(), [0, 2]);
+    }
+
     #[test]
     fn the_side_exhaust_needs_its_switch() {
         let mut b = vec![0u8; 8176];
@@ -20739,7 +20781,9 @@ mod rim_tint_tests {
             assert_eq!(u32::from_be_bytes(b[o..o + 4].try_into().unwrap()), REC[k], "row {} channel {}", k / 3, k % 3);
         }
         let look = super::setup_look(&b).expect("r8").look;
-        assert_eq!(look.brushed.map(f32::to_bits), [REC[0], REC[1], REC[2], 1.0f32.to_bits()]);
+        for k in 0..3 {
+            assert_eq!(look.brushed[k].map(f32::to_bits), [REC[3 * k], REC[3 * k + 1], REC[3 * k + 2], 1.0f32.to_bits()], "row {k}");
+        }
     }
 
     /// brakeCaliperTintColor as recorded in the original (the silver 240SX at noon, `work/police17/cap/g.gpu.bin` and

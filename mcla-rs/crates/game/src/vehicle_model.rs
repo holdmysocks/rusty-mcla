@@ -1553,6 +1553,10 @@ impl CarAsset {
                 }
             } else if let Some(index) = passenger_seat {
                 index == fitted_seat
+            } else if p.primary.to_ascii_lowercase().strip_prefix("intercooler").map_or(false, |r| r.parse::<usize>().is_ok()) {
+                // (the intercooler by its switch alone, F-92759: also the stock one, `ic_00_stk` - a car without
+                // UseIntercooler draws none, as the original's Solstice set-ups; with it only intercooler<bumper_f>)
+                always_on(&p.primary, cfg)
             } else { match (extra_part(&p.primary), want.get(&slot)) {
                 // (headlights, taillights, steering wheels, blowers ...: the one of the number chosen)
                 (Some((sec, n)), _) => cfg.extra.get(sec).copied().unwrap_or(0) == n,

@@ -1074,9 +1074,12 @@ pub struct ObjectUniform {
     /// stored (F-19629 hands row G[zone] of these to the trim program as intDL0, no gamma), rows 10 / 11 its gauge colours
     /// A / B (DashGaugeColor, DashGaugeColorB - the cabin trim's siColor0 / siColor1); w 1 = given, 0 = the old look
     pub trim: [[f32; 4]; 12],
-    /// BrushedMetalTintDownload[0] (VS_BrakeRotor / VS_BumpedBrushedmetal c209, the brushed metal's tint): the vehicle
-    /// record's m_vBrushedMetalColorA as stored (F-91597); w 1 = given, 0 = none (0.75, the stock row)
+    /// BrushedMetalTintDownload[0] (VS_BrakeRotor / VS_BumpedBrushedmetal c209 + a0, a0 = the vertex's zone: zone 0): the
+    /// vehicle record's m_vBrushedMetalColorA as stored (F-91597); w 1 = given, 0 = none (0.75, the stock row). A
+    /// caliper's object: its brakeCaliperTintColor
     pub brushed: [f32; 4],
+    /// BrushedMetalTintDownload[1], [2] (zones 1, 2): m_vBrushedMetalColorB, C as stored (in the car block, `CarUniform`)
+    pub metal_bc: [[f32; 4]; 2],
 }
 
 impl Default for ObjectUniform {
@@ -1084,7 +1087,7 @@ impl Default for ObjectUniform {
         // (lamps without a table of their own: the Audi R8's, as before the tables were read)
         let (lamp_a, lamp_b) = car_lamps::R8.uniform();
         let g = crate::damagemap::glass_vars([0.0; 4], false, false, true, false, &crate::damagemap::RECORDED_GLASS, [0.0, 1.0, 0.0], [0.0; 3], -1.0, false);
-        ObjectUniform { model: Mat4::IDENTITY.to_cols_array_2d(), color: [1.0, 1.0, 1.0, 0.0], params: [0.0; 4], dents: [[0.0; 4]; 6], color2: [0.0; 4], fade_min: [0.0; 4], fade_size: [1.0; 4], tint: [0.0; 4], interior: [[0.0; 4]; 5], fill: [0.0; 4], lamp_a, lamp_b, area_a: [[0.0; 4]; 5], area_b: [[0.0; 4]; 5], slots: [[0.0; 4]; 5], glass_tint: g.tint, glass_bumped: g.bumped, rest_rot: [[0.0; 4]; 72], neon_si: [0.0; 4], trim: [[0.0; 4]; 12], brushed: [0.0; 4] }
+        ObjectUniform { model: Mat4::IDENTITY.to_cols_array_2d(), color: [1.0, 1.0, 1.0, 0.0], params: [0.0; 4], dents: [[0.0; 4]; 6], color2: [0.0; 4], fade_min: [0.0; 4], fade_size: [1.0; 4], tint: [0.0; 4], interior: [[0.0; 4]; 5], fill: [0.0; 4], lamp_a, lamp_b, area_a: [[0.0; 4]; 5], area_b: [[0.0; 4]; 5], slots: [[0.0; 4]; 5], glass_tint: g.tint, glass_bumped: g.bumped, rest_rot: [[0.0; 4]; 72], neon_si: [0.0; 4], trim: [[0.0; 4]; 12], brushed: [0.0; 4], metal_bc: [[0.0; 4]; 2] }
     }
 }
 
@@ -1122,6 +1125,7 @@ pub struct CarUniform {
     pub glass_tint: [[f32; 4]; 9],
     pub glass_bumped: [[f32; 4]; 9],
     pub rest_rot: [[f32; 4]; 72],
+    pub metal_bc: [[f32; 4]; 2],
 }
 
 impl Default for ObjPart {
@@ -1139,12 +1143,12 @@ impl ObjectUniform {
 
     /// The car's part (`CarUniform`).
     pub fn car(&self) -> CarUniform {
-        CarUniform { interior: self.interior, lamp_a: self.lamp_a, lamp_b: self.lamp_b, area_a: self.area_a, area_b: self.area_b, slots: self.slots, glass_tint: self.glass_tint, glass_bumped: self.glass_bumped, rest_rot: self.rest_rot }
+        CarUniform { interior: self.interior, lamp_a: self.lamp_a, lamp_b: self.lamp_b, area_a: self.area_a, area_b: self.area_b, slots: self.slots, glass_tint: self.glass_tint, glass_bumped: self.glass_bumped, rest_rot: self.rest_rot, metal_bc: self.metal_bc }
     }
 
     /// The two put back together (the check `MCLA_OBJ_CHECK`: what the shader reads, in the old layout).
     pub fn join(p: &ObjPart, c: &CarUniform) -> ObjectUniform {
-        ObjectUniform { model: p.model, color: p.color, params: p.params, dents: p.dents, color2: p.color2, fade_min: p.fade_min, fade_size: p.fade_size, tint: p.tint, interior: c.interior, fill: p.fill, lamp_a: c.lamp_a, lamp_b: c.lamp_b, area_a: c.area_a, area_b: c.area_b, slots: c.slots, glass_tint: c.glass_tint, glass_bumped: c.glass_bumped, rest_rot: c.rest_rot, neon_si: p.neon_si, trim: p.trim, brushed: p.brushed }
+        ObjectUniform { model: p.model, color: p.color, params: p.params, dents: p.dents, color2: p.color2, fade_min: p.fade_min, fade_size: p.fade_size, tint: p.tint, interior: c.interior, fill: p.fill, lamp_a: c.lamp_a, lamp_b: c.lamp_b, area_a: c.area_a, area_b: c.area_b, slots: c.slots, glass_tint: c.glass_tint, glass_bumped: c.glass_bumped, rest_rot: c.rest_rot, neon_si: p.neon_si, trim: p.trim, brushed: p.brushed, metal_bc: c.metal_bc }
     }
 }
 
@@ -5286,7 +5290,7 @@ mod object_split_tests {
     #[test]
     fn split_is_the_old_uniform() {
         assert_eq!(std::mem::size_of::<ObjPart>(), 31 * 16);
-        assert_eq!(std::mem::size_of::<CarUniform>(), 148 * 16);
+        assert_eq!(std::mem::size_of::<CarUniform>(), 150 * 16);
         assert_eq!(std::mem::size_of::<ObjPart>() + std::mem::size_of::<CarUniform>(), std::mem::size_of::<ObjectUniform>());
         let mut u = ObjectUniform::default();
         let f: &mut [f32] = bytemuck::cast_slice_mut(bytemuck::bytes_of_mut(&mut u));
@@ -5304,7 +5308,7 @@ mod object_split_tests {
             src[i..i + j].lines().skip(1).filter_map(|l| l.trim().split(':').next().map(str::to_string)).filter(|n| !n.is_empty() && !n.starts_with("//")).collect()
         };
         let obj = ["model", "color", "params", "dents", "color2", "fade_min", "fade_size", "tint", "fill", "neon_si", "trim", "brushed"];
-        let car = ["interior", "lamp_a", "lamp_b", "area_a", "area_b", "slots", "glass_tint", "glass_bumped", "rest_rot"];
+        let car = ["interior", "lamp_a", "lamp_b", "area_a", "area_b", "slots", "glass_tint", "glass_bumped", "rest_rot", "metal_bc"];
         assert_eq!(fields("Object"), obj);
         assert_eq!(fields("CarBlock"), car);
         for k in car {
