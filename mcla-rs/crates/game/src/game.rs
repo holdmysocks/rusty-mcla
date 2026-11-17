@@ -10988,8 +10988,15 @@ impl Game {
                     let race_hud = self.race_hud(vehicles, &hud).or_else(|| self.mc4_bmt_hud());
                     let idle_cam = self.idle_cam;
                     let (shown_camera, menu_up) = (self.hud_camera, self.in_menu());
+                    // The HUD's visibility (F-25537's "hidden" check, the HUD manager's): hidden while a form is up - the
+                    // forms object's vt+676, true from the update after the arrest's post (form 45) until CopArrest.sco closes
+                    // it (recorded, work/hookmen2/dp/cap/h1.pol.txt). Both movies ease their own alpha toward cur_visibility x
+                    // 100 (the cluster's frame script a quarter of the way a frame, snapped within 2; the minimap's animateEase
+                    // speed 4), so the cluster and the map fade out under the banner and back after it
+                    let hud_vis = mcla_flash::value::Value::Int(self.arrest_banner.is_none() as i32);
                     if let Some(fh) = self.flash_hud.as_mut().filter(|_| !idle_cam) {
                         let dt = ctx.input(|i| i.stable_dt).min(0.1);
+                        fh.movie.player.set_global("cur_visibility", hud_vis.clone());
                         // the info line under the speed: the game queues texts for it (F-72577)
                         // and leaves it empty otherwise. (approx.) Here: the name of the road the
                         // car is on while it moves, as the reference captures show it.
@@ -11059,6 +11066,12 @@ impl Game {
                                 let (vis, count, frame, timer) = (g(p, "SplashVisibles.3"), g(p, "countdownCount"), g(p, "countdownFrame"), g(p, "countdownTimer"));
                                 log::info!("go hud: countdown {:.4} time {:.4} race_dt {:.4} dt {:.4} slot3 {} count {} ({}) frame {} timer {:.2}", r.countdown, r.time, race_dt, dt, vis, count, ["3", "2", "1", "GO"].get(count.max(0.0) as usize).copied().unwrap_or("?"), frame, timer);
                             }
+                        }
+                        if std::env::var("MCLA_HUDVIS_TRACE").is_ok() {
+                            let p = &mut fh.movie.player;
+                            let g = |p: &mut mcla_flash::player::Player, n: &str| p.get_path(n).map_or(-999.0, |v| v.to_f32());
+                            // (test hook MCLA_HUDVIS_TRACE=1: the HUD movie's visibility and its eased alpha, every frame)
+                            log::info!("hudvis: cur_visibility {} target_hud {} cur_hudAlpha {}", g(p, "cur_visibility"), g(p, "target_hud"), g(p, "cur_hudAlpha"));
                         }
                         let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("flash_hud"));
                         // above the port's own HUD layer, which still draws the map's streets
@@ -11162,6 +11175,7 @@ impl Game {
                         fm.overhead = self.hud_map_big && self.hm.is_some();
                         fm.overhead_title = self.overhead_title.clone();
                         fm.overhead_sub = self.overhead_sub.clone();
+                        fm.movie.player.set_global("cur_visibility", hud_vis.clone());
                         fm.drive(&hud, gps, dt);
                         crate::uiprof::mark("map_drive");
                         // The original's map (`hudmap.rs`): the 220x220 target drawn from the movie's
