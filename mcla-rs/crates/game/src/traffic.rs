@@ -6010,7 +6010,7 @@ impl Vehicles {
         }
     }
 
-    /// The manager's request pool step (F-52865 -> F-29339), once a frame before the spawner (826D75D8's order): the
+    /// The manager's request pool step (F-52865 -> F-29339), once a frame before the spawner (F-96156's order): the
     /// cruising ghosts' requests and the traffic spawner's (made into cars here: `amb_make`).
     pub(super) fn pool_frame(&mut self, gpu: &crate::render::Gpu, world: &crate::world::World, nav: &'static NavSys, dt: f32) {
         self.pool_stepped = true;
@@ -9245,8 +9245,8 @@ impl Vehicles {
             // its colour: one of the type's twenty (F-92144: the shared MWC's (lo & 0x7FFFFFFF) % 20, at the request)
             let shade = test_shade(self.park_rng.index(20) as usize);
             let color = ty.color(shade).unwrap_or(super::TRAFFIC_PALETTE[shade % super::TRAFFIC_PALETTE.len()]);
-            // the request (F-82687930, F-826DF430, queued F-13129): the car is made by the pool's next step (F-52865 runs
-            // before the spawner in the manager's update, 826D75D8): its type budget, seed, ground probe and init there
+            // the request (F-86587, F-45833, queued F-13129): the car is made by the pool's next step (F-52865 runs
+            // before the spawner in the manager's update, F-96156): its type budget, seed, ground probe and init there
             // (`amb_make`); the try counts as made here (F-92144's +128)
             self.ghosts.pool.submit_amb(AmbReq { model: mi, ty, link, s, pos, dir, color, road: ri, focus, view });
             sp.current += 1;
@@ -11782,7 +11782,7 @@ pub struct PoolRec {
     pub seed: u32,
     /// rec+544: the spawn matrix (F-18708)
     pub matrix: [Vec3; 4],
-    /// the traffic spawner's request (F-92144: F-82687930's defaults, then F-826DF430 with its params - kind 0x80, steps
+    /// the traffic spawner's request (F-92144: F-86587's defaults, then F-45833 with its params - kind 0x80, steps
     /// 0xA4, timeout params +12 = 1.0 s, no SetSpeed: params +16 = -1.0): what the port needs to make the car
     pub amb: Option<Box<AmbReq>>,
 }
@@ -11918,8 +11918,8 @@ impl GhostPool {
         self.queue(r)
     }
 
-    /// The traffic spawner's request (F-92144 -> F-826DF430 -> the queue F-13129): kind 0x80, steps 0xA4 (pose, car,
-    /// behaviour), timeout 1.0 s (params +12, the image's 0x82001D14), no owner; -1 when the pool is full.
+    /// The traffic spawner's request (F-92144 -> F-45833 -> the queue F-13129): kind 0x80, steps 0xA4 (pose, car,
+    /// behaviour), timeout 1.0 s (params +12, a word of the image), no owner; -1 when the pool is full.
     pub fn submit_amb(&mut self, req: AmbReq) -> i32 {
         let mut r = PoolRec::free();
         r.kind = 0x80;
@@ -13010,8 +13010,8 @@ mod ghost_tests {
         assert!(ends >= 3, "{ends} of {tried} routes ended");
     }
 
-    /// The traffic spawner's request (F-92144 -> F-82687930 / F-826DF430 -> F-13129): kind 0x80, steps 0xA4, timeout
-    /// params +12 = 1.0 (the image's word at 0x82001D14), no owner; stepped by F-29339 as every kind-0x80 record (the
+    /// The traffic spawner's request (F-92144 -> F-86587 / F-45833 -> F-13129): kind 0x80, steps 0xA4, timeout
+    /// params +12 = 1.0 (a word of the image), no owner; stepped by F-29339 as every kind-0x80 record (the
     /// stages verified with the ghosts' requests, `ghost_pool_matches_the_original`): no car of the type's budget -
     /// pending until its time passes 1.0 s (state 3); the car -> the shared MWC's draw (rec+832 = lo & 0x7FFFFFFF), then
     /// the probe: none -> state 5, else made (state 0). Records shared with the ghosts' requests in slot order.
@@ -13060,7 +13060,7 @@ mod ghost_tests {
         }
         let req = || AmbReq { model: 0, ty: AmbType::default(), link: 0, s: 0.0, pos: Vec3::new(1.0, 2.0, 3.0), dir: Vec3::X, color: [1.0; 4], road: 0, focus: Vec3::ZERO, view: Vec3::Z };
         let dt = 1.0f32 / 30.0;
-        // the record as F-826DF430 fills it
+        // the record as F-45833 fills it
         let mut pool = GhostPool::new(0);
         let id = pool.submit_amb(req());
         let r = &pool.recs[id as usize];
