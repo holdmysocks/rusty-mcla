@@ -1869,6 +1869,22 @@ impl Switch {
         self.ability_on && VIEW_OF_PORT[(was_view as usize).min(5)] >= 2 && self.blend.current_or_target(CamId::View(self.blend.view))
     }
 
+    /// F-35489: the director's current camera (+48) answers vt+56 - F-99927, its ReverseOn word +208 != 0. The
+    /// reverse camera (+64) has it 1 from the player camera's constructor (vt+80(1) = F-38722, in F-42437), a bumper / POV view
+    /// camera while F-39925 looks back on it; the event and ability cameras 0 (every file), the wipeout camera 1 only
+    /// for an exploding car (-1, `wipeout_reverse`); the blend camera's vt+56 returns 0, so nothing looks back while
+    /// the director blends. The driver's look (ctx+120 = -1, the cockpit model dropped) reads it.
+    pub fn camera_looks_back(&self, wipeout_reverse: i32) -> bool {
+        if self.blend.active() {
+            return false;
+        }
+        match self.blend.current() {
+            CamId::View(_) => self.last.map_or(false, |(_, back)| back),
+            CamId::Wipeout => wipeout_reverse != 0,
+            CamId::Event | CamId::Ability => false,
+        }
+    }
+
     /// The view whose camera runs (the blend's target, or the director's camera after it), for
     /// the chosen view `view`.
     pub fn shown(&self, view: u8) -> u8 {
@@ -2780,6 +2796,10 @@ impl CrashCam {
     /// Set up for this wipeout and run by the director (current, or a blend's source or target).
     pub fn active(&self, dir: &Director) -> bool {
         self.started && dir.involves(CamId::Wipeout)
+    }
+    /// Its ReverseOn (+208): -1 for an exploding car, else 0.
+    pub fn reverse_on(&self) -> i32 {
+        self.tune.as_ref().map_or(0, |t| t.reverse_on)
     }
     /// Set up for this wipeout (it may still wait in the director's queue).
     pub fn started(&self) -> bool {
@@ -6726,6 +6746,26 @@ mod director_blend_tests {
 
     /// F-39925's on with the CINEMATIC CAMERA option: the turn to one side (22.5 .. 67.5 degrees) only while the chassis'
     /// air time is above 0 (vt+52), never on the ground however fast; the pitch is 0 either way.
+    #[test]
+    fn only_a_looking_back_current_camera_answers_the_driver() {
+        let set = views();
+        let dt = 1.0 / 30.0;
+        for view in 0u8..5 {
+            let (mut sw, mut cam) = (Switch::default(), BoomCam::default());
+            sw.frame(&set, view, false, true, false, &mut cam, dt);
+            assert!(!sw.camera_looks_back(0));
+            sw.frame(&set, view, true, true, false, &mut cam, dt);
+            assert!(sw.camera_looks_back(0), "view {view}: the reverse / view camera looks back");
+            sw.blend.cut(CamId::Wipeout);
+            assert!(!sw.camera_looks_back(0), "view {view}: the wipeout camera's ReverseOn 0");
+            assert!(sw.camera_looks_back(-1), "view {view}: an exploding car's wipeout camera");
+            sw.blend.cut(CamId::Event);
+            assert!(!sw.camera_looks_back(-1));
+            sw.blend.cut(CamId::Ability);
+            assert!(!sw.camera_looks_back(0));
+        }
+    }
+
     #[test]
     fn the_cinematic_look_back_turns_only_in_the_air() {
         let set = views();

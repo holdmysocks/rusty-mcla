@@ -12083,7 +12083,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         // model (arms and hands), none at all while looking back from it; in the bumper view none either)
         // (the rider machine's CockpitCamActive, F-28290's view test: the camera manager's drive view +80 == 1, the cockpit)
         self.drivers.ckpt_view = self.view_mode == 3 && self.cine.playing.is_none();
-        self.drivers.cockpit = if pov { if self.look_back { 2 } else { 1 } } else if self.view_mode == 4 && self.cine.playing.is_none() && !self.crash_cam.active(&self.cam_switch.blend) { 2 } else { 0 };
+        self.drivers.cockpit = if pov { if self.cam_switch.camera_looks_back(self.crash_cam.reverse_on()) { 2 } else { 1 } } else if self.view_mode == 4 && self.cine.playing.is_none() && !self.crash_cam.active(&self.cam_switch.blend) { 2 } else { 0 };
         // (m_NFLFade for the night fill light the traffic cars add to their ambient - fillmap.rs)
         fillmap::set_fade(self.sky_now().tod.map_or(0.0, |t| t.nfl));
         // (the traffic cars' lamp states and glow levels, for the cars drawn now - vehicles.rs
@@ -13375,7 +13375,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     let others = race.participants.iter().copied().filter(|&k| k != me && cars.get(k).is_some_and(|c| !c.deactivated)).map(|k| (k, cars[k].state.pos));
                     look = self.rider_look.step(look, dt, (cars[me].state.pos, cars[me].state.rot), others);
                 }
-                if self.look_back {
+                if self.cam_switch.camera_looks_back(self.crash_cam.reverse_on()) {
                     look = -1.0;
                 }
                 look
