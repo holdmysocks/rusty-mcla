@@ -1634,7 +1634,15 @@ pub struct Vehicles {
     /// a guessed grid's cars to build ahead and those built (`queue_ahead`, `build_ahead`)
     ahead: Vec<std::path::PathBuf>,
     staged: Vec<Arc<CarModel>>,
+    /// (D59.story-read-ahead) a coming story scene's car builds, plain and set-up, to make ahead and those made, with how
+    /// long each has waited (`queue_scene_build`, `build_scene_ahead`)
+    scene_ahead: Vec<(std::path::PathBuf, CarConfig)>,
+    scene_staged: Vec<(Arc<CarModel>, f32)>,
 }
+
+/// scene builds made ahead and not taken, at most (the oldest go first), and how long one is kept untaken (s)
+const SCENE_STAGED_KEEP: usize = 16;
+const SCENE_STAGED_AGE: f32 = 300.0;
 
 /// A car's models nothing has held for this long are freed (`Vehicles::free_idle_models`).
 const MODEL_IDLE_FREE: f32 = 120.0;
@@ -2741,6 +2749,11 @@ impl Vehicles {
             return;
         }
         let step = std::mem::take(&mut self.model_idle_check);
+        // (story scene builds made ahead and not taken)
+        for m in self.scene_staged.iter_mut() {
+            m.1 += step;
+        }
+        self.scene_staged.retain(|m| m.1 < SCENE_STAGED_AGE);
         // (the plates of the cars gone since)
         self.trim_plates();
         if std::env::var("MCLA_MODELS_KEEP").is_ok() {
@@ -2803,7 +2816,10 @@ impl Vehicles {
         let name = dir.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
         let m = match self.staged.iter().position(|m| m.name == name && m.cfg == *cfg) {
             Some(i) => self.staged.remove(i),
-            None => self.build_model(gpu, world, dir, cfg)?,
+            None => match self.scene_staged.iter().position(|m| m.0.name == name && m.0.cfg == *cfg) {
+                Some(i) => self.scene_staged.remove(i).0,
+                None => self.build_model(gpu, world, dir, cfg)?,
+            },
         };
         self.models.push(m.clone());
         if self.wheels.is_none() {
@@ -2855,6 +2871,66 @@ impl Vehicles {
             if let Ok(m) = self.build_model(gpu, world, &dir, &CarConfig::default()) {
                 log::info!("vehicles: {} built ahead for the race in {:.1} ms", name, t.elapsed().as_secs_f32() * 1000.0);
                 self.staged.push(m);
+            }
+            return;
+        }
+    }
+
+    /// A coming story scene's car build (`dir` in `cfg`: the plain car `cine_spawn_cars` builds, then its set-up) to make
+    /// ahead, a tick at a time (`build_scene_ahead`).
+    pub fn queue_scene_build(&mut self, dir: &Path, cfg: &CarConfig) {
+        if !self.scene_ahead.iter().any(|(d, c)| d == dir && c == cfg) {
+            self.scene_ahead.push((dir.to_path_buf(), cfg.clone()));
+        }
+    }
+
+    /// One of `scene_ahead` built into `scene_staged` for `load_model_cfg` to take at the scene's start - the same
+    /// `build_model` on the same read car and prepared build, made in an earlier tick (the scene's start had built them
+    /// all: ~10 ms each). Only once the car is read and its build's CPU part made on its worker (nothing of either is
+    /// made here); a build already in `models` or staged is passed by. Untaken builds go after SCENE_STAGED_AGE
+    /// (`free_idle_models`) or when more than SCENE_STAGED_KEEP wait.
+    pub fn build_scene_ahead(&mut self, gpu: &mut Gpu, world: &mut World) {
+        while let Some((dir, cfg)) = self.scene_ahead.first().cloned() {
+            let name = dir.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+            if self.models.iter().any(|m| m.name == name && m.cfg == cfg) || self.scene_staged.iter().any(|m| m.0.name == name && m.0.cfg == cfg) {
+                self.scene_ahead.remove(0);
+                continue;
+            }
+            let key = parsed_key(&dir);
+            match self.parsed.get(&key) {
+                Some(Parsed::Read(..)) => {}
+                Some(Parsed::Reading(h, _)) if h.is_finished() => {}
+                Some(Parsed::Reading(..)) => return,
+                // (no longer read - aged out of `parsed`: not read again here)
+                None => {
+                    self.scene_ahead.remove(0);
+                    continue;
+                }
+            }
+            match self.preps.iter().find(|(k, c, _)| *k == key && *c == cfg).map(|p| &p.2) {
+                Some(PrepSlot::Ready(_)) => {}
+                Some(PrepSlot::Making(h)) if h.is_finished() => {}
+                Some(PrepSlot::Making(_)) => return,
+                None => {
+                    // (its CPU part asked for on a worker - for a read car; a car still in its read thread's hands is
+                    // taken over first, as `prepare_after_read` does)
+                    if !self.prepare_after_read(&dir, &cfg) {
+                        return;
+                    }
+                    if !self.preps.iter().any(|(k, c, _)| *k == key && *c == cfg) {
+                        self.scene_ahead.remove(0);
+                    }
+                    return;
+                }
+            }
+            self.scene_ahead.remove(0);
+            let t = std::time::Instant::now();
+            if let Ok(m) = self.build_model(gpu, world, &dir, &cfg) {
+                log::info!("vehicles: {} built ahead for a story scene in {:.1} ms", name, t.elapsed().as_secs_f32() * 1000.0);
+                self.scene_staged.push((m, 0.0));
+                if self.scene_staged.len() > SCENE_STAGED_KEEP {
+                    self.scene_staged.remove(0);
+                }
             }
             return;
         }

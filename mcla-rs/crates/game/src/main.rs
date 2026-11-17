@@ -5824,6 +5824,10 @@ impl App {
         self.grid_ahead(&world);
         // (and the guessed grid's cars built, one a tick, for the start to take - `Vehicles::build_ahead`)
         self.vehicles.build_ahead(&mut gpu, &mut world);
+        // (a coming story scene's car builds, one a tick, for its start to take - D59.story-read-ahead)
+        if self.game.race.is_none() {
+            self.vehicles.build_scene_ahead(&mut gpu, &mut world);
+        }
         // CarSelection (game/career/0xebb682f7, 0x214 - 0x35a) makes the three starters before the film: opponents
         // loaded into the lot (OpponentManager_LoadOpponent, AddOpponentToWorld), deactivated, their icons hidden;
         // VEHICLE SELECT only moves the camera between them (`sel_cam`), and the one taken stays in the lot. The
@@ -16378,13 +16382,16 @@ impl App {
                 let dir = self.game.car_dirs.iter().find(|d| d.file_name().map_or(false, |f| f.to_string_lossy().eq_ignore_ascii_case(&car))).cloned();
                 if let Some(d) = dir.as_ref().filter(|_| !self.vehicles.models.iter().any(|m| m.name.eq_ignore_ascii_case(&car))) {
                     self.vehicles.prefetch(world, d);
+                    // (and its plain build made ahead, a tick at a time - `Vehicles::build_scene_ahead`)
+                    self.vehicles.queue_scene_build(d, &vehicle_model::CarConfig::default());
                 }
                 if let Some(d) = self.game.mc4_dress_of(&car, &config) {
                     vehicles::warm_dress(&world.assets.root, &d);
                     // (`cine_spawn_cars` builds the plain car, then dresses it in its set-up: that build's CPU part made
                     // ahead too, once the car is read - `scene_preps`)
                     if let Some(dir) = dir {
-                        self.scene_preps.push((dir, d.cfg.clone()));
+                        self.scene_preps.push((dir.clone(), d.cfg.clone()));
+                        self.vehicles.queue_scene_build(&dir, &d.cfg);
                     }
                 }
             }

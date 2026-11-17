@@ -2027,6 +2027,7 @@ impl World {
                 let _ = tx.send(r);
             });
         }
+        crate::ticktimes::pt("world: requests");
         // upload finished (time-boxed)
         let t0 = std::time::Instant::now();
         let (mut n_up, mut ms_up, mut ms_col) = (0, 0.0f32, 0.0f32);
@@ -2092,6 +2093,7 @@ impl World {
         if ms_up + ms_col > 8.0 {
             log::info!("streaming: {} sectors in, upload {:.1} ms, collision {:.1} ms", n_up, ms_up, ms_col);
         }
+        crate::ticktimes::pt("world: uploads");
         // The level-of-detail fade of every sector record (F-89177), then each model's alpha as the draw F-75080 takes it:
         // while a loaded sector fades both models are drawn, u = t to detail or 1 - t to far, the sector's alpha min(2u, 1)
         // and the far model's 1 - 2 max(u - 0.5, 0) - the sector comes in over the far model, then the far model goes;
@@ -2157,17 +2159,31 @@ impl World {
         static TRIM_OLD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let trim_old = *TRIM_OLD.get_or_init(|| std::env::var("MCLA_TRIM_OLD").is_ok_and(|v| v == "1"));
         let trim = !gone.is_empty() || (!trim_old && self.last_trim.elapsed().as_secs_f32() >= 1.0);
+        crate::ticktimes::pt("world: fades");
+        let n_gone = gone.len();
+        // (D59.sector-drop: the sectors gone are freed on a worker - their buffers, bind groups, uniforms and slab ranges,
+        // each given back under its own lock - as their collision meshes are above: out of `loaded` / `resident` here, so
+        // nothing draws them either way. A camera jump across the city dropped ~30 at once: 65 ms on the game thread)
+        let mut freed: Vec<GpuSector> = Vec::with_capacity(n_gone);
         for id in gone {
             if let Some(s) = self.resident.remove(&id).or_else(|| self.loaded.remove(&id)) {
                 self.stats_tris -= s.tris as u64;
+                freed.push(s);
             }
             if !self.own_bound {
                 self.collider.sectors.remove(&id);
             }
         }
+        if !freed.is_empty() {
+            rayon::spawn(move || drop(freed));
+        }
+        if n_gone > 0 {
+            crate::ticktimes::pt("world: drops");
+        }
         if trim {
             gpu.trim_textures(IDLE_TEXTURES);
             self.last_trim = std::time::Instant::now();
+            crate::ticktimes::pt("world: trim");
         }
         // The far city: a sector's simple model is drawn while its far alpha is above 0.
         let sector_of = |id: usize| (id - FAR_ID) % FAR_SLOTS;
