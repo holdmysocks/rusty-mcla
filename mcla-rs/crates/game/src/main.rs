@@ -4607,6 +4607,11 @@ impl App {
                 self.game.pause_page = n.get(1).copied().unwrap_or(0) as u8;
                 self.game.menu_sel = n.get(2).copied().unwrap_or(0);
             }
+            // (a fifth number: CONTINUE at that tick - the pause closed, as its A does)
+            static UNDONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if n.get(4).is_some_and(|t| self.tick_no >= *t as u64) && self.game.mode == Mode::Paused && !UNDONE.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                self.pending_action = MenuAction::Resume;
+            }
         }
         // (test hook: MCLA_TEST_DRIVE_CAR=<vehicle> - the showroom's TEST DRIVE in that vehicle at
         // tick 200, as its X does)
@@ -5792,6 +5797,7 @@ impl App {
         let subtitles = self.game.opts.subtitles;
         self.game.cine = self.cuts.playing.as_ref().map(|_| self.cuts.subtitle().filter(|_| subtitles).unwrap_or("").to_string());
         self.game.cine_style = self.cuts.subtitle_style();
+        self.game.cop_scene = self.cine.playing.as_ref().is_some_and(|sc| sc.name.contains("cut_cop_") && !sc.name.contains("alert"));
         if self.cine_free && self.cine.playing.is_some() {
             // letterbox with the name of the race / what happened
             if let Some(c) = self.cine_caption.clone() {
