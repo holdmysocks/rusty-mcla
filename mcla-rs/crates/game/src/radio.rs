@@ -13,7 +13,7 @@
 //!   dispatcher's with the other party's call sign (`CALL_3ADAM5`)
 //! * `PRE_SQUELCH` / `POST_SQUELCH` -> the clicks of the dispatcher's or the car's set
 //! * `CALL_NEIGHBORHOOD` / `SUSPECT_LAST_SEEN` -> `CALL_NEIGHBORHOOD_HW_SS`: the district part of his street
-//! (`VEHICLE_REACQUIRE` is left out.)
+//! * `VEHICLE_REACQUIRE` -> `VEHICLE_REACQUIRE_vp_aud_r8_08`: the car's PoliceDesc in the vehicle table
 //!
 //! Who speaks (docs/reference/audio/POLICE_RADIO_VOICES.md): a call has one sender and one receiver voice for all
 //! its lines (F-95157 keeps them at mgr +2200 / +2204; a step of type Sender or Receiver takes that side's voice,
@@ -126,6 +126,8 @@ pub struct Radio {
     /// each script step's last take (the asset record's +20 of F-70477, global per record, 0 at load): (scenario,
     /// wording, step)
     last_take: HashMap<(String, usize, usize), i32>,
+    /// each vehicle table row's PoliceDesc (record +12) by its lower-case Name: the car the radio names it as
+    police_desc: HashMap<String, String>,
     /// the player's speaker plays a scenario (the one speech manager's +2260 with +2252 the player's, `speech::PLAYER`,
     /// rank 1 against the radio's 0): set by the game before the radio's requests
     pub speech_on: bool,
@@ -165,6 +167,24 @@ impl Radio {
                     if let Ok(h) = u32::from_str_radix(hash.trim(), 16) {
                         r.clips.entry(h).or_default().push(format!("police_radio/{bank}/{name}"));
                     }
+                }
+            }
+        }
+        // the vehicle table's PoliceDesc (the three lists, parser F-87336; the row's +12, F-55561 reads it)
+        for f in ["0xe94bde63", "0xccb5daee", "0x3cb91343"] {
+            let Ok(t) = std::fs::read(Path::new(data_dir).join("tune/vehicle").join(f)) else { continue };
+            let mut name = None;
+            for l in String::from_utf8_lossy(&t).lines().map(str::trim) {
+                let mut w = l.split_whitespace();
+                match (w.next(), w.next()) {
+                    (Some("Vehicle"), _) => name = None,
+                    (Some("Name"), Some(n)) => name = Some(n.to_ascii_lowercase()),
+                    (Some("PoliceDesc"), Some(d)) => {
+                        if let Some(n) = name.clone() {
+                            r.police_desc.entry(n).or_insert_with(|| d.to_string());
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -491,6 +511,8 @@ impl Radio {
                         // F-73009 / F-26958 (CALL_NEIGHBORHOOD_%s / SUSPECT_LAST_SEEN_%s): the context's district (+188), none
                         // when it is empty
                         "CALL_NEIGHBORHOOD" | "SUSPECT_LAST_SEEN" if !self.district.is_empty() => format!("{name}_{}", self.district),
+                        // F-26276 ("%s_%s"): the word and the chased car's PoliceDesc (VEHICLE_REACQUIRE_vp_aud_r8_08)
+                        "VEHICLE_REACQUIRE" if self.police_desc.contains_key(&ctx.car.to_ascii_lowercase()) => format!("{name}_{}", self.police_desc[&ctx.car.to_ascii_lowercase()]),
                         "VEHICLE_MODEL" if !ctx.car.is_empty() => format!("MODEL_{}", ctx.car.to_ascii_uppercase()),
                         "CALL" => with("CALL", "CALL_DISPATCH"),
                         "REPLY" => with("REPLY", "REPLY"),
@@ -750,6 +772,46 @@ mod tests {
         assert_eq!(q.len(), 7, "{:?}", r.queue);
         assert_eq!(q[3], (true, 0.5));
         assert!(q.iter().enumerate().all(|(i, e)| e.0 == (i == 3)));
+    }
+
+    /// The recorded re-sighting (hookmen2's v2, the original running with the player in the R8): REPORT_SUSPECT_REACQUIRE
+    /// from 4ADAM8 says VEHICLE_REACQUIRE_vp_aud_r8_08 (take 1 of 1) between the officer's squelches, the dispatcher
+    /// answers ACKNOWLEDGE after 1.5 s. A car whose PoliceDesc is another's is named as that one (the pack's CHP Charger
+    /// as vp_dge_charger_06).
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn a_reacquire_names_the_police_desc() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let mut r = Radio::load(&dir, a.root());
+        r.units = (Some("4ADAM8".into()), None);
+        let generic: HashSet<u32> = (1..=20).map(|t| joaat(&format!("VEHICLE_REACQUIRE_GENERIC_{t:02}"))).collect();
+        // (a clip is named by its index name, or by its hash in an older conversion)
+        let hash = |w: &str| { let w = w.trim_end_matches(".wav"); u32::from_str_radix(w, 16).ok().filter(|_| w.len() == 8).unwrap_or_else(|| joaat(w)) };
+        for (car, desc) in [("vp_aud_r8_08", "vp_aud_r8_08"), ("vp_se_dge_chp_06", "vp_dge_charger_06")] {
+            let want: HashSet<u32> = (1..=20).map(|t| joaat(&format!("VEHICLE_REACQUIRE_{desc}_{t:02}"))).collect();
+            let mut named = 0;
+            for _ in 0..60 {
+                r.queue.clear();
+                r.stop();
+                r.clock += 60.0;
+                let ctx = Ctx { car: car.into(), hour: 12.0, ..Default::default() };
+                assert!(r.say_from("REPORT_SUSPECT_REACQUIRE", "4ADAM8".into(), "DISPATCH".into(), &ctx), "{car}");
+                let q: Vec<(String, f32)> = r.queue.iter().cloned().collect();
+                assert!(q.len() >= 7, "{car}: {q:?}");
+                let word = hash(q[1].0.rsplit('/').next().unwrap());
+                if want.contains(&word) {
+                    // (the special case's script: WaitTime 1.5)
+                    named += 1;
+                    let banks = r.voice_banks.iter().find(|(v, _)| v.ends_with("4ADAM8")).map(|(_, b)| b.clone()).unwrap_or_default();
+                    assert!(banks.contains(q[1].0.rsplit_once('/').unwrap().0), "{car}: the officer's banks {banks:?}: {q:?}");
+                    assert_eq!((q[3].0.is_empty(), q[3].1), (true, 1.5), "{car}");
+                } else {
+                    assert!(generic.contains(&word), "{car}: {q:?}");
+                }
+            }
+            assert!(named > 0, "{car}: never named");
+        }
     }
 
     #[test]
