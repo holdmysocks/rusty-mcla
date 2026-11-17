@@ -6035,6 +6035,9 @@ impl Vehicles {
     /// (reason 17: taken out at once) and trailer.
     fn amb_make(&mut self, gpu: &crate::render::Gpu, world: &crate::world::World, nav: &NavSys, q: &AmbReq, seed: u32) -> bool {
         let (ty, link, s, pos, dir) = (q.ty, q.link, q.s, q.pos, q.dir);
+        if let Some((cab_id, rot)) = q.cab {
+            return self.make_trailer(gpu, world, nav, q, cab_id, rot, seed);
+        }
         let Some((ground, normal)) = probe_ground(&world.collider, pos) else {
             if std::env::var("MCLA_TRAFFIC_TRACE").is_ok() {
                 log::info!("traffic request {}: no ground", self.models[q.model].name);
@@ -6056,6 +6059,8 @@ impl Vehicles {
         rider.born = self.clock;
         (rider.life, rider.off_timer, rider.wait, rider.bonus, rider.mwc) = (init.life, init.off_timer, init.wait, init.bonus, init.car);
         rider.seat = Some(Seat::new(ground, normal, f));
+        // a cab: its trailer's request (F-45988, before car vfunc 21's start speed in F-77422)
+        self.trailer_request(&world.assets.root, idx, &mut rider, init.hitch);
         // the start speed (vfunc 84 F-30683, called by the spawn slot 5 F-77422 for every ambient car, path = none):
         // removed (reason 17) when the rule says so
         let (hl, hw) = half_size(&self.cars[idx]);
@@ -6075,8 +6080,6 @@ impl Vehicles {
             ai.link = Some(link);
             ai.t = s / l.len.max(1e-3);
         }
-        // a cab: its trailer
-        self.hitch_trailer(gpu, &world.assets.root, nav, idx, init.hitch);
         if std::env::var("MCLA_TRAFFIC_TRACE").is_ok() {
             let v = pos - q.focus;
             log::info!("traffic spawn {} dist {:.1} ahead {:.1} side {:.1} road {}", self.cars[idx].model.name, Vec3::new(v.x, 0.0, v.z).length(), v.dot(q.view), (v.z * q.view.x - v.x * q.view.z).abs(), q.road);
@@ -6084,8 +6087,6 @@ impl Vehicles {
         true
     }
 
-    /// Hitch a trailer to a cab just made (slot 5 F-77422 -> F-45988): with p 0.75
-    /// one of the five trailers, its hitch on the cab's, facing the same way.
     /// The pool's spawn step and the car's init for the ambient car `idx` just made (`spot`: a parked spot's car):
     /// F-42724 draws the shared MWC (rec+832 = lo & 0x7FFFFFFF, the car MWC's seed); F-92604 gives a cab or trailer
     /// (F-42724 sets rec+836 for type +111 / +112; the spawners' requests carry the id -1, rec+808) an id from the
@@ -6121,40 +6122,53 @@ impl Vehicles {
         d
     }
 
-    /// `hitch`: the cab's init draw (`InitDraws::hitch`, F-77422: the car MWC's U x 2^-23 < 0.75).
-    pub(super) fn hitch_trailer(&mut self, gpu: &crate::render::Gpu, root: &std::path::Path, nav: &NavSys, cab: usize, hitch: bool) {
-        let Some(r) = self.cars[cab].rail.as_mut() else { return };
+    /// A cab's trailer (slot 5 F-77422 -> F-45988), `hitch` the cab's init draw (`InitDraws::hitch`: the car MWC's
+    /// U x 2^-23 < 0.75): one of the five trailers and its shade on the cab's MWC (`trailer_pick`), its hitch on the cab's,
+    /// facing the same way - a request of the pool (`GhostPool::trailer_rec`), made by the pool's step after the cab's
+    /// record (`make_trailer`).
+    fn trailer_request(&mut self, root: &std::path::Path, cab: usize, r: &mut Rider, hitch: bool) {
         if !r.ty.cab || !hitch {
             return;
         }
         let models = &self.models;
         let Some((name, shade)) = trailer_pick(&mut r.mwc, |n| models.iter().any(|m| m.name.eq_ignore_ascii_case(n))) else { return };
-        let (cab_id, link, s) = (r.rng_id(), r.link, r.s);
         let Some(mi) = self.models.iter().position(|m| m.name.eq_ignore_ascii_case(name)) else { return };
         let (cp, cr) = (self.cars[cab].state.pos, self.cars[cab].state.rot);
         let pos = cp + cr * CAB_HITCH - cr * TRAILER_HITCH;
-        let model = self.models[mi].clone();
-        let tty = *self.amb_types.entry(model.name.clone()).or_insert_with(|| AmbType::load(root, &model.name));
+        let mname = self.models[mi].name.clone();
+        let tty = *self.amb_types.entry(mname.clone()).or_insert_with(|| AmbType::load(root, &mname));
         let color = tty.color(shade).unwrap_or(super::TRAFFIC_PALETTE[shade % super::TRAFFIC_PALETTE.len()]);
         let f = cr * Vec3::NEG_Z;
-        let idx = self.spawn(gpu, model, pos, (-f.x).atan2(-f.z), color, false);
-        self.cars[idx].state.relocate(pos, cr);
-        let mname = self.cars[idx].model.name.clone();
-        let ty = *self.amb_types.entry(mname.clone()).or_insert_with(|| AmbType::load(root, &mname));
-        let seed = (self.rand() * 16777216.0) as u32 | 1;
-        let mut t = Rider::new(nav, ty, link, s, seed);
+        let req = AmbReq { model: mi, ty: tty, link: r.link, s: r.s, pos, dir: f, color, road: 0, focus: pos, view: f, cab: Some((r.rng_id(), cr)) };
+        self.pool_pending.push(GhostPool::trailer_rec(req));
+    }
+
+    /// The trailer's request made (F-42724's probe, F-77422): the trailer at its request's place, facing as its cab did,
+    /// no behaviour (rider state 0), its init draws from the record's seed; it and its cab exchange ids (F-18069). No cab
+    /// with that id any more: made all the same, the tow lets it go (F-99638, reason 16).
+    #[allow(clippy::too_many_arguments)]
+    fn make_trailer(&mut self, gpu: &crate::render::Gpu, world: &crate::world::World, nav: &NavSys, q: &AmbReq, cab_id: u32, rot: Quat, seed: u32) -> bool {
+        if probe_ground(&world.collider, q.pos).is_none() {
+            return false;
+        }
+        let model = self.models[q.model].clone();
+        let f = rot * Vec3::NEG_Z;
+        let idx = self.spawn(gpu, model, q.pos, (-f.x).atan2(-f.z), q.color, false);
+        self.cars[idx].state.relocate(q.pos, rot);
+        let rseed = (self.rand() * 16777216.0) as u32 | 1;
+        let mut t = Rider::new(nav, q.ty, q.link, q.s, rseed);
         t.state = 0;
         t.v = 0.0;
         t.partner = Some(cab_id);
         t.born = self.clock;
-        // (the trailer's request through the pool: its seed, id and init draws, F-42724 / F-92604 / F-77422)
-        let d = self.amb_init(idx, &ty, false);
+        let d = self.amb_init_seeded(idx, &q.ty, false, seed);
         (t.life, t.off_timer, t.wait, t.bonus, t.mwc) = (d.life, d.off_timer, d.wait, d.bonus, d.car);
         self.cars[idx].placed = true;
         self.cars[idx].rail = Some(t);
-        if let Some(r) = self.cars[cab].rail.as_mut() {
-            r.partner = Some(seed);
+        if let Some(r) = self.cars.iter_mut().filter_map(|c| c.rail.as_mut()).find(|r| r.state != 0 && r.rng_id() == cab_id) {
+            r.partner = Some(rseed);
         }
+        true
     }
 
     /// Something met a traffic car on a rail: from now on the physics has it (base slot 18
@@ -9248,7 +9262,7 @@ impl Vehicles {
             // the request (F-86587, F-45833, queued F-13129): the car is made by the pool's next step (F-52865 runs
             // before the spawner in the manager's update, F-96156): its type budget, seed, ground probe and init there
             // (`amb_make`); the try counts as made here (F-92144's +128)
-            self.ghosts.pool.submit_amb(AmbReq { model: mi, ty, link, s, pos, dir, color, road: ri, focus, view });
+            self.ghosts.pool.submit_amb(AmbReq { model: mi, ty, link, s, pos, dir, color, road: ri, focus, view, cab: None });
             sp.current += 1;
             n -= 1;
         }
@@ -11801,6 +11815,8 @@ pub struct AmbReq {
     pub road: u32,
     pub focus: Vec3,
     pub view: Vec3,
+    /// a trailer's request (F-45988 -> F-81524): its cab's id (+276) and the cab's rotation at the request
+    pub cab: Option<(u32, Quat)>,
 }
 
 impl PoolRec {
@@ -11842,6 +11858,10 @@ pub trait PoolWorld {
     /// (F-77422); false: no ground (state 5)
     fn amb_spawn(&mut self, _r: &PoolRec) -> bool {
         false
+    }
+    /// requests the car's init queued (a cab's trailer, F-45988 -> F-13129), in their order
+    fn queued(&mut self) -> Vec<PoolRec> {
+        Vec::new()
     }
 }
 
@@ -11927,6 +11947,18 @@ impl GhostPool {
         r.timeout = 1.0;
         r.amb = Some(Box::new(req));
         self.queue(r)
+    }
+
+    /// A cab's trailer (F-45988 -> F-86587, F-81524 -> F-13129): kind 0x80, steps (old & 0x5B) | 0x84 - the pose from
+    /// its own place and row (no route), the car, no behaviour -, timeout 1.0 s (f1, a word of the image), the cab's id
+    /// at +276; not queued here (`Vehicles::pool_pending` hands it to the step).
+    pub fn trailer_rec(req: AmbReq) -> PoolRec {
+        let mut r = PoolRec::free();
+        r.kind = 0x80;
+        r.wanted = 0x84;
+        r.timeout = 1.0;
+        r.amb = Some(Box::new(req));
+        r
     }
 
     /// F-51512 -> F-76814: a removal of `car` (owner `owner`, car +52) for `reason`, served at the next step.
@@ -12043,6 +12075,11 @@ impl GhostPool {
                 let (car, m) = (self.recs[i].car, self.recs[i].matrix);
                 if self.recs[i].amb.is_some() {
                     self.recs[i].state = if w.amb_spawn(&self.recs[i]) { 0 } else { 5 };
+                    // (the car's init may queue its trailer's request into this pool, F-45988 -> F-13129: in the first
+                    // free record, so this step's loop may still reach it)
+                    for q in w.queued() {
+                        self.queue(q);
+                    }
                 } else if w.probe(car, seed, &m) {
                     w.car_init(i, &self.recs[i]);
                     self.recs[i].state = 0;
@@ -12356,6 +12393,9 @@ impl PoolWorld for FrameWorld<'_> {
         let Some(q) = r.amb.as_ref() else { return false };
         let (gpu, world, nav) = (self.gpu, self.world, self.nav);
         self.v.amb_make(gpu, world, nav, q, r.seed)
+    }
+    fn queued(&mut self) -> Vec<PoolRec> {
+        std::mem::take(&mut self.v.pool_pending)
     }
 }
 
@@ -13015,6 +13055,82 @@ mod ghost_tests {
     /// stages verified with the ghosts' requests, `ghost_pool_matches_the_original`): no car of the type's budget -
     /// pending until its time passes 1.0 s (state 3); the car -> the shared MWC's draw (rec+832 = lo & 0x7FFFFFFF), then
     /// the probe: none -> state 5, else made (state 0). Records shared with the ghosts' requests in slot order.
+    /// A cab's trailer (F-45988): its request (steps 0x84, timeout 1.0, kind 0x80) is queued by the cab's init inside the
+    /// pool's step, into the first free record; F-52865's loop (pending records in slot order, stop after as many as were
+    /// pending at its start) steps it in the same step only when it lands before the last record still to be reached.
+    #[test]
+    fn a_trailer_request_is_queued_inside_the_step() {
+        struct W {
+            mwc: GMwc,
+            order: Vec<u32>,
+            trailer: Option<PoolRec>,
+        }
+        impl PoolWorld for W {
+            fn shared(&mut self) -> &mut GMwc {
+                &mut self.mwc
+            }
+            fn lane_point(&mut self, _l: u32, _t: f32) -> (Vec3, Vec3) {
+                (Vec3::ZERO, Vec3::Z)
+            }
+            fn car_get(&mut self) -> u32 {
+                0
+            }
+            fn car_back(&mut self, _c: u32) {}
+            fn beh_get(&mut self) -> u32 {
+                0
+            }
+            fn beh_back(&mut self, _b: u32) {}
+            fn car_beh(&mut self, _c: u32) -> u32 {
+                0
+            }
+            fn beh_drop(&mut self, _b: u32) {}
+            fn probe(&mut self, _c: u32, _s: u32, _m: &[Vec3; 4]) -> bool {
+                true
+            }
+            fn car_init(&mut self, _i: usize, _r: &PoolRec) {}
+            fn car_release(&mut self, _c: u32, _r: u32) {}
+            fn notify(&mut self, _i: usize, _o: u32, _v: u8, _s: u32, _c: u32) {}
+            fn amb_take(&mut self, _r: &PoolRec) -> bool {
+                true
+            }
+            fn amb_spawn(&mut self, r: &PoolRec) -> bool {
+                self.order.push(r.amb.as_ref().unwrap().road);
+                true
+            }
+            fn queued(&mut self) -> Vec<PoolRec> {
+                self.trailer.take().into_iter().collect()
+            }
+        }
+        let req = |road: u32| AmbReq { model: 0, ty: AmbType::default(), link: 0, s: 0.0, pos: Vec3::ZERO, dir: Vec3::X, color: [1.0; 4], road, focus: Vec3::ZERO, view: Vec3::Z, cab: None };
+        let trailer = || {
+            let r = GhostPool::trailer_rec(AmbReq { cab: Some((5, Quat::IDENTITY)), ..req(9) });
+            assert_eq!((r.kind, r.wanted, r.timeout.to_bits(), r.state), (0x80, 0x84, 0x3F80_0000, 1));
+            r
+        };
+        let dt = 1.0f32 / 30.0;
+        // one pending (the cab): the trailer goes to record 1, past the loop's count - made at the next step
+        let mut pool = GhostPool::new(0);
+        pool.submit_amb(req(1));
+        let mut w = W { mwc: GMwc { lo: 3, carry: 1 }, order: vec![], trailer: Some(trailer()) };
+        pool.step(dt, &mut w);
+        assert_eq!((w.order.clone(), pool.count, pool.recs[1].state, pool.recs[1].wanted), (vec![1], 1, 2, 0x84));
+        pool.step(dt, &mut w);
+        assert_eq!((w.order.clone(), pool.count), (vec![1, 9], 0));
+        // records 0 and 2 pending, 1 free: the cab at 0 queues its trailer into 1, which the loop reaches as its second
+        // pending record - made in this step, and record 2 waits for the next
+        let mut pool = GhostPool::new(0);
+        for k in 0..3 {
+            pool.submit_amb(req(k + 1));
+        }
+        pool.recs[1].state = 0;
+        pool.count = 2;
+        let mut w = W { mwc: GMwc { lo: 3, carry: 1 }, order: vec![], trailer: Some(trailer()) };
+        pool.step(dt, &mut w);
+        assert_eq!((w.order.clone(), pool.count, pool.recs[2].state), (vec![1, 9], 1, 2));
+        pool.step(dt, &mut w);
+        assert_eq!((w.order, pool.count), (vec![1, 9, 3], 0));
+    }
+
     #[test]
     fn spawner_requests_step_as_the_originals() {
         struct W {
@@ -13058,7 +13174,7 @@ mod ghost_tests {
                 self.ground
             }
         }
-        let req = || AmbReq { model: 0, ty: AmbType::default(), link: 0, s: 0.0, pos: Vec3::new(1.0, 2.0, 3.0), dir: Vec3::X, color: [1.0; 4], road: 0, focus: Vec3::ZERO, view: Vec3::Z };
+        let req = || AmbReq { model: 0, ty: AmbType::default(), link: 0, s: 0.0, pos: Vec3::new(1.0, 2.0, 3.0), dir: Vec3::X, color: [1.0; 4], road: 0, focus: Vec3::ZERO, view: Vec3::Z, cab: None };
         let dt = 1.0f32 / 30.0;
         // the record as F-45833 fills it
         let mut pool = GhostPool::new(0);

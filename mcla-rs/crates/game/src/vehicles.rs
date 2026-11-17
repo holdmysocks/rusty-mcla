@@ -1518,6 +1518,9 @@ pub struct Vehicles {
     /// the request pool was stepped this frame by the manager's update (`spawn_traffic`, F-52865 before the spawner);
     /// `ghost_frame` steps it only when that did not run
     pool_stepped: bool,
+    /// requests queued while the pool steps (a cab's trailer, F-45988): handed to the pool right after the record that
+    /// made them (`PoolWorld::queued`)
+    pool_pending: Vec<traffic::PoolRec>,
     park_dump_frame: u32,
     /// (diagnostics, MCLA_PARK_DUMP) parked spawn tries turned down, by reason
     park_why: [u32; 5],
