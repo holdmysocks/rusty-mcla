@@ -1600,12 +1600,33 @@ fn gpu_skin_self_test(dev: &wgpu::Device, q: &wgpu::Queue) -> Result<(), String>
     let fill = [10u8, 20, 30, 0];
     let pa = Part { verts: verts_of(), indices: Vec::new(), tex: 0, alpha: false, mat: CharMat::default(), uid: next_part_uid() };
     let pb = Part { verts: verts_of(), indices: Vec::new(), tex: 0, alpha: true, mat: CharMat::default(), uid: next_part_uid() };
+    // (a face-shape head too - GitHub #57: its per-frame deltas after the matrices, packed as `emit_shaped` packs them;
+    // zero, negative zero, small and large)
+    let pc = Part { verts: verts_of(), indices: Vec::new(), tex: 0, alpha: false, mat: CharMat::default(), uid: next_part_uid() };
+    let deltas: Vec<[f32; 4]> = (0..n).map(|i| match i % 5 {
+        0 => [0.0, -0.0, 0.0, 0.0],
+        1 => [f() * 0.02, f() * 0.02, f() * 0.02, 0.0],
+        2 => [f() * 3.0, -0.0, f(), 0.0],
+        _ => [f() * 1e-4, f() * 1e-6, f() * 0.5, 0.0],
+    }).collect();
+    let mut mats = skin.clone();
+    mats.extend(deltas.chunks(4).map(|c| {
+        let mut a = [0.0f32; 16];
+        for (k, v) in c.iter().enumerate() {
+            a[4 * k..4 * k + 4].copy_from_slice(v);
+        }
+        Mat4::from_cols_array(&a)
+    }));
     let mut cs = SkinCs::new(dev);
-    let (oa, ob) = (cs.src_of(&pa).ok_or("self-test: arena")?, cs.src_of(&pb).ok_or("self-test: arena")?);
+    let (oa, ob, oc) = (cs.src_of(&pa).ok_or("self-test: arena")?, cs.src_of(&pb).ok_or("self-test: arena")?, cs.src_of(&pc).ok_or("self-test: arena")?);
     let fw = u32::from_le_bytes(fill);
-    let jobs = [GpuSkinJob { count: n as u32, src_off: oa, dst: 0, mat_off: 0, flags: 1, fill: fw, delta: NO_DELTA }, GpuSkinJob { count: n as u32, src_off: ob, dst: n as u32, mat_off: 0, flags: 2, fill: fw, delta: NO_DELTA }];
-    cs.write(dev, q, &skin, &jobs);
-    let size = (2 * n * std::mem::size_of::<Vertex>()) as u64;
+    let jobs = [
+        GpuSkinJob { count: n as u32, src_off: oa, dst: 0, mat_off: 0, flags: 1, fill: fw, delta: NO_DELTA },
+        GpuSkinJob { count: n as u32, src_off: ob, dst: n as u32, mat_off: 0, flags: 2, fill: fw, delta: NO_DELTA },
+        GpuSkinJob { count: n as u32, src_off: oc, dst: 2 * n as u32, mat_off: 0, flags: 1, fill: fw, delta: skin.len() as u32 * 4 },
+    ];
+    cs.write(dev, q, &mats, &jobs);
+    let size = (3 * n * std::mem::size_of::<Vertex>()) as u64;
     let vb = dev.create_buffer(&wgpu::BufferDescriptor { label: Some("skin self-test"), size, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
     let rb = dev.create_buffer(&wgpu::BufferDescriptor { label: Some("skin self-test read"), size, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
     let mut enc = dev.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("skin self-test") });
@@ -1620,10 +1641,11 @@ fn gpu_skin_self_test(dev: &wgpu::Device, q: &wgpu::Queue) -> Result<(), String>
     if !mapped.load(std::sync::atomic::Ordering::Acquire) {
         return Err("self-test: read-back failed".into());
     }
-    let mut want: Vec<Vertex> = Vec::with_capacity(2 * n);
+    let mut want: Vec<Vertex> = Vec::with_capacity(3 * n);
     for (chars, alpha, p) in [(true, false, &pa), (false, true, &pb)] {
         want.extend(p.verts.iter().map(|v| skin_vertex(&skin, v, v.pos, chars, alpha, fill, None)));
     }
+    want.extend(pc.verts.iter().zip(&deltas).map(|(v, d)| skin_vertex(&skin, v, v.pos + Vec3::new(d[0], d[1], d[2]), true, false, fill, None)));
     let bad = {
         let m = sl.get_mapped_range();
         let got: &[u32] = bytemuck::cast_slice(&m);
