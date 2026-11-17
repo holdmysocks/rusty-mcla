@@ -3876,17 +3876,35 @@ mod tests {
     /// steer, throttle, brake, handbrake and the turned H, word for word. Returns at once without the files.
     #[test]
     fn output_is_the_originals() {
-        let (Ok(fix), Ok(tb), Ok(orig)) = (
-            std::fs::read("D:/MCLA/work/ai-record/fixture/r7_r8_inp.bin"),
-            std::fs::read("D:/MCLA/work/ai-record/fixture/aivtune_r8.bin"),
-            std::fs::read("D:/MCLA/work/racerai/pedal/orig_out.bin"),
-        ) else { return };
+        output_matches(
+            "D:/MCLA/work/ai-record/fixture/r7_r8_inp.bin",
+            "D:/MCLA/work/ai-record/fixture/aivtune_r8.bin",
+            "D:/MCLA/work/racerai/pedal/orig_out.bin",
+            1800,
+        );
+    }
+
+    /// The same for a police cruiser's racing brain (mcBrainPolice): the 2,264 post-update aiv states of one cop through a
+    /// Pursuit / Halt / CatchUp / Search (hookmen2's recording e8 -> `work/racerai/coppedal/cop_inp.bin`), the cop's aiv tune
+    /// dumped from the running original (`tune_cop.bin`), the original's output run offline by `work/racerai/pedal` (cop_out.bin).
+    #[test]
+    fn cop_output_is_the_originals() {
+        output_matches(
+            "D:/MCLA/work/racerai/coppedal/cop_inp.bin",
+            "D:/MCLA/work/racerai/coppedal/tune_cop.bin",
+            "D:/MCLA/work/racerai/coppedal/cop_out.bin",
+            9000,
+        );
+    }
+
+    fn output_matches(fix: &str, tune: &str, orig: &str, min_cases: usize) {
+        let (Ok(fix), Ok(tb), Ok(orig)) = (std::fs::read(fix), std::fs::read(tune), std::fs::read(orig)) else { return };
         let floats: Vec<f32> = tb.chunks_exact(4).map(|c| f32::from_be_bytes([c[0], c[1], c[2], c[3]])).collect();
         let tune = Arc::new(mcla_formats::rage::aitune::AiTune::from_floats(&floats).unwrap());
         let n = u32::from_le_bytes(fix[8..12].try_into().unwrap()) as usize;
         let rec = 8 + 31232 + 1024 + 192 + 576;
         let (gears, rpms) = ([2, 0, 3, 1], [0.0f32, 0.5, 1.0, 0.25]);
-        let (mut cases, mut bad, mut bad_cmd) = (0, 0, 0);
+        let (mut cases, mut bad, mut bad_cmd, mut filled) = (0, 0, 0, 0);
         for k in 0..n {
             let al = &fix[12 + k * rec + 8..12 + k * rec + 8 + 31232];
             for v in 0..4 {
@@ -3908,7 +3926,17 @@ mod tests {
                 }
                 let out = a.output(gears[v], 0.0, rpms[v], w(8) != 0);
                 let got = [out.valid as u32, out.steer.to_bits(), out.throttle.to_bits(), out.brake.to_bits(), out.handbrake.to_bits(), a.h.x.to_bits(), a.h.y.to_bits(), a.h.z.to_bits()];
-                let want: Vec<u32> = (0..8).map(w).collect();
+                let mut want: Vec<u32> = (0..8).map(w).collect();
+                // (an invalid output (return 0) writes no pedal: the harness's -7.0 fill stays; F-17058 fills its four locals
+                // before the call with steer 0, throttle 0, brake 1.0, handbrake 0, so those are the pedals it goes on with)
+                if want[0] == 0 {
+                    for (i, fill) in [0.0f32, 0.0, 1.0, 0.0].iter().enumerate() {
+                        if want[1 + i] == (-7.0f32).to_bits() {
+                            want[1 + i] = fill.to_bits();
+                            filled += 1;
+                        }
+                    }
+                }
                 cases += 1;
                 if got[..] != want[..] {
                     if bad < 10 {
@@ -3918,8 +3946,8 @@ mod tests {
                 }
             }
         }
-        println!("follower output vs the original's code: {cases} cases, {bad} differ ({bad_cmd} in the command alone)");
-        assert!(cases >= 1800 && bad == 0 && bad_cmd == 0);
+        println!("follower output vs the original's code: {cases} cases, {bad} differ ({bad_cmd} in the command alone; {} invalid, F-17058's fill)", filled / 4);
+        assert!(cases >= min_cases && bad == 0 && bad_cmd == 0);
     }
 
     /// 12,000 cases of the original's scalar geometry helpers (F-41334 norm_or, F-88594 ang3, F-32060 ang_xz,
