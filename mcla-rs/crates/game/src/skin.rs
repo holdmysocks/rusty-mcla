@@ -1964,7 +1964,14 @@ mod tests {
                 backend_options: wgpu::BackendOptions { dx12: wgpu::Dx12BackendOptions { shader_compiler: wgpu::Dx12Compiler::StaticDxc }, ..Default::default() },
                 ..Default::default()
             });
-            let ad = inst.request_adapter(&wgpu::RequestAdapterOptions::default()).await?;
+            // (MCLA_ADAPTER=<part of a name>: that GPU, as the game's test hook - render/mod.rs)
+            let named = std::env::var("MCLA_ADAPTER").ok().filter(|v| !v.trim().is_empty()).and_then(|want| {
+                inst.enumerate_adapters(wgpu::Backends::all()).into_iter().find(|a| a.get_info().name.to_ascii_lowercase().contains(&want.to_ascii_lowercase()))
+            });
+            let ad = match named {
+                Some(a) => a,
+                None => inst.request_adapter(&wgpu::RequestAdapterOptions::default()).await?,
+            };
             eprintln!("adapter: {:?}", ad.get_info());
             let (dev, q) = ad.request_device(&wgpu::DeviceDescriptor::default(), None).await.ok()?;
             let module = dev.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(include_str!("render/skin_cs.wgsl").into()) });
