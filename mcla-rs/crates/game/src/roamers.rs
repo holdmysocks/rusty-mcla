@@ -1807,12 +1807,11 @@ impl Roamers {
             return Some(race);
         }
         let rc = &mut vehicles.cars[ri];
-        // (his racing brain to the start beacon, as the script's: `Brain::run_to`)
+        // (his racing brain to the start beacon, as the script's: `start_run`)
         let run_tune = rc.model.aitunes.as_ref().map(|tu| std::sync::Arc::new(mcla_formats::rage::aitune::AiTune::lerp(&tu.base, &tu.mods, rc.perf)));
         if let Some(ai) = rc.ai.as_mut() {
             if let Some(tune) = run_tune {
-                ai.tune = Some(tune.clone());
-                ai.brain.0 = Some(Box::new(crate::brain::Brain::run_to(tune, goal)));
+                start_run(ai, tune, goal);
             }
             let route = nav.route_points(rpos, Some(rfwd), goal);
             log::info!("roamers: rival {:.0} m from the line, route {:?} points, ends {:.0} m from it", rpos.distance(goal), route.as_ref().map(|r| r.len()), route.as_ref().and_then(|r| r.last()).map_or(-1.0, |e| e.distance(goal)));
@@ -1863,9 +1862,39 @@ impl Roamers {
     }
 }
 
+/// A challenged hookman's run to the start beacon (`CruisingHookmen/0x897fb23f` 0x10c5..0x1120): `Brain::run_to`.
+/// BrainFactory_CreateBrainRacing (F-51781 -> F-68177) builds the brain and hands it to the racer by its vfunc +136,
+/// which takes the place of his cruising brain: from here the racing brain drives him, so the cruiser goes (when it
+/// was kept, the cruising state machine went on driving his loop and he never ran to the line).
+pub(crate) fn start_run(ai: &mut crate::ai::AiDriver, tune: std::sync::Arc<mcla_formats::rage::aitune::AiTune>, goal: Vec3) {
+    ai.tune = Some(tune.clone());
+    ai.brain.0 = Some(Box::new(crate::brain::Brain::run_to(tune, goal)));
+    ai.cruiser.0 = None;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_run_brain_takes_the_cruisers_place() {
+        // (a cruising rival challenged: after the run starts only the racing brain to the beacon drives him)
+        let row = |v: f32| vec![v; 128];
+        let tune = std::sync::Arc::new(mcla_formats::rage::aitune::AiTune {
+            max_speed: 60.0, min_curvature: 0.005, max_curvature: 0.2, max_total_accel: 30.0, max_brake_decel: 20.0,
+            idle_speed: [0.0; 7], accel: row(6.0), decel: (0..7).map(|_| row(3.0)).collect(), speed_high_curv: vec![30.0; 64],
+            speed_low_curv: vec![60.0; 64], steer_scalar: row(4.0), drag: [0.0; 3], accel_rows: (0..8).map(|_| row(6.0)).collect(),
+        });
+        let mut ai = crate::ai::AiDriver::default();
+        ai.cruiser.0 = Some(Box::new(crate::cruiser::Cruiser::new(7, Vec3::ZERO)));
+        let goal = Vec3::new(120.0, 0.0, -40.0);
+        start_run(&mut ai, tune, goal);
+        assert!(ai.cruiser.0.is_none(), "the cruiser still drives him");
+        let b = ai.brain.0.as_ref().expect("no racing brain");
+        assert_eq!(b.plan.goals.len(), 1);
+        assert!((b.plan.goals[0].centre() - goal).length() < 1e-3);
+        assert!(b.avoid_handbrake && b.rubber.is_none() && b.final_speed == -1.0);
+    }
 
     #[test]
     fn is_hidden_is_the_originals_rule() {
