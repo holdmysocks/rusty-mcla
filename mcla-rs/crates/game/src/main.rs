@@ -3704,6 +3704,18 @@ impl App {
             } else {
                 STOOD.store(0, Relaxed);
             }
+            // (and the wreck's DAMAGED OUT pause menu - the cruise's damage-out with no police on the player, `wreck over
+            // in the cruise` - answered with its QUICK FIX row after 120 ticks: the free repair, the game goes on)
+            static WRECKED: AtomicU32 = AtomicU32::new(0);
+            if self.game.mode == Mode::Paused && self.game.message_box.is_none() && self.vehicles.player().is_some_and(|c| police::damaged_out(c.state.damage)) {
+                if (WRECKED.fetch_add(1, Relaxed) + 1) % 120 == 0 {
+                    log::info!("--auto: QUICK FIX on the DAMAGED OUT menu");
+                    self.game.quick_fix = true;
+                    self.game.mode = if self.game.race.is_some() || self.game.flag.is_some() { Mode::Race } else { Mode::FreeRoam };
+                }
+            } else {
+                WRECKED.store(0, Relaxed);
+            }
         }
         let frozen_now = self.vehicles.frozen || self.vehicles.grid_hold.is_some();
         // (the test driver --auto drives only a car that answers its pad: a deactivated one - the arrest's Racer_Deactivate
@@ -8625,6 +8637,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         self.police.debug_units();
                     } else if v != "park" && v != "units" && !pull && self.tick_no == 150 {
                         self.police.debug_force(&gpu, &world, &mut self.vehicles);
+                    } else if let Some(every) = v.strip_prefix("force,").and_then(|e| e.trim().parse::<f32>().ok()).filter(|e| *e > 0.0) {
+                        // ("force,<secs>": the chase forced again every that many seconds of game time while no chase and no
+                        // arrest runs - repeated arrests for the soaks' test driver)
+                        let n = (every * 60.0) as u64;
+                        if self.tick_no > 150 && n > 0 && self.tick_no % n == 0 && self.police.heat == police::Heat::None && !self.arrest_deact && self.arrest_station.is_none() && self.game.arrest_panel.is_none() {
+                            self.police.debug_force(&gpu, &world, &mut self.vehicles);
+                        }
                     }
                     // ("flip": the player's car laid on its roof first - the arrest of a car upside down)
                     if v == "flip" && self.tick_no == 140 {
@@ -8904,6 +8923,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         let bike = self.vehicles.player().is_some_and(|c| c.model.bike && c.state.wipeout > 0.0);
                         let cops = self.police.tactic_cops();
                         let scene = police::arrest_scene(cops, (self.tick_no as u32).wrapping_mul(2654435761) >> 8, bike, goons);
+                        // (test hook MCLA_ARREST_SCENE=<name>: that arrest scene, e.g. cut_cop_arrest_07)
+                        let forced = std::env::var("MCLA_ARREST_SCENE").ok().and_then(|n| ["cut_cop_arrest", "cut_cop_arrest_02", "cut_cop_arrest_03", "cut_cop_arrest_07", "cut_cop_arrest_08"].into_iter().find(|s| *s == n));
+                        let scene = forced.unwrap_or(scene);
                         // (0x6d0: OpponentManager_HideOpponents - only with a race current, before 0x953 / 0xa39 read the
                         // player's place. A cops' bust ends every other race first (F-22530 -> the race scripts'
                         // Race_ResetCurrentRace, 1 - 2 frames, inside CopArrest's waited fade down): only a payback is
@@ -9657,6 +9679,24 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // crank ends with the engine running again -, Racer_Activate, and 0x1552 after CutSceneDone:
             // SetAllPoliceUnderground(0, 1))
             self.sound.play_ignition();
+            // (Racer_Activate, F-76651(racer, 0) -> F-30391(0): +592 = 0 - the deactivate of cut_cop_arrest_07's engine_off
+            // event (F-30391(1)) ends here too. The port had left it, so after that scene the car never answered its pad
+            // again (the 2026-11-16 60-min soak stood 38 min at the station). The engine word comes back with the crank.)
+            if let Some(c) = self.vehicles.player_mut() {
+                c.deactivated = false;
+                // (the test driver --auto: its lane and its stuck watch start afresh where the car now stands)
+                if let Some(d) = c.ai.as_mut().filter(|_| self.opt.auto) {
+                    d.link = None;
+                    d.stuck_long = 0.0;
+                    d.stuck_anchor = c.state.pos;
+                }
+            }
+            // (soak switch MCLA_AUTO_REPAIR=1 with --auto: the car repaired after the arrest, as QUICK FIX does, so the soak
+            // does not drive on at the arrest's damage. Test hook only.)
+            if self.opt.auto && std::env::var_os("MCLA_AUTO_REPAIR").is_some() {
+                log::info!("--auto: MCLA_AUTO_REPAIR after the arrest");
+                self.game.quick_fix = true;
+            }
             self.police.units_up();
             self.arrest_on_screen = false;
         }
