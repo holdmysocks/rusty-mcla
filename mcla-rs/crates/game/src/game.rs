@@ -983,9 +983,9 @@ pub struct Game {
     pub scene_hud_off: bool,
     /// the HUD's own branch ran this frame (its movies stepped and drawn there) - `hud_fade`
     pub hud_ran: bool,
-    /// a police scene is playing (the officer's walk, the ticket scene, the arrest scene - not the bail's run back,
-    /// `cut_cop_alert_02`): the HUD's hide check takes its `cine` exit for it
-    pub cop_scene: bool,
+    /// a scene is playing outside a race's start (a police scene - not the bail's run back, `cut_cop_alert_02` -, the
+    /// garage's entry and exit, a hangout's): the HUD's hide check takes its `cine` exit for it
+    pub scene_hide: bool,
     /// the race markers' tune (`mcUIClass`, loaded on first use)
     pub mark_tune: Option<crate::racemark::MarkTune>,
     /// the free-roam icons' three `3dicons` movies (hookicons.rs, loaded on first use)
@@ -1749,7 +1749,7 @@ impl Game {
             ui_sim_dt: 0.0,
             scene_hud_off: false,
             hud_ran: false,
-            cop_scene: false,
+            scene_hide: false,
             mark_tune: None,
             hook_icons: None,
             next_race_start: false,
@@ -11022,8 +11022,10 @@ impl Game {
                     // (the ARRESTED / TICKETED panel, form 46, is a form up too: hidden at its open - u1 frame 2634; a police scene
                     // takes the check's `cine` exit at its start and `end` at its end - u1 frames 2472 / 2632, u4 1754 - 2197: the
                     // HUD fades out over the walk and the scenes and back in after them, drawn all along as HUDMOVIE is, SetVisible(1))
-                    let hud_vis = mcla_flash::value::Value::Int((self.arrest_banner.is_none() && self.arrest_panel.is_none() && !self.cop_scene) as i32);
-                    self.hud_ran = true;
+                    // (the garage's exit scene the same: `cine` from its start, `end` at its end - work/ui2/hudrec r2 frames 4817 / 4904)
+                    let hud_vis = mcla_flash::value::Value::Int((self.arrest_banner.is_none() && self.arrest_panel.is_none() && !self.scene_hide) as i32);
+                    // (the idle camera skips both movies here: `hud_fade` steps them out - the refresh's `event` input)
+                    self.hud_ran = !idle_cam;
                     if let Some(fh) = self.flash_hud.as_mut().filter(|_| !idle_cam) {
                         let dt = ctx.input(|i| i.stable_dt).min(0.1);
                         fh.movie.player.set_global("cur_visibility", hud_vis.clone());
@@ -11306,19 +11308,25 @@ impl Game {
 
     /// The HUD on a frame its own branch did not run. The HUD's hide check (F-25537) runs at the HUD's refresh (F-53853,
     /// `reference/ui/hud_hide_refresh.md`): HUDMOVIE stays SetVisible(1), the cluster and the map take `cur_visibility` =
-    /// !hidden and ease their own alpha toward it (the cluster a quarter of the way a frame, the map animateEase speed 4).
-    /// Recorded in the original (work/hookmen2/dp/cap u1 - u4, with the refresh hooks): the pause hides them at its open
-    /// (exit `notopform` / `formup`) and shows them at its close in the same frame; a scene (CopArrest, the ticket walk and
-    /// scene) hides them at its start (`cine`) and shows them at its end (that one in the HUD's own branch, `cop_scene`). So
-    /// both movies fade out over the pause's first frames and fade back in after it - the port cut them. Here the pause only;
-    /// the other frames the port's HUD is away (a race start, the warp, a story scene, the map screen) keep the port's own
-    /// gates (not recorded).
+    /// !(hidden || event || replay) and ease their own alpha toward it (the cluster a quarter of the way a frame, the map
+    /// animateEase speed 4), so they fade, not cut. Recorded in the original (work/hookmen2/dp/cap u1 - u4, work/ui2/hudrec
+    /// r1 - r3): hidden at the pause's open (`notopform` / `formup`), shown at its close; hidden from a race start's warp
+    /// (`b51350`) through its scene (`cine`) to 3 s before GO (`preGO`); hidden from the garage's warp through its scenes and
+    /// camera (`hangoutcam`); `event` set under the idle camera; `replay` set through a replay. The frames the port leaves
+    /// the HUD's branch for one of these (the pause, the warp, a start scene before its countdown, the race's badge, a story
+    /// scene, the idle camera) step both movies here with `cur_visibility` 0 and draw them while their alpha is above 0, so
+    /// they come back from 0 as the original's do. Not the map screen, a fresh career's prompts or a hangout (not recorded).
     fn hud_fade(&mut self, ctx: &egui::Context) {
-        if std::mem::take(&mut self.hud_ran) || self.idle_cam {
+        if std::mem::take(&mut self.hud_ran) {
             return;
         }
-        // (not before GO: the cluster's 3-2-1 steps with the race clock, which the pause holds)
-        if self.mode != Mode::Paused || self.race.as_ref().is_some_and(|r| r.countdown > 0.0) {
+        let away = match self.mode {
+            Mode::Paused => true,
+            Mode::FreeRoam | Mode::Race => self.dive_k > 0.0 || self.scene_hud_off || race_badge_shown(self.start_badge_on) || self.cine.is_some() || self.idle_cam,
+            _ => false,
+        };
+        // (not while the 3-2-1 runs: the cluster's countdown steps with the race clock, which the pause holds)
+        if !away || self.race.as_ref().is_some_and(|r| r.countdown > 0.0 && r.countdown <= 3.0) {
             return;
         }
         let dt = ctx.input(|i| i.stable_dt).min(0.1);

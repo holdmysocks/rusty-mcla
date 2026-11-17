@@ -5798,7 +5798,8 @@ impl App {
         let subtitles = self.game.opts.subtitles;
         self.game.cine = self.cuts.playing.as_ref().map(|_| self.cuts.subtitle().filter(|_| subtitles).unwrap_or("").to_string());
         self.game.cine_style = self.cuts.subtitle_style();
-        self.game.cop_scene = self.cine.playing.as_ref().is_some_and(|sc| sc.name.contains("cut_cop_") && !sc.name.contains("alert"));
+        // (any scene but a race's start scene - its HUD is `scene_hud_off`'s and the countdown's - and the bail's run back)
+        self.game.scene_hide = !self.cine_prerace && self.cine.playing.as_ref().is_some_and(|sc| !sc.name.contains("cut_cop_alert"));
         if self.cine_free && self.cine.playing.is_some() {
             // letterbox with the name of the race / what happened
             if let Some(c) = self.cine_caption.clone() {
