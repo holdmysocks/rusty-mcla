@@ -2038,6 +2038,12 @@ fn ch_nm(nn: vec3<f32>, t: vec3<f32>, b: vec3<f32>, x: f32, y: f32, m: f32) -> v
 // colour, d the diffuse (decoded), nm the normal map (stored), det the detail map (decoded, at
 // uv x scale), m4 the fourth map at uv (spec map), m4b at 20 uv (skin_arm's offset map), s the
 // shadow (the full-screen collector), fast the top-down mask's raw value, ff front facing.
+// pow with a material's exponent as the Xenos computes it (exp2(y log2 x), 0 x inf = 0): x^0 = 1 for every x, 0 included.
+// A material lacking the parameter has 0 (skin.rs CharMat::of); pow(0, 0) is NaN on AMD's compilers and AMD clamps a NaN to
+// 1 - GitHub #57 (as #14's paint_pow). Any other exponent: pow itself.
+fn ch_pow(x: f32, y: f32) -> f32 { return select(pow(x, y), 1.0, y == 0.0); }
+fn ch_pow3(x: vec3<f32>, y: f32) -> vec3<f32> { return select(pow(x, vec3<f32>(y)), vec3<f32>(1.0), y == 0.0); }
+
 // (MCLA_DEBUG_VIEW=797, GitHub #57: a character term that is not a number or infinite - exponent bits, which no
 // compiler folds - marks the pixel magenta; an input from the vertex stage cyan. NVIDIA clamps a NaN to 0 where AMD
 // gives 1, so this finds on any card what shows white on AMD)
@@ -2086,7 +2092,7 @@ fn char_shade(fx: u32, pw: vec3<f32>, nv: vec3<f32>, tf: vec4<f32>, vcol: vec4<f
         if (fx == 6u) { n = ch_nm(nn, t, b, nm.x, nm.w, k0.x); }
         if (fx == 8u) { n = normalize(t * (2.0 * nm.x - 1.0) + b * (2.0 * nm.y - 1.0) + nn * (2.0 * nm.z - 1.0)); }
         let vn = dot(v, n);
-        let fres = k2.z + (k2.w - k2.z) * pow(1.0 - clamp(abs(vn), 0.0, 1.0), k2.y);
+        let fres = k2.z + (k2.w - k2.z) * ch_pow(1.0 - clamp(abs(vn), 0.0, 1.0), k2.y);
         let r = normalize(2.0 * vn * n - v);
         let env = env_color(r);
         let dt = d.rgb * tint.rgb;
@@ -2098,8 +2104,8 @@ fn char_shade(fx: u32, pw: vec3<f32>, nv: vec3<f32>, tf: vec4<f32>, vcol: vec4<f
             let w1 = clamp(clamp(dot(n, l1.xyz), 0.0, 1.0) * (1.0 - wr) + wr, 0.0, 1.0);
             let d0 = c0 * w0 * l0.w * s;
             let d1 = 2.0 * c1 * w1 * l1.w * s;
-            let sp = c0 * pow(clamp(dot(n, normalize(v + l0.xyz)), 0.0, 1.0), se) * clamp(16.0 * w0, 0.0, 1.0)
-                   + c1 * pow(clamp(dot(n, normalize(v + l1.xyz)), 0.0, 1.0), se) * clamp(16.0 * w1, 0.0, 1.0);
+            let sp = c0 * ch_pow(clamp(dot(n, normalize(v + l0.xyz)), 0.0, 1.0), se) * clamp(16.0 * w0, 0.0, 1.0)
+                   + c1 * ch_pow(clamp(dot(n, normalize(v + l1.xyz)), 0.0, 1.0), se) * clamp(16.0 * w1, 0.0, 1.0);
             let lit = ch_screen(amb, ch_screen(d1, d0));
             ck(n); ck1(fres); ck(env); ck(d0); ck(d1); ck(sp); ck(lit);
             if (1.0 - clamp(abs(vn), 0.0, 1.0) <= 0.0 && k2.y <= 0.0) { ch_bad = ch_bad | 2u; }
@@ -2109,9 +2115,9 @@ fn char_shade(fx: u32, pw: vec3<f32>, nv: vec3<f32>, tf: vec4<f32>, vcol: vec4<f
         let e1 = 2.0 * c1 * clamp(dot(n, l1.xyz), 0.0, 1.0) * l1.w * s;
         let e2 = 2.0 * c2 * clamp(dot(n, l2.xyz), 0.0, 1.0) * l2.w * s;
         let dsum = ch_screen(ch_screen(e1, e0), e2);
-        let sp = c0 * pow(clamp(dot(n, normalize(v + l0.xyz)), 0.0, 1.0), se) * clamp(16.0 * dot(n, l0.xyz), 0.0, 1.0)
-               + c1 * pow(clamp(dot(n, normalize(v + l1.xyz)), 0.0, 1.0), se) * clamp(16.0 * dot(n, l1.xyz), 0.0, 1.0)
-               + c2 * pow(clamp(dot(n, normalize(v + l2.xyz)), 0.0, 1.0), se) * clamp(16.0 * dot(n, l2.xyz), 0.0, 1.0);
+        let sp = c0 * ch_pow(clamp(dot(n, normalize(v + l0.xyz)), 0.0, 1.0), se) * clamp(16.0 * dot(n, l0.xyz), 0.0, 1.0)
+               + c1 * ch_pow(clamp(dot(n, normalize(v + l1.xyz)), 0.0, 1.0), se) * clamp(16.0 * dot(n, l1.xyz), 0.0, 1.0)
+               + c2 * ch_pow(clamp(dot(n, normalize(v + l2.xyz)), 0.0, 1.0), se) * clamp(16.0 * dot(n, l2.xyz), 0.0, 1.0);
         let lit = ch_screen(amb, dsum * 0.5 * k1.x);
         ck(n); ck1(fres); ck(env); ck(e0); ck(e1); ck(e2); ck(sp); ck(lit);
         if (1.0 - clamp(abs(vn), 0.0, 1.0) <= 0.0 && k2.y <= 0.0) { ch_bad = ch_bad | 2u; }
@@ -2142,26 +2148,26 @@ fn char_shade(fx: u32, pw: vec3<f32>, nv: vec3<f32>, tf: vec4<f32>, vcol: vec4<f
     var n = nn;
     if (fx == 2u || fx == 4u) { n = ch_nm(nn, t, b, nm.y, nm.w, k0.x); }
     let vn = dot(v, n);
-    let fres = k2.z + (k2.w - k2.z) * pow(1.0 - clamp(abs(vn), 0.0, 1.0), k2.y);
+    let fres = k2.z + (k2.w - k2.z) * ch_pow(1.0 - clamp(abs(vn), 0.0, 1.0), k2.y);
     let env = env_soft(normalize(2.0 * vn * n - v));
     let wr = k3.x;
     let se = k1.z;
     let dl0 = c0 * clamp(dot(n, l0.xyz) * (1.0 - wr) + wr, 0.0, 1.0) * l0.w;
     let dl1 = c1 * clamp(dot(n, l1.xyz) * (1.0 - wr) + wr, 0.0, 1.0) * l1.w;
     let dl2 = c2 * clamp(dot(n, l2.xyz) * (1.0 - wr) + wr, 0.0, 1.0) * l2.w;
-    let sl0 = c0 * pow(clamp(dot(n, normalize(v + l0.xyz)), 0.0, 1.0), se) * clamp(16.0 * dot(n, l0.xyz), 0.0, 1.0) * l0.w;
-    let sl1 = c1 * pow(clamp(dot(n, normalize(v + l1.xyz)), 0.0, 1.0), se) * clamp(16.0 * dot(n, l1.xyz), 0.0, 1.0) * l1.w;
-    let sl2 = c2 * pow(clamp(dot(n, normalize(v + l2.xyz)), 0.0, 1.0), se) * clamp(16.0 * dot(n, l2.xyz), 0.0, 1.0) * l2.w;
+    let sl0 = c0 * ch_pow(clamp(dot(n, normalize(v + l0.xyz)), 0.0, 1.0), se) * clamp(16.0 * dot(n, l0.xyz), 0.0, 1.0) * l0.w;
+    let sl1 = c1 * ch_pow(clamp(dot(n, normalize(v + l1.xyz)), 0.0, 1.0), se) * clamp(16.0 * dot(n, l1.xyz), 0.0, 1.0) * l1.w;
+    let sl2 = c2 * ch_pow(clamp(dot(n, normalize(v + l2.xyz)), 0.0, 1.0), se) * clamp(16.0 * dot(n, l2.xyz), 0.0, 1.0) * l2.w;
     let dsum = ch_screen(ch_screen(dl0 * shm, dl1), dl2);
     let ssum = sl0 * shm + sl1 + sl2;
-    let aoh = pow(abs(vcol.a), k3.w) * ambw;
+    let aoh = ch_pow(abs(vcol.a), k3.w) * ambw;
     let lt = ch_screen(ch_screen(amb * detf, dsum * aoh), vl);
     let base = lt * k1.x * 1.8 * detf * d.rgb;
     let rimc = mix(d.rgb * dot(env, lum), env, 1.0 - clamp(vn, 0.0, 1.0));
-    let rim = rimc * pow(1.0 - max(vn, 0.0), k3.y) * k3.z * aoh;
+    let rim = rimc * ch_pow(1.0 - max(vn, 0.0), k3.y) * k3.z * aoh;
     var mask = det * d.a;
     if (fx == 3u || fx == 4u) { mask = det * m4.x; }
-    let sp = (k1.w * mask * fres * aoh * ssum + k2.x * pow(abs(rimc), vec3<f32>(k1.y + 1.0))) * (0.5 + 0.5 * n.y);
+    let sp = (k1.w * mask * fres * aoh * ssum + k2.x * ch_pow3(abs(rimc), k1.y + 1.0)) * (0.5 + 0.5 * n.y);
     ck(nn); ck(t); ck(b); ck(n); ck1(fres); ck(env); ck(dl0); ck(dl1); ck(dl2); ck(sl0); ck(sl1); ck(sl2); ck1(aoh); ck(lt); ck(base); ck(rimc); ck(rim); ck(sp); ck(vl); ck1(detf);
     return ch_screen(ch_screen(base, sp), rim);
 }
