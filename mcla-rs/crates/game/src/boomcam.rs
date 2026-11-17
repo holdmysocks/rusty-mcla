@@ -285,6 +285,15 @@ impl BoomCam {
     }
 }
 
+/// The boom's probe type bit 0x200 (F-81967 called at the top of the boom's update F-14014 with mask 512; its collision
+/// F-12669 / F-20517 probes with that +200): on while the
+/// car's speed (chassis +224, through the target +8) is below 22.35 (0x41B2CCCD, `fcmpu` / `blt`, so a NaN speed leaves
+/// it to the pause test) or the game is paused (the pause manager's +4 set and +10 clear). The probe's query is then
+/// `CamQuery::boom(bit)`.
+pub fn boom_probe_bit(speed: f32, paused: bool) -> bool {
+    speed < f32::from_bits(0x41B2_CCCD) || paused
+}
+
 /// The boom camera's collision (camBoomCS CollideType 2, F-12669 -> F-20517 for the
 /// chase and reverse views, F-77832 for POV / bumper; rules in
 /// `docs/reference/cameras/boom_collision_rule.md` and `probe_rule.md`). A ball the size of the
@@ -295,9 +304,9 @@ impl BoomCam {
 /// touches. POV / bumper sweep only. The focus moves with it (the look keeps its direction);
 /// every frame, no smoothing, the boom's own state is not changed. Returns the camera's move, or
 /// None when it is clear.
-pub fn boom_collide(p: Vec3, c: Vec3, r: f32, inside_car: bool, world: SphereTest) -> Option<Vec3> {
+pub fn boom_collide(p: Vec3, c: Vec3, r: f32, inside_car: bool, q: CamQuery, world: SphereTest) -> Option<Vec3> {
     if !inside_car {
-        let k = world.contacts(p, r, CamQuery::CARS, 10);
+        let k = world.contacts(p, r, q, 10);
         if !k.is_empty() {
             let mut acc = Vec3::ZERO;
             for (d, n) in k {
@@ -5335,11 +5344,11 @@ camTrackCS {
     fn boom_collision() {
         let wall = |c: Vec3, r: f32| (c.z + r > 5.0).then(|| (c.z + r - 5.0, Vec3::NEG_Z));
         let wall = &Balls(wall);
-        let m = boom_collide(Vec3::new(0.0, 1.2, 0.0), Vec3::new(0.0, 2.0, 8.0), 0.27, false, wall).unwrap();
+        let m = boom_collide(Vec3::new(0.0, 1.2, 0.0), Vec3::new(0.0, 2.0, 8.0), 0.27, false, CamQuery::CARS, wall).unwrap();
         let cam = Vec3::new(0.0, 2.0, 8.0) + m;
         assert!((cam.z - 4.73).abs() < 0.01 && cam.y < 2.0, "{cam:?}");
-        assert!(boom_collide(Vec3::new(0.0, 1.2, 0.0), Vec3::new(0.0, 2.0, 4.0), 0.27, false, wall).is_none());
-        let m = boom_collide(Vec3::new(0.0, 1.2, 4.9), Vec3::new(0.0, 2.0, 8.0), 0.27, false, wall).unwrap();
+        assert!(boom_collide(Vec3::new(0.0, 1.2, 0.0), Vec3::new(0.0, 2.0, 4.0), 0.27, false, CamQuery::CARS, wall).is_none());
+        let m = boom_collide(Vec3::new(0.0, 1.2, 4.9), Vec3::new(0.0, 2.0, 8.0), 0.27, false, CamQuery::CARS, wall).unwrap();
         assert!(((Vec3::new(0.0, 2.0, 8.0) + m).z - 4.73).abs() < 0.01);
     }
 
@@ -5357,12 +5366,12 @@ camTrackCS {
         let level = CamLevel::city(&city);
         let w: SphereTest = &level;
         let p = Vec3::new(0.0, 1.2, 0.0);
-        let m = boom_collide(p, Vec3::new(0.0, 2.0, 8.0), 0.27, false, w).unwrap();
+        let m = boom_collide(p, Vec3::new(0.0, 2.0, 8.0), 0.27, false, CamQuery::CARS, w).unwrap();
         let cam = Vec3::new(0.0, 2.0, 8.0) + m;
         assert!((cam.z - 4.73).abs() < 1e-5 && (cam.y - (1.2 + 0.8 * 4.73 / 8.0)).abs() < 1e-5, "{cam:?}");
         // the probe point 0.1 from the wall: one contact, the camera at p + n depth
         let p = Vec3::new(0.0, 1.2, 4.9);
-        let cam = Vec3::new(0.0, 2.0, 8.0) + boom_collide(p, Vec3::new(0.0, 2.0, 8.0), 0.27, false, w).unwrap();
+        let cam = Vec3::new(0.0, 2.0, 8.0) + boom_collide(p, Vec3::new(0.0, 2.0, 8.0), 0.27, false, CamQuery::CARS, w).unwrap();
         assert!((cam - Vec3::new(0.0, 1.2, 4.73)).length() < 1e-5, "{cam:?}");
         // a second wall at x = 1 facing -x: two contacts, both pushes
         let mut city2 = WorldCollider::default();
@@ -5370,7 +5379,7 @@ camTrackCS {
         city2.sectors.insert(0, SectorMesh::build(vec![[a, d, c], [a, c, b], [e, f, g], [e, g, h]]));
         let level2 = CamLevel::city(&city2);
         let p = Vec3::new(0.9, 1.2, 4.9);
-        let cam = Vec3::new(0.0, 2.0, 8.0) + boom_collide(p, Vec3::new(0.0, 2.0, 8.0), 0.27, false, &level2).unwrap();
+        let cam = Vec3::new(0.0, 2.0, 8.0) + boom_collide(p, Vec3::new(0.0, 2.0, 8.0), 0.27, false, CamQuery::CARS, &level2).unwrap();
         // (the z wall's contact first, then the x wall's part not along it - not a plain sum)
         assert!((cam - Vec3::new(0.782542, 1.153296, 4.709098)).length() < 1e-4, "{cam:?}");
         // a car 6 m behind in open ground: the cars' sweep meets its hull
@@ -5385,7 +5394,7 @@ camTrackCS {
         let mut level3 = CamLevel::city(&open);
         level3.cars.push(CamObj::of_hull(&hull, Vec3::new(0.0, 0.0, 9.0), Quat::IDENTITY));
         let p = Vec3::new(0.0, 1.0, 0.0);
-        let cam = Vec3::new(0.0, 1.0, 10.0) + boom_collide(p, Vec3::new(0.0, 1.0, 10.0), 0.27, false, &level3).unwrap();
+        let cam = Vec3::new(0.0, 1.0, 10.0) + boom_collide(p, Vec3::new(0.0, 1.0, 10.0), 0.27, false, CamQuery::CARS, &level3).unwrap();
         assert!((cam.z - (7.0 - 0.27)).abs() < 1e-4, "{cam:?}");
     }
 
@@ -5973,6 +5982,18 @@ SSFovMin 60
     /// `TrackCam::lens`. Not ported, with no effect: the weight k kept at +180 (handed to the viewport by F-12344 and F-98562,
     /// which the port's projection does not take) and the probe's mask bit 0x200 below 22.35 m/s (no archetype has it,
     /// camprobe.rs CamQuery::CARS).
+    /// F-81967's bit as F-14014 sets it: below 22.35 m/s or paused; the threshold is the
+    /// image's float, a NaN speed only by the pause.
+    #[test]
+    fn boom_probe_bit_is_the_speed_and_pause_test() {
+        let t = f32::from_bits(0x41B2_CCCD);
+        assert!(boom_probe_bit(0.0, false) && boom_probe_bit(f32::from_bits(t.to_bits() - 1), false));
+        assert!(!boom_probe_bit(t, false) && !boom_probe_bit(40.0, false) && !boom_probe_bit(f32::NAN, false));
+        assert!(boom_probe_bit(40.0, true) && boom_probe_bit(f32::NAN, true));
+        assert_eq!(CamQuery::boom(true).include, 0x300);
+        assert_eq!(CamQuery::boom(false), CamQuery::CARS);
+    }
+
     #[test]
     fn track_lens_matches_the_original() {
         let h = |x: &str| u32::from_str_radix(x, 16).unwrap();

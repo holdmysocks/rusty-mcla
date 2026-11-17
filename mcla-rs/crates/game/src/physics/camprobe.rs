@@ -105,6 +105,12 @@ impl CamQuery {
     /// The boom (F-20517 / F-12669: camera +200 = 0x100 - 0x200 is added below 22.35 m/s, a bit no archetype has -,
     /// byte +196 = 7, none excluded), the event camera's pull-in and the replay's tests: the city, the cars, traffic.
     pub const CARS: CamQuery = CamQuery { include: 0x100, states: 7, exclude_types: 0 };
+    /// The boom's own query (camera +200 as F-12669 reads it): `CARS`, with type bit 0x200 added while F-81967's bit is on
+    /// (`boomcam::boom_probe_bit`: the car under 22.35 m/s or the game paused). No archetype the original makes
+    /// carries 0x200 (probe_rule.md 0.3), so it selects nothing more as far as known.
+    pub fn boom(bit_0x200: bool) -> CamQuery {
+        CamQuery { include: if bit_0x200 { 0x300 } else { 0x100 }, ..CamQuery::CARS }
+    }
     /// The event camera's deflection (the states 7 & 0xFC = 4): the fixed objects only - the city.
     pub const FIXED: CamQuery = CamQuery { include: 0x100, states: 4, exclude_types: 0 };
     /// The event chooser's Air test: every type, fixed, type bit 1 excluded - the city and the fixed props.

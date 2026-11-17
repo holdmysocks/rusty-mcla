@@ -10577,6 +10577,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             model_offset: car.model.simtunes.as_ref().map_or(Vec3::ZERO, |s| Vec3::new(s.base.s.model_offset_x, s.base.s.model_offset_y, s.base.s.model_offset_z)),
                         },
                         g,
+                        paused: self.game.audio_paused(),
                     }),
                     _ => None,
                 };
@@ -11202,7 +11203,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             let inside_car = boomcam::VIEW_OF_PORT[(mode as usize).min(5)] < 2 && !self.look_back;
                             let r = if inside_car { corner * 2.0 } else { corner + 0.01 };
                             let from = self.boom.collide_from(tune, &target);
-                            if let Some(m) = boomcam::boom_collide(from, self.chase.pos, r, inside_car, &cam_level) {
+                            let q = physics::camprobe::CamQuery::boom(boomcam::boom_probe_bit(target.vel.length(), self.game.audio_paused()));
+                            if let Some(m) = boomcam::boom_collide(from, self.chase.pos, r, inside_car, q, &cam_level) {
                                 self.chase.pos += m;
                                 self.chase.look += m;
                                 boom_corrected = true;
@@ -18255,6 +18257,8 @@ struct DriveProbe<'a> {
     booms: &'a mut [boomcam::BoomCam; 6],
     at: boomcam::BoomTarget,
     g: boomcam::BoomGround,
+    /// the pause manager's paused byte (F-81967's second test)
+    paused: bool,
 }
 
 impl replay::Probe for ReplayProbe<'_> {
@@ -18286,7 +18290,8 @@ impl replay::Probe for ReplayProbe<'_> {
         let mut pos = cam.step_held(tune, &at, &d.g, 1.0 / 30.0, 30.0).pos;
         if tune.collide_type() & 2 != 0 {
             let from = cam.collide_from(tune, &at);
-            if let Some(m) = boomcam::boom_collide(from, pos, if inside { r * 2.0 } else { r + 0.01 }, inside, level) {
+            let q = physics::camprobe::CamQuery::boom(boomcam::boom_probe_bit(at.vel.length(), d.paused));
+            if let Some(m) = boomcam::boom_collide(from, pos, if inside { r * 2.0 } else { r + 0.01 }, inside, q, level) {
                 pos += m;
             }
         }
