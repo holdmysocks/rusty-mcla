@@ -3181,6 +3181,21 @@ impl Game {
         vec![stage; 13]
     }
 
+    /// The garage's fitted figures of car `i` when it is the player's own car (F-60422 asks F-17130 only for the car the
+    /// profile's current car is): the live car's [acceleration, speed, handling] - its built tune against the `.r50`'s two
+    /// sets, the record's suspension / brake / tire states. None for any other car (its stock figures are shown).
+    fn live_meters(&self, vehicles: &Vehicles, i: usize, c: &crate::catalog::CarInfo) -> Option<[i32; 3]> {
+        use crate::catalog::LiveFigures;
+        if i != self.current_car {
+            return None;
+        }
+        let p = vehicles.player()?;
+        let s = p.model.simtunes.as_ref()?;
+        let live = p.params().veh.as_ref().map_or(LiveFigures::of(&s.base), |v| LiveFigures::of(&v.t));
+        let st = self.perf_stages(i);
+        Some(c.live_meters(LiveFigures::of(&s.base), LiveFigures::of(&s.mods), live, [st[9], st[10], st[11], st[12]], p.model.bike))
+    }
+
     /// How far car `i` is towards its fully upgraded figures (0..1).
     pub fn perf_frac(&self, i: usize) -> f32 {
         let s = self.perf_stages(i);
@@ -7596,7 +7611,9 @@ impl Game {
                     self.perf_step(sel, right);
                 }
                 let stages = self.perf_stages(i);
-                let movie_drawn = self.perf_shop_movie(ctx, &list, &stages, sel);
+                // (the fitted figures: the live car's, F-68809 -> F-17130)
+                let live = self.catalog.get(&self.dir_name(i)).cloned().and_then(|c| self.live_meters(vehicles, i, &c));
+                let movie_drawn = self.perf_shop_movie(ctx, &list, &stages, sel, live);
                 if movie_drawn {
                     // The dyno graph: the movie only says where it goes (`dynopos`); the game
                     // draws the engine's curves there - torque red, horsepower blue (reference
@@ -9238,15 +9255,17 @@ impl Game {
                                 })
                                 .collect();
                             let c = info(list_cars[sel.min(list_cars.len() - 1)]);
-                            let f = if showroom || crate::modgarage::placeholder(list_cars[sel.min(list_cars.len() - 1)]).is_some() { 0.0 } else { self.perf_frac(list_cars[sel.min(list_cars.len() - 1)]) };
+                            let at = list_cars[sel.min(list_cars.len() - 1)];
                             let meters = match c {
                                 Some(c) => {
                                     // (teal: the stock car; yellow up to what is fitted; the dark bar is what
                                     // the car can reach)
-                                    // (stock and upgraded as the original's panel, F-13938; the fitted share between them
-                                    // is the port's own - the original's F-17130 reads the live car: approx.)
+                                    // (stock and upgraded as the original's panel, F-13938; the fitted figure as F-60422 hands
+                                    // it: the showroom's the row's Showroom* fields, a garage car's its stock figures - but the
+                                    // player's own car, whose are the live car's, F-17130)
                                     let m = c.meters();
-                                    let row = |k: usize| { let (b, x) = (m[k][0] as f32, m[k][1] as f32); [b + (x - b) * f, b, x] };
+                                    let cur = if showroom { c.showroom_meters() } else { self.live_meters(vehicles, at, &c).unwrap_or([m[0][0], m[1][0], m[2][0]]) };
+                                    let row = |k: usize| [cur[k] as f32, m[k][0] as f32, m[k][1] as f32];
                                     [row(0), row(1), row(2)]
                                 }
                                 // (a placeholder of a mod that is not installed: no figures - MODS.md S3)
@@ -13579,7 +13598,7 @@ impl Game {
 impl Game {
     /// The performance shop on the garage movie's own page (`template_PS_level`).
     /// False when the movie is not there (the port's own table is drawn then).
-    fn perf_shop_movie(&mut self, ctx: &egui::Context, list: &[(String, i64, i64)], stages: &[u8], sel: usize) -> bool {
+    fn perf_shop_movie(&mut self, ctx: &egui::Context, list: &[(String, i64, i64)], stages: &[u8], sel: usize, live: Option<[i32; 3]>) -> bool {
         use crate::flash_ui::{MenuLayout, MenuPage, MenuRow, ICON_A, ICON_B};
         if self.flash_garage.is_none() || self.ui_meshes.is_none() || std::env::var("MCLA_FLAT_MENU").is_ok() {
             return false;
@@ -13609,12 +13628,12 @@ impl Game {
             details.push((have, unlocked, price, brand_at(k)));
             rows.push(MenuRow { label: self.career.strings.get(id).map(|s| s.to_uppercase()).unwrap_or_else(|| id.trim_start_matches("gp_").to_uppercase()), value: String::new(), enabled: true, part: None });
         }
-        let f = self.perf_frac(i);
         let meters = match self.catalog.get(&self.dir_name(i)) {
             Some(c) => {
-                // (stock and upgraded as F-13938; the fitted share is the port's own, approx.: F-17130 is not ported)
+                // (stock and upgraded as F-13938; the fitted figures the live car's, F-17130)
                 let m = c.meters();
-                let row = |k: usize| { let (b, x) = (m[k][0] as f32, m[k][1] as f32); [b + (x - b) * f, b, x] };
+                let cur = live.unwrap_or([m[0][0], m[1][0], m[2][0]]);
+                let row = |k: usize| [cur[k] as f32, m[k][0] as f32, m[k][1] as f32];
                 [row(0), row(1), row(2)]
             }
             None => [[0.0, 0.0, 100.0]; 3],
