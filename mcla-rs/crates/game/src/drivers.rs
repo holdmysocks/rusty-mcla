@@ -3694,7 +3694,9 @@ mod ride_tests {
 /// script in the chase view and in POV; docs/reference/people/car_anim_machine.md "Recording"). Each recorded frame's
 /// context-step inputs (the gatherer's flag word and gesture, look, skid, velocity and throttle, shift; the steering words as
 /// the context kept them) and its random generator's state run through the port's context step, machine and sequencer
-/// (the R8's own pack); the context after the update, the state and every call to the anim player are compared. The
+/// (the R8's own pack); the context after the update, the state and every call to the anim player are compared. Run
+/// `lookback` (2026-11-16): the R8 standing 170 s with the right stick held down, right, left through the pad file (look -1 /
+/// -1 / +1: the stopped idle and its fidgets under the look-back). The
 /// fixtures (`work/driverlight/cmp/*.fix`, made by `fix.py`) are not in the repository: skipped without them.
 #[cfg(test)]
 mod recorded_tests {
@@ -3928,7 +3930,7 @@ mod recorded_tests {
                 durs.push(a.duration);
             }
         }
-        for run in ["chase", "pov", "idle"] {
+        for run in ["chase", "pov", "idle", "lookback"] {
             let Ok(fix) = std::fs::read_to_string(dir.join(format!("{run}.fix"))) else {
                 eprintln!("no {run}.fix, skipped");
                 continue;

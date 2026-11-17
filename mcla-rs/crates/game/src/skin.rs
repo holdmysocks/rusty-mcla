@@ -983,7 +983,9 @@ pub struct SkinBuffer {
     /// D59: this buffer's parts are skinned on the GPU (`skin_cs.wgsl`, bit for bit the CPU's `skin_vertex` - test
     /// `gpu_skin_matches_the_cpu`), recorded by `encode` / `encode_cb` (the owner sets it: the drivers into the frame's
     /// encoder; the walkers and the scenes' cast in a command buffer submitted ahead of their shadow passes). A part with
-    /// face shapes or wind stays on the CPU. MCLA_SKIN_CPU=1: all on the CPU, as before.
+    /// face shapes is skinned there too, its delta handed over with the matrices (`GpuSkinJob::delta`); a part with wind
+    /// stays on the CPU. MCLA_SKIN_CPU=1: all on the CPU, as before; MCLA_SKIN_SHAPES_CPU=1: the face-shape parts on the
+    /// CPU (as before 2026-11-16).
     pub gpu_skin: bool,
     /// this frame's vertex count (CPU runs and GPU jobs)
     nverts: u32,
@@ -1169,7 +1171,7 @@ impl SkinBuffer {
                 _ => None,
             };
             let wind_here = if chars && part.mat.wind { wind } else { None };
-            let src_off = if gpu_ok && shape.is_none() && wind_here.is_none() && n > 0 {
+            let src_off = if gpu_ok && (shape.is_none() || !shapes_on_cpu()) && wind_here.is_none() && n > 0 && shape.map_or(true, |d| d.len() >= n as usize) {
                 let dev = self.device.as_ref().unwrap();
                 self.cs.get_or_insert_with(|| SkinCs::new(dev)).src_of(part)
             } else {
@@ -1182,9 +1184,29 @@ impl SkinBuffer {
                     at
                 });
                 let flags = chars as u32 | (part.alpha as u32) << 1;
-                self.gpu_jobs.push(GpuSkinJob { count: n, src_off, dst: base, mat_off: mo, flags, fill: u32::from_le_bytes(fill) });
+                // (the face shapes' delta, four vertices a matrix slot after this frame's matrices: the shader adds it to
+                // the bind-pose place as the CPU's `v.pos + d` below)
+                let delta = match shape {
+                    Some(d) => {
+                        let at = self.gpu_mats.len() as u32 * 4;
+                        self.gpu_mats.extend(d[..n as usize].chunks(4).map(|c| {
+                            let mut a = [0.0f32; 16];
+                            for (k, v) in c.iter().enumerate() {
+                                a[4 * k..4 * k + 4].copy_from_slice(v);
+                            }
+                            Mat4::from_cols_array(&a)
+                        }));
+                        at
+                    }
+                    None => NO_DELTA,
+                };
+                self.gpu_jobs.push(GpuSkinJob { count: n, src_off, dst: base, mat_off: mo, flags, fill: u32::from_le_bytes(fill), delta });
                 if skin_check() {
-                    self.check.push((base, part.verts.iter().map(|v| skin_vertex(&self.skin, v, v.pos, chars, part.alpha, fill, None)).collect()));
+                    let bind = |vi: usize, v: &SkinVert| match shape {
+                        Some(d) => v.pos + Vec3::new(d[vi][0], d[vi][1], d[vi][2]),
+                        None => v.pos,
+                    };
+                    self.check.push((base, part.verts.iter().enumerate().map(|(vi, v)| skin_vertex(&self.skin, v, bind(vi, v), chars, part.alpha, fill, None)).collect()));
                 }
             } else {
                 let start = self.verts.len() as u32;
@@ -1581,7 +1603,7 @@ fn gpu_skin_self_test(dev: &wgpu::Device, q: &wgpu::Queue) -> Result<(), String>
     let mut cs = SkinCs::new(dev);
     let (oa, ob) = (cs.src_of(&pa).ok_or("self-test: arena")?, cs.src_of(&pb).ok_or("self-test: arena")?);
     let fw = u32::from_le_bytes(fill);
-    let jobs = [GpuSkinJob { count: n as u32, src_off: oa, dst: 0, mat_off: 0, flags: 1, fill: fw }, GpuSkinJob { count: n as u32, src_off: ob, dst: n as u32, mat_off: 0, flags: 2, fill: fw }];
+    let jobs = [GpuSkinJob { count: n as u32, src_off: oa, dst: 0, mat_off: 0, flags: 1, fill: fw, delta: NO_DELTA }, GpuSkinJob { count: n as u32, src_off: ob, dst: n as u32, mat_off: 0, flags: 2, fill: fw, delta: NO_DELTA }];
     cs.write(dev, q, &skin, &jobs);
     let size = (2 * n * std::mem::size_of::<Vertex>()) as u64;
     let vb = dev.create_buffer(&wgpu::BufferDescriptor { label: Some("skin self-test"), size, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
@@ -1667,6 +1689,17 @@ struct GpuSkinJob {
     mat_off: u32,
     flags: u32,
     fill: u32,
+    /// the face shapes' delta: where it starts in the matrices' buffer, in vec4s (`NO_DELTA`: none)
+    delta: u32,
+}
+
+/// `GpuSkinJob::delta` of a part without face shapes
+const NO_DELTA: u32 = u32::MAX;
+
+/// MCLA_SKIN_SHAPES_CPU=1: the face-shape parts skinned on the CPU (the A / B check of the GPU's)
+fn shapes_on_cpu() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var_os("MCLA_SKIN_SHAPES_CPU").is_some())
 }
 
 /// `skin_cs.wgsl`'s pipeline and buffers: the parts' source vertices (an arena: each part written once, the first frame
@@ -1776,7 +1809,7 @@ impl SkinCs {
         let mut rec = Vec::with_capacity(jobs.len() * 8);
         let mut vstart = 0u32;
         for j in jobs {
-            rec.extend_from_slice(&[vstart, j.count, j.src_off, j.dst, j.mat_off, j.flags, j.fill, 0]);
+            rec.extend_from_slice(&[vstart, j.count, j.src_off, j.dst, j.mat_off, j.flags, j.fill, j.delta]);
             vstart += j.count;
         }
         q.write_buffer(self.jobs.as_ref().unwrap(), 0, bytemuck::cast_slice(&rec));
@@ -1896,10 +1929,28 @@ mod tests {
             })
             .collect();
         let fill = [10u8, 20, 30, 0];
+        // (the first job's face-shape deltas: small, large, zero and negative zero, after the matrices as `emit_shaped`
+        // packs them)
+        let deltas: Vec<[f32; 4]> = (0..n).map(|i| match i % 5 {
+            0 => [0.0, -0.0, 0.0, 0.0],
+            1 => [f() * 0.02, f() * 0.02, f() * 0.02, 0.0],
+            2 => [f() * 3.0, -0.0, f(), 0.0],
+            _ => [f() * 1e-4, f() * 1e-6, f() * 0.5, 0.0],
+        }).collect();
+        let mut mats = skin.clone();
+        mats.extend(deltas.chunks(4).map(|c| {
+            let mut a = [0.0f32; 16];
+            for (k, v) in c.iter().enumerate() {
+                a[4 * k..4 * k + 4].copy_from_slice(v);
+            }
+            Mat4::from_cols_array(&a)
+        }));
         let mut want: Vec<u32> = Vec::new();
         for (chars, alpha) in [(true, false), (false, true)] {
-            for v in &verts {
-                want.extend_from_slice(bytemuck::cast_slice(&[skin_vertex(&skin, v, v.pos, chars, alpha, fill, None)]));
+            for (i, v) in verts.iter().enumerate() {
+                let d = deltas[i];
+                let bind = if chars { v.pos + Vec3::new(d[0], d[1], d[2]) } else { v.pos };
+                want.extend_from_slice(bytemuck::cast_slice(&[skin_vertex(&skin, v, bind, chars, alpha, fill, None)]));
             }
         }
         let mut words = Vec::new();
@@ -1919,13 +1970,13 @@ mod tests {
             let module = dev.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(include_str!("render/skin_cs.wgsl").into()) });
             let pipe = dev.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: None, layout: None, module: &module, entry_point: Some("main"), compilation_options: Default::default(), cache: None });
             let srcb = dev.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&words), usage: wgpu::BufferUsages::STORAGE });
-            let matb = dev.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&skin), usage: wgpu::BufferUsages::STORAGE });
+            let matb = dev.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&mats), usage: wgpu::BufferUsages::STORAGE });
             let size = (want.len() * 4) as u64;
             let dstb = dev.create_buffer(&wgpu::BufferDescriptor { label: None, size, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
             let rd = dev.create_buffer(&wgpu::BufferDescriptor { label: None, size, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
             let mut enc = dev.create_command_encoder(&Default::default());
             let fw = u32::from_le_bytes(fill);
-            let jobs: [u32; 16] = [0, n as u32, 0, 0, 0, 1, fw, 0, n as u32, n as u32, 0, n as u32, 0, 2, fw, 0];
+            let jobs: [u32; 16] = [0, n as u32, 0, 0, 0, 1, fw, skin.len() as u32 * 4, n as u32, n as u32, 0, n as u32, 0, 2, fw, NO_DELTA];
             let jb = dev.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&jobs), usage: wgpu::BufferUsages::STORAGE });
             let pb = dev.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&[2 * n as u32, 2, 0, 0]), usage: wgpu::BufferUsages::UNIFORM });
             let bg = dev.create_bind_group(&wgpu::BindGroupDescriptor {

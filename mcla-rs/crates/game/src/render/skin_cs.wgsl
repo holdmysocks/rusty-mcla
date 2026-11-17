@@ -4,6 +4,7 @@
 // (x x + y y) + z z, sqrt, its reciprocal, the product; the octahedral map's division by (|x| + |y|) + |z|; Rust's
 // signum, which is 1 for +0 and -1 for -0).
 
+// (`mats` also carries the face shapes' deltas of this frame, four vec4 to a matrix slot, after the matrices)
 // a vertex: 5 vec4 of words - pos.xyz + colour, nrm.xyz + bones 0 / 1, tangent xyzw, weights, uv + bones 2 / 3
 @group(0) @binding(0) var<storage, read> src: array<vec4<u32>>;
 @group(0) @binding(1) var<storage, read> mats: array<mat4x4<f32>>;
@@ -19,7 +20,8 @@ struct Job {
     // bit 0: the character programs' layout, bit 1: an alpha part
     flags: u32,
     fill: u32,
-    pad: u32,
+    // the face shapes' delta: where it starts in `mats`, in vec4s (four to a matrix); 0xffffffff none
+    delta: u32,
 }
 @group(0) @binding(3) var<storage, read> jobs: array<Job>;
 
@@ -189,7 +191,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let tn = bitcast<vec4<f32>>(src[s + 2u]);
     let w = bitcast<vec4<f32>>(src[s + 3u]);
     let a4 = src[s + 4u];
-    let p = bitcast<vec3<f32>>(a0.xyz);
+    var p = bitcast<vec3<f32>>(a0.xyz);
+    if (job.delta != 0xffffffffu) {
+        // (the bind-pose place plus the face shapes' delta, one rounded add a component as the CPU's)
+        let d = job.delta + i;
+        p = av3(p, mats[d / 4u][d % 4u].xyz);
+    }
     let nv = bitcast<vec3<f32>>(a1.xyz);
     var b = array<u32, 4>(a1.w & 0xffffu, a1.w >> 16u, a4.z & 0xffffu, a4.z >> 16u);
     var pos = vec3<f32>(0.0);
