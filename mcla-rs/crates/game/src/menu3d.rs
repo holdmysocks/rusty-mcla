@@ -393,10 +393,9 @@ impl UiMesh {
                     m.uv.push(mesh.uv0.get(i).map_or([0.0, 0.0], |u| [u.x, u.y]));
                     m.tangent.push(mesh.tangents.get(i).map_or([1.0, 0.0, 0.0, 1.0], |t| t.to_array()));
                     let mut b = Vec3::ZERO;
-                    // (approx.) the vertex follows its heaviest bone. VS_TransformSkinned blends all four by their
-                    // weights; done so here (p + sum(w * bone) * (scale - 1)) the frame's front sheet comes to lie over
-                    // the movie's panels and lightens them (night pause, panel 40 -> 61): the stretch is not decoded yet
-                    // (menugloss.rs, OPEN)
+                    // the vertex follows its heaviest bone. VS_TransformSkinned blends all four by their weights, but every
+                    // pause_screen vertex has one bone at 1.0; with the node's scale the offsets bind x (scale - 1) equal
+                    // pause_main draw 5109's bones (docs UI.md "Gloss: the pause pane's interior")
                     if let (Some(bi), Some(bw), false) = (mesh.blend_indices.get(i), mesh.blend_weights.get(i), bones.is_empty()) {
                         let w = bw.to_array();
                         let slot = (0..4).max_by(|a, c| w[*a].total_cmp(&w[*c])).unwrap_or(0);
