@@ -836,6 +836,48 @@ mod tests {
     use super::*;
     use mcla_formats::rage::navmesh::{NavLink, NavPoly, PolyLocal};
 
+    /// The mesh accessors on the real city mesh against the original's code (tools/nav_search_reference.py --accessors):
+    /// a polygon's world vertices (F-36421), its normal (F-83219), its material word (vfunc 60), and the segment test
+    /// vfunc 72 (F-87322) with the arc test's caps.
+    #[test]
+    fn mesh_accessors_match_the_original() {
+        let Some(m) = crate::offroad::mesh() else { return };
+        let hx = |t: &str| u32::from_str_radix(t, 16).unwrap();
+        let bits = |v: Vec3| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()];
+        let (mut polys, mut segs, mut bad) = (0, 0, Vec::new());
+        let text = std::env::var("MCLA_NAV_ACCESSORS_REF").ok().map(|f| std::fs::read_to_string(f).unwrap());
+        for l in text.as_deref().unwrap_or(include_str!("testdata/nav_accessors_ref.txt")).lines() {
+            let t: Vec<&str> = l.split_whitespace().collect();
+            if t.first() == Some(&"poly") {
+                polys += 1;
+                let id = hx(t[1]);
+                let i = m.chunk_first[(id >> 12) as usize] + (id & 0xfff);
+                let p = &m.polys[i as usize];
+                let bar: Vec<usize> = t.iter().enumerate().filter(|(_, x)| **x == "|").map(|(k, _)| k).collect();
+                let want_v: Vec<u32> = t[bar[0] + 1..bar[1]].iter().map(|x| hx(x)).collect();
+                let got_v: Vec<u32> = p.points().iter().flat_map(|&v| bits(v)).collect();
+                let want_n: Vec<u32> = t[bar[1] + 2..bar[2]].iter().map(|x| hx(x)).collect();
+                let got_n = bits(crate::brainpath::poly_normal(m, i)).to_vec();
+                let want_m = hx(t[bar[2] + 2]);
+                if got_v != want_v || got_n != want_n || p.flags != want_m {
+                    bad.push(format!("poly {id:x}: verts {} n {:x?} / {:x?} m {:x} / {:x}", got_v == want_v, got_n, want_n, p.flags, want_m));
+                }
+            } else if t.first() == Some(&"seg") {
+                segs += 1;
+                let f = |k: usize| f32::from_bits(hx(t[k]));
+                let (a, b, w) = (Vec3::new(f(1), f(2), f(3)), Vec3::new(f(4), f(5), f(6)), f(7));
+                let want = t[9] == "1";
+                if segment_on_mesh(m, a, b, w) != want {
+                    bad.push(format!("seg {}: port {} orig {want}", l, !want));
+                }
+            }
+        }
+        assert!(polys > 0 && segs > 0);
+        assert!(bad.is_empty(), "{} of {polys} + {segs} differ:
+{}", bad.len(), bad.iter().take(12).cloned().collect::<Vec<_>>().join("
+"));
+    }
+
     /// A flat mesh of `nx` x `nz` squares of `size` m from `origin`, minus `holes`; local links with
     /// clearance `cl` beyond both ends. Winding (x0,z0), (x0,z1), (x1,z1), (x1,z0) (inside for
     /// F-22664); a link leaving through the edge a -> b lists b first (pa) as the file does.

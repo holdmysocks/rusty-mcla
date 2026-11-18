@@ -22,6 +22,11 @@ Line per case: "case <i> <start xyz> <goal xyz> (f32 bits) <start flags> <goal f
 then the path elements (query +152: first +12, count +20, next +48): "<type> <A xyz> <B xyz> <handle +28> <+32> <+36>
 <left +40> <entered +44>;" (a type-0 element is the point: +4 the point, +20 the goal node).
 
+Accessor mode (--accessors, test brainturn::tests::mesh_accessors_match_the_original): per case a random polygon,
+"poly <node id> <count> | <world vertex xyz>... | n <normal xyz> | m <material word +8>" (F-36421, F-83219, vfunc 60 F-43095),
+and a random segment through vfunc 72 F-87322 with the caps the arc test F-38160 builds (F-53025 / F-94095 / F-96012; width 0
+or 1.6 - 2.4, min normal-y -1, filter off, the mesh's +76 = 100 as the arc test sets it): "seg <from xyz> <to xyz> <width> -> <result>".
+
 Probe mode (--probe <file of hex x y z>): per point the mesh's containing list (vfunc 32, F-15418), the point list
 (F-38131) and the nearest polygon within 10 m (F-83298).
 """
@@ -165,6 +170,34 @@ int main(int argc,char**argv){setvbuf(stdout,nullptr,_IONBF,0);std::ifstream bin
    p[0]=w[0]+frand(-r,r);p[2]=w[2]+frand(-r,r);uint32_t yk=rnd()%6;p[1]=w[1]+(yk<2?0:yk<4?frand(-0.9f,0.9f):yk<5?frand(-4,4):frand(-12,30));
    return;}
   p[0]=near?near[0]:0;p[1]=near?near[1]:0;p[2]=near?near[2]:0;};
+ if(ACCMODE){
+  uint32_t M=load(level+512);
+  for(int ci=0;ci<ncases;ci++){
+   // a random polygon: its world vertices (F-36421: the chunk matrix at chunk +16, at most r7 = 16), its normal (F-83219), its material word +8 (mesh vfunc 60)
+   uint32_t k,ck,np_;for(;;){k=rnd()%nch;ck=load(chp+4*k);if(!ck)continue;np_=load16(ck+0x56);if(np_)break;}
+   uint32_t cd=load(cdt+4*load16(ck+0x50)),pi=rnd()%np_,pp=load(cd+0x10)+28*pi,OUT=rt_alloc(16*16,16);
+   {Context c=fresh();c.r3.u32=pp;c.r4.u32=cd;c.r5.u32=ck+16;c.r6.u32=OUT;c.r7.u32=16;F_36421(c,nullptr);uint32_t nv=c.r3.u32;
+    printf("poly %x %u |",(k<<12)|pi,nv);for(uint32_t v=0;v<nv;v++)for(int j=0;j<3;j++)printf(" %08x",load(OUT+16*v+4*j));}
+   {Context c=fresh();c.r3.u32=ck;c.r4.u32=pi;c.r5.u32=OUT;F_83219(c,nullptr);printf(" | n");for(int j=0;j<3;j++)printf(" %08x",load(OUT+4*j));}
+   {Context c=fresh();c.r3.u32=M;c.r4.u32=(k<<12)|pi;F_43095(c,nullptr);uint32_t mo=c.r3.u32;printf(" | m %08x\n",mo?load(mo+8):0xFFFFFFFFu);}
+   // a random segment through the mesh's vfunc 72 (F-87322), the caps built as the arc test F-38160 builds them:
+   // F-53025 at frame +128 (+28 width, +8 min normal-y -1), F-94095 at +176, F-96012 copies the caps to +192
+   float s[3],e[3];pick(s,0,nullptr);uint32_t dk=rnd()%4;
+   if(dk==0)pick(e,30,s);else{float ang=frand(0,6.2831853f),len=dk==1?frand(0.5f,5):dk==2?frand(5,20):frand(20,60);
+    e[0]=s[0]+len*cosf(ang);e[2]=s[2]+len*sinf(ang);e[1]=s[1]+frand(-1,1);}
+   uint32_t wk=rnd()%3;float w=wk==0?0.0f:frand(1.6f,2.4f);
+   uint32_t FR=rt_alloc(512,16),PA=rt_alloc(32,16);
+   {Context c=fresh();c.r3.u32=FR+128;F_53025(c,nullptr);}stf(FR+156,w);stf(FR+136,-1.0f);
+   {Context c=fresh();c.r3.u32=FR+176;F_94095(c,nullptr);}
+   {Context c=fresh();c.r3.u32=FR+192;c.r4.u32=FR+128;F_96012(c,nullptr);}
+   for(int j=0;j<3;j++){stf(PA+4*j,s[j]);stf(PA+16+4*j,e[j]);}stf(PA+12,0);stf(PA+28,0);
+   // (the arc test sets the mesh's +76, the point test's window above a polygon, to 100 around the call)
+   uint32_t o76=load(M+76);stf(M+76,100.0f);
+   Context c=fresh();c.r3.u32=M;c.r4.u32=PA;c.r5.u32=PA+16;c.r6.u32=FR+176;c.r7.u32=0;c.r8.u32=1;F_87322(c,nullptr);
+   store(M+76,o76);
+   printf("seg %08x %08x %08x %08x %08x %08x %08x -> %u\n",fbits(s[0]),fbits(s[1]),fbits(s[2]),fbits(e[0]),fbits(e[1]),fbits(e[2]),fbits(w),c.r3.u32&0xFF);
+  }
+  return 0;}
  for(int ci=0;ci<ncases;ci++){
   float s[3],g[3];pick(s,0,nullptr);uint32_t kind=rnd()%4;if(kind==0)pick(g,0,nullptr);else pick(g,kind==1?60:kind==2?250:800,s);
   uint32_t sf=MATS[rnd()%9],gf=MATS[rnd()%9];
@@ -212,7 +245,9 @@ NOTHREAD, FILTER_VT = 0x8290A08C, 0x82038A58
 # place, the pool initialisers, chunk table, level create, brain ctor, capability set, query make, submit, job body,
 # release; probe: containing list, point list, nearest
 FIDS = ['F-10115', 'F-39825', 'F-22830', 'F-92072', 'F-89841', 'F-86290', 'F-81317', 'F-27233', 'F-59389', 'F-76461',
-        'F-25277', 'F-15418', 'F-38131', 'F-83298']
+        'F-25277', 'F-15418', 'F-38131', 'F-83298',
+        # accessor mode: polygon vertices, normal, material (vfunc 60), segment test (vfunc 72), the caps constructors
+        'F-36421', 'F-83219', 'F-43095', 'F-87322', 'F-53025', 'F-94095', 'F-96012']
 # stubs: bad-pointer report, resource load, three no-ops, compare-exchange, fetch-add
 STUB_FIDS = ['F-27315', 'F-57285', 'F-12484', 'F-25937', 'F-17496', 'F-62311', 'F-42502']
 # indirect targets: the nav job's entry, the u32 compare the id-list sort passes
@@ -251,6 +286,7 @@ def main():
     ap.add_argument('--cases', type=int, default=300)
     ap.add_argument('--seed', type=int, default=1)
     ap.add_argument('--probe', type=Path)
+    ap.add_argument('--accessors', action='store_true', help='polygon / segment accessor cases instead of searches')
     a = ap.parse_args()
     fn = ['sub_' + x for x in addrs(a.tool, FIDS)]
     st = ['sub_' + x for x in addrs(a.tool, STUB_FIDS)]
@@ -259,6 +295,7 @@ def main():
     idx = rd.index(a.recomp)
     inits = initialisers(idx, img)
     src = MAIN.replace('INITCALLS', ''.join('{Context c=fresh();%s(c,nullptr);}' % f for f in inits))
+    src = src.replace('ACCMODE', '1' if a.accessors else '0')
     src = src.replace('NAVSEED', '%dull' % a.seed).replace('NOTHREAD', '0x%08Xu' % NOTHREAD).replace('FILTERVT', '0x%08Xu' % FILTER_VT)
     for f, n in zip(FIDS, fn):
         src = src.replace(f.replace('-', '_') + '(', n + '(')
@@ -278,7 +315,7 @@ def main():
     if r.returncode:
         sys.exit(r.stdout[-800:] + r.stderr[-1500:])
     a.ref.write_text(r.stdout)
-    print(r.stdout.count('case '), 'cases ->', a.ref)
+    print(r.stdout.count('case ') + r.stdout.count('seg '), 'cases ->', a.ref)
 
 
 if __name__ == '__main__':

@@ -23,7 +23,7 @@ fn fma(a: f32, b: f32, c: f32) -> f32 {
 
 /// F-83219: the polygon's normal-table entry rotated by its chunk matrix (no
 /// normalisation).
-fn poly_normal(mesh: &NavMesh, id: u32) -> Vec3 {
+pub(crate) fn poly_normal(mesh: &NavMesh, id: u32) -> Vec3 {
     let p = &mesh.polys[id as usize];
     let (Some(l), Some(r)) = (mesh.local.get(id as usize), mesh.chunk_rows.get(p.chunk as usize)) else {
         return p.normal;
