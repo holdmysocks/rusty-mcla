@@ -65,6 +65,9 @@ pub struct CarModel {
     pub glow_bones: Vec<(u8, Vec3, Vec3)>,
     /// each glow bone's light-set side (+24, F-27051): 0, 1 on the front bumper part, 2 on the rear one
     pub glow_sides: Vec<u8>,
+    /// each glow bone's place among the moved bones of the pop-up headlights' clip (`light_flip`): the light set holds the
+    /// bone's current matrix (F-27051), which the clip's pose (F-75243) moves, so the glow rises with the lamp
+    pub glow_flip: Vec<Option<u8>>,
     /// the cockpit readouts' bones (F-10977: `fontspeedo0` .. `fontclock0` of the base fragment's or a fitted part's
     /// skeleton, the first found): readout (0 speedo, 1 odometer, 2 trip, 3 gear, 4 clock), the bone's matrix in the
     /// model's frame, the box's width and height (its translation limits, max - min of x and y) - `readouts.rs`
@@ -2146,6 +2149,7 @@ struct CarPrep {
     own_hubs: [Option<Vec3>; 6],
     glow_bones: Vec<(u8, Vec3, Vec3)>,
     glow_sides: Vec<u8>,
+    glow_flip: Vec<Option<u8>>,
     font_bones: Vec<(u8, Mat4, f32, f32)>,
     variants: Vec<(Slot, Vec<String>)>,
     variant_labels: Vec<(Slot, Vec<String>)>,
@@ -2968,7 +2972,7 @@ impl Vehicles {
         let car = self.car_asset(world, dir)?;
         let ms_parse = t_load.elapsed().as_secs_f32() * 1000.0;
         let prep_ahead = self.preps.iter().any(|(k, c, _)| *k == parsed_key(dir) && c == cfg);
-        let CarPrep { car_is_ambient, rest_rot, meshes, lamp_acc, own_hubs, glow_bones, glow_sides, font_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone, slot_bones, turn_bones, susp_draw, roof_place, upgrade, flip } = match self.take_prep(dir, cfg) {
+        let CarPrep { car_is_ambient, rest_rot, meshes, lamp_acc, own_hubs, glow_bones, glow_sides, glow_flip, font_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone, slot_bones, turn_bones, susp_draw, roof_place, upgrade, flip } = match self.take_prep(dir, cfg) {
             Some(p) => p,
             None => Self::prep_car(&car, dir, cfg),
         };
@@ -3250,7 +3254,7 @@ impl Vehicles {
             let st: Vec<String> = stages.iter().scan(0.0, |p, (n, t)| { let d = t - *p; *p = *t; Some(format!("{n} {d:.2}")) }).collect();
             log::info!("car build gpu {}: own textures {:.2}, shared textures {:.2}, bind groups {:.2}, buffers {:.2}, pack copy {:.2}, merge {:.2}, rims {:.2}, brakes {:.2} ms; stages {}; whole build {:.1} ms", car.name, t[0], t[1], t[2], t[3], t[4], t[5], t[6], t[7], st.join(", "), t_load.elapsed().as_secs_f64() * 1000.0);
         }
-        let m = Arc::new(CarModel { lods, lod_radius, lod_centre, lod_steps, bound_box, own_wheels, name: car.name.clone(), lamps, glow_bones, glow_sides, font_bones, batches, params, params_mods, simtunes, vehmods: car.vehmods.clone(), fit: car.fit, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, susp_lever: car.susp_lever, susp_bones: (!car.susp_bones.is_empty()).then(|| Arc::new(car.susp_bones.clone())), bike_wheel_width, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), spoiler: car.spoiler.clone().map(Arc::new), clamshell: car.clamshell.clone().filter(|_| car.skinned_top.is_some()).map(Arc::new), skinned_top: car.skinned_top.clone().filter(|_| car.clamshell.is_some()).map(Arc::new), needles: [car.needles[0].clone().map(Arc::new), car.needles[1].clone().map(Arc::new), upgrade.as_ref().map(|u| u.0.clone())], needle_place: upgrade.as_ref().map_or(Mat4::IDENTITY, |u| u.1), light_flip: flip.as_ref().map(|f| f.0.clone()), flip_place: flip.as_ref().map_or(Mat4::IDENTITY, |f| f.1), roof_skin, roof_place, cop_lights: car.cop_lights.clone().map(Arc::new), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone, slot_bones, turn_bones, susp_draw, fx_anchors, fx_anchor_rear, rest_rot: rest_table(&rest_rot) });
+        let m = Arc::new(CarModel { lods, lod_radius, lod_centre, lod_steps, bound_box, own_wheels, name: car.name.clone(), lamps, glow_bones, glow_sides, glow_flip, font_bones, batches, params, params_mods, simtunes, vehmods: car.vehmods.clone(), fit: car.fit, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, susp_lever: car.susp_lever, susp_bones: (!car.susp_bones.is_empty()).then(|| Arc::new(car.susp_bones.clone())), bike_wheel_width, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), spoiler: car.spoiler.clone().map(Arc::new), clamshell: car.clamshell.clone().filter(|_| car.skinned_top.is_some()).map(Arc::new), skinned_top: car.skinned_top.clone().filter(|_| car.clamshell.is_some()).map(Arc::new), needles: [car.needles[0].clone().map(Arc::new), car.needles[1].clone().map(Arc::new), upgrade.as_ref().map(|u| u.0.clone())], needle_place: upgrade.as_ref().map_or(Mat4::IDENTITY, |u| u.1), light_flip: flip.as_ref().map(|f| f.0.clone()), flip_place: flip.as_ref().map_or(Mat4::IDENTITY, |f| f.1), roof_skin, roof_place, cop_lights: car.cop_lights.clone().map(Arc::new), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone, slot_bones, turn_bones, susp_draw, fx_anchors, fx_anchor_rear, rest_rot: rest_table(&rest_rot) });
         Ok(m)
     }
 
@@ -3278,7 +3282,7 @@ impl Vehicles {
         let hide_part = std::env::var("MCLA_HIDE_PART").ok();
         let lamp_dump = std::env::var("MCLA_LAMP_DUMP").is_ok();
         // (the light set's order: its slot rank, then the skeleton's order - see the cap below)
-        let mut glow_ranked: Vec<(usize, u8, Vec3, Vec3, u8)> = Vec::new();
+        let mut glow_ranked: Vec<(usize, u8, Vec3, Vec3, u8, Option<u8>)> = Vec::new();
         let mut font_bones: Vec<(u8, Mat4, f32, f32)> = Vec::new();
         // (the moving damage parts, DAMAGE_PARTS_RULE.md 1.4 / 2.3: the slot pass moves the parts of the slots
         // hood / hood_wide (2, 40), bumper_r (3), intercooler and bumper_f (5, 6); the trunk_0 bone turns with
@@ -3548,7 +3552,9 @@ impl Vehicles {
                         // bumper_r, else 0 - the base skeleton is in no slot)
                         let pn = part.primary.to_ascii_lowercase();
                         let side = if part.is_base { 0 } else if pn.starts_with("bumper_f") { 1 } else if pn.starts_with("bumper_r") { 2 } else { 0 };
-                        glow_ranked.push((vehicle_model::outlet_rank(part), kind, w, -(part_xf * b.world).z_axis.truncate().normalize_or_zero(), side));
+                        // (a bone the pop-up headlights' clip moves: its place among the clip's bones)
+                        let on_flip = flip.as_ref().filter(|f| !part.is_base && f.2 == part.file).and_then(|f| f.0.bones.iter().position(|&x| x == bi)).map(|j| j as u8);
+                        glow_ranked.push((vehicle_model::outlet_rank(part), kind, w, -(part_xf * b.world).z_axis.truncate().normalize_or_zero(), side, on_flip));
                     }
                     if let Some(k) = crate::readouts::bone_kind(&b.name).filter(|k| !font_bones.iter().any(|f| f.0 == *k)) {
                         let (lo, hi) = b.trans_limits;
@@ -4087,13 +4093,15 @@ impl Vehicles {
         glow_ranked.sort_by_key(|g| g.0);
         let mut glow_bones: Vec<(u8, Vec3, Vec3)> = Vec::new();
         let mut glow_sides: Vec<u8> = Vec::new();
-        for (_, kind, w, facing, side) in glow_ranked {
+        let mut glow_flip: Vec<Option<u8>> = Vec::new();
+        for (_, kind, w, facing, side, on_flip) in glow_ranked {
             if glow_bones.iter().filter(|g| g.0 == kind).count() < LIGHT_SET_KIND_CAP {
                 glow_bones.push((kind, w, facing));
                 glow_sides.push(side);
+                glow_flip.push(on_flip);
             }
         }
-        CarPrep { car_is_ambient, rest_rot, meshes, lamp_acc, own_hubs, glow_bones, glow_sides, font_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone, slot_bones, turn_bones, susp_draw, roof_place, upgrade, flip }
+        CarPrep { car_is_ambient, rest_rot, meshes, lamp_acc, own_hubs, glow_bones, glow_sides, glow_flip, font_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone, slot_bones, turn_bones, susp_draw, roof_place, upgrade, flip }
     }
 
     /// Tyre + rim model for a rim directory, loaded once.
@@ -7413,6 +7421,13 @@ if keep || c.state.pos.distance(center) < 450.0 {
             // no 50 m rule - sets the world matrix to the mirror about its origin height and runs F-62563 ->
             // F-96521 with refl = 1; the player's car has no reflection rectangles in the recordings)
             let refl_y = (traffic.is_some() && self.lod_pick.get(ci).copied().unwrap_or(-1) >= 0).then_some(pose.pos.y);
+            // (the pop-up headlights' pose: the light set holds the bones' current matrices, which F-75243 poses from the clip)
+            let flip_d: Vec<Mat4> = match c.model.light_flip.as_ref() {
+                Some(cl) if c.model.glow_flip.iter().any(|f| f.is_some()) => {
+                    cl.deltas(c.light_flip.clip_time(cl.duration)).iter().map(|x| c.model.flip_place * *x * c.model.flip_place.inverse()).collect()
+                }
+                _ => Vec::new(),
+            };
             for (n, (id, local, facing)) in c.model.glow_bones.iter().enumerate() {
                 let k = level(*id);
                 if k <= 0.0 || old_rule {
@@ -7443,6 +7458,10 @@ if keep || c.state.pos.distance(center) < 450.0 {
                         }
                     }
                     _ => (local, facing),
+                };
+                let (local, facing) = match c.model.glow_flip.get(n).copied().flatten().and_then(|j| flip_d.get(j as usize)) {
+                    Some(d) => (d.transform_point3(local), d.transform_vector3(facing).normalize_or_zero()),
+                    None => (local, facing),
                 };
                 out.push((pose.pos + pose.rot * local, pose.rot * facing, colour(*id, dflt(*id)), k, lamp(n), refl_y));
             }
@@ -8972,6 +8991,39 @@ mod traffic_light_set_tests {
         assert_eq!(rims(stock_rim_dirs(r, "vp_lam_murcielago_06_dub")), ["whl_stk_lam_murcielago_06", "whl_stk_lam_murcielago"]);
         assert_eq!(rims(stock_rim_dirs(r, "VPD_CHV_BELAIR_55")), ["whld_stk_chv_belair_55"]);
         assert!(stock_rim_dirs(r, "va_taxi_96").is_empty());
+    }
+
+    /// The pop-up headlights' glows ride on the clip (F-27051 keeps the bones' current matrices, F-75243 poses them): the Ford GT 06
+    /// with headlight2 read out of the running original (work/carparts2/flip/rec, lset.jsonl: day, then the hour held at 23), the four
+    /// head glows in car space closed equal the rest places and open moved by (0, 0.1170, -0.0481) outer / (0, 0.1274, -0.0508) inner.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc"]
+    fn flip_glows_ride_the_clip() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let assets = crate::assets::Assets::new(&dir);
+        let p = std::path::Path::new(&dir).join("resources/vehicle/vp_frd_gt_06");
+        let car = vehicle_model::load_car(&assets, &p).unwrap();
+        let mut c = CarConfig::default();
+        c.extra.insert("headlight".to_string(), 2);
+        let prep = Vehicles::prep_car(&car, &p, &c);
+        let (cl, place, _) = prep.flip.as_ref().expect("headlight2's light_flip");
+        let d: Vec<Mat4> = cl.deltas(cl.duration).iter().map(|x| *place * *x * place.inverse()).collect();
+        let want = [(Vec3::new(-0.6886, 0.6437, -2.1409)), Vec3::new(-0.5624, 0.6437, -2.1617), Vec3::new(0.6890, 0.6437, -2.1409), Vec3::new(0.5620, 0.6437, -2.1617)];
+        let mut heads = 0;
+        for (n, (k, w, _)) in prep.glow_bones.iter().enumerate() {
+            let j = prep.glow_flip[n];
+            if *k == 0 {
+                assert!(j.is_none(), "a brake glow on the clip");
+            }
+            if *k != 3 {
+                continue;
+            }
+            let up = d[j.expect("a head glow off the clip") as usize].transform_point3(*w);
+            println!("head {heads}: rest {w:?} open {up:?} original {:?}", want[heads]);
+            assert!(up.distance(want[heads]) < 2e-3, "head {heads}: {up:?} against {:?}", want[heads]);
+            heads += 1;
+        }
+        assert_eq!(heads, 4);
     }
 
     /// A traffic car's light set (the traffic object's reset F-14696 sets the set's +0 to 0 and +4 to its
