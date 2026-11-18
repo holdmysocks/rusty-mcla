@@ -2037,6 +2037,15 @@ impl Career {
 
     /// The story mission waits for its meeting this session: the second objective is still
     /// always hidden (the CORE script clears that byte at the meeting; a load puts the XML's back).
+    /// The meeting point (`STORY_POINTS`) a story mission waits at, while it waits there (test hook MCLA_CAREER_RACE).
+    pub fn story_point_waiting(&self, id: &str) -> Option<[f32; 3]> {
+        let i = self.mission_no(id)?;
+        if !self.order.contains(&i) || !self.story_waits(i) {
+            return None;
+        }
+        STORY_POINTS.iter().find(|s| s.0 == id).map(|s| s.1)
+    }
+
     fn story_waits(&self, i: usize) -> bool {
         STORY_SECOND_OBJECTIVE.contains(&self.missions[i].id.as_str()) && self.ext_ok(i) && self.missions[i].objectives.len() >= 2 && self.ext[i].obj_always[1]
     }

@@ -421,6 +421,8 @@ pub fn core_loop(sco: &mcla_formats::sco::Sco) -> Option<(Vec<Vec3>, Option<f32>
 /// road (near the player, as MCLA_HOOKMAN_TEST does), he is flashed while the cruise goes on and the mission is not
 /// complete (main.rs), a meet-me-there run puts the player on its line after 6 s (as MCLA_ROAM_TEST does); the race,
 /// its set-up, results, rewards and the save are the career's own. Test hook only.
+/// A parked or standing story man (`PARKED_CORES`, `STANDING_CORES`) is left at his place and the player is put on his
+/// core's meeting point instead (`Roamers::hook_meet_point`), so the meeting and its scene run as in play.
 pub fn career_race_hook() -> Option<String> {
     std::env::var("MCLA_CAREER_RACE").ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
 }
@@ -507,6 +509,17 @@ fn starter_racer(stream: Option<&crate::oppmgr::RacerStream>, driver: &str, x: f
 }
 
 impl Roamers {
+    /// MCLA_CAREER_RACE: the meeting point of the hook mission's parked or standing man while his meeting has not happened
+    /// (a FIND core's place, `mc4::FIND_POINTS`, until he is met; a story core's, `career::STORY_POINTS`, while it waits)
+    pub fn hook_meet_point(&self, career: &crate::career::Career) -> Option<Vec3> {
+        let mis = career_race_hook()?;
+        let m = self.men.iter().find(|m| m.parked && (m.mission.eq_ignore_ascii_case(&mis) || m.key.starts_with(&mis)))?;
+        if let Some(f) = crate::mc4::FIND_POINTS.iter().find(|f| f.0 == m.mission) {
+            return (!m.met).then(|| Vec3::from(f.1));
+        }
+        career.story_point_waiting(&m.mission).map(Vec3::from)
+    }
+
     pub fn new() -> Roamers {
         Roamers {
             player_state: 0,
@@ -1172,6 +1185,8 @@ impl Roamers {
         // near the player; the self-test MCLA_ROAM_TEST alone takes a slot hookman)
         // (MCLA_CAREER_RACE=<mission>: the man of that mission alone - `career_race_hook`)
         let only = std::env::var("MCLA_HOOKMAN_TEST").ok().or_else(|| std::env::var("MCLA_ROAM_TEST").ok().map(|_| "slot".to_string())).or_else(career_race_hook);
+        // (MCLA_CAREER_RACE alone: parked story men are not driven to the player)
+        let hold = career_race_hook().is_some() && std::env::var("MCLA_HOOKMAN_TEST").is_err() && std::env::var("MCLA_ROAM_TEST").is_err();
         // ---- the men go round their loops; those near the player are cars ----
         // (step 19d: a cruising brain that was given no speed drives at its rail's own -
         // F-90476: the road's, `mc4::RAIL_SPEED`)
@@ -1246,8 +1261,13 @@ impl Roamers {
                         continue;
                     }
                     // (a parked man does not drive: he stays at his place out of reach too)
-                    if m.parked && only.is_none() {
+                    if m.parked && (only.is_none() || hold) {
                         m.at = 0.0;
+                        // (MCLA_CAREER_RACE: a parked or standing story man stays at his place as in play - put down there
+                        // once the player is in reach, so that his core's meeting runs - `hook_meet_point`)
+                        if hold && only.as_deref().is_some_and(|o| m.key.starts_with(o) || m.mission.eq_ignore_ascii_case(o)) && spawn.is_none() && self.challenge.is_none() && m.start.or(m.pts.first().copied()).is_some_and(|p| p.distance(pp) < 450.0) {
+                            spawn = Some(k);
+                        }
                         continue;
                     }
                     m.fresh = false;
@@ -1351,7 +1371,7 @@ impl Roamers {
         // (a parked story man: put down at his core's place with its heading - LoadOpponent there,
         // Racer_InitializeResetPosition + Racer_Reset -, deactivated, no driver brain, lamps and exhaust off: `PARKED_CORES`)
         let ready = match ready {
-            Some((k, m, model)) if m.parked && only.is_none() => {
+            Some((k, m, model)) if m.parked && (only.is_none() || hold) => {
                 self.timer = 1.0;
                 if let Some(x) = self.men.get_mut(k) {
                     x.fresh = false;

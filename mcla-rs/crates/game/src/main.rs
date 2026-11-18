@@ -7334,6 +7334,16 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     log::info!("career race test: GO TO GARAGE for {mis}");
                     self.pending_action = MenuAction::GoToGarage;
                 }
+                // (a parked or standing story man waits at his place: the player is put on his meeting point - `Roamers::hook_meet_point`)
+                if self.tick_no % 600 == 450 && self.game.mode == Mode::FreeRoam && self.game.race.is_none() && self.roam.challenge.is_none() && self.cuts.idle() && self.cine.playing.is_none() && self.pending_action == MenuAction::None {
+                    if let Some(p) = self.roam.hook_meet_point(&self.game.career) {
+                        if let Some(c) = self.vehicles.player_mut().filter(|c| c.state.pos.distance(p) > 15.0) {
+                            log::info!("career race test: put on the meeting point of {mis} ({:.1}, {:.1}, {:.1})", p.x, p.y, p.z);
+                            c.state = physics::CarState::new(p + Vec3::Y * 0.8, 0.0);
+                            c.placed = false;
+                        }
+                    }
+                }
                 if self.game.mode == Mode::Garage && self.cuts.idle() && self.game.message_box.is_none() && self.garage_in.is_none() {
                     match IN_GARAGE.fetch_add(1, Relaxed) + 1 {
                         300 => { log::info!("career race test: B in the garage"); self.game.nav_back = true; }
@@ -8013,7 +8023,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             {
                 let mut flash = std::mem::take(&mut self.flash) || (std::env::var("MCLA_ROAM_TEST").map_or(false, |v| v != "once" || self.game.career.completed() == 0) && self.tick_no % 30 < 2 && self.roam.challenge.is_none());
                 // (test hook MCLA_CAREER_RACE=<mission>: its man flashed in the cruise until the mission is complete -
-                // `roamers::career_race_hook`; not while a scene or an arrest runs - a player's flash is deactivated then - nor in the 10 s
+                // `roamers::career_race_hook`; not while a scene or an arrest runs - a player's flash is deactivated then -, not while a story
+                // warp or a queued scene waits, not before a parked man's meeting (`Roamers::hook_meet_point`), nor in the 10 s
                 // after a race, while its leave runs: the hook reaches 2 km, a player 30)
                 let cruise_ticks;
                 {
@@ -8022,7 +8033,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     if self.game.mode == Mode::FreeRoam && self.game.race.is_none() { CRUISE.fetch_add(1, Relaxed); } else { CRUISE.store(0, Relaxed); }
                     cruise_ticks = CRUISE.load(Relaxed);
                 }
-                flash = flash || (self.tick_no % 30 == 0 && self.game.mode == Mode::FreeRoam && self.game.race.is_none() && self.roam.challenge.is_none() && cruise_ticks >= 600 && self.vehicles.cars.iter().any(|c| c.racer) && self.cuts.idle() && self.cine.playing.is_none() && !self.arrest_deact && !self.arrest_wait && self.police.heat != police::Heat::Busted && roamers::career_race_hook().is_some_and(|m| !self.game.career.state_at_least(&m, 5)));
+                flash = flash || (self.tick_no % 30 == 0 && self.game.mode == Mode::FreeRoam && self.game.race.is_none() && self.roam.challenge.is_none() && cruise_ticks >= 600 && self.vehicles.cars.iter().any(|c| c.racer) && self.cuts.idle() && !self.cuts.has_pending() && self.story_in.is_none() && self.cine.playing.is_none() && !self.arrest_deact && !self.arrest_wait && self.police.heat != police::Heat::Busted && roamers::career_race_hook().is_some_and(|m| !self.game.career.state_at_least(&m, 5)) && self.roam.hook_meet_point(&self.game.career).is_none());
                 // (a hookman who only races a certain class of car says so)
                 // (step 19d: nobody can be flashed while the police are doing something with the
                 // player - CruisingHookmanCore 0x745: PoliceManager_CheckPoliceActivity(1) < 2)
