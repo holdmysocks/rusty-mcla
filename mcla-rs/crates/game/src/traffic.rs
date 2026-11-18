@@ -1281,6 +1281,24 @@ pub struct DriverLanes {
     pub best_tan: Vec3,
 }
 
+impl DriverLanes {
+    /// F-94578 (AddLane): none at 12 entries, else appended, its node linked at the tail of the lane's car list (F-30206).
+    fn add(&mut self, lane: usize, t: f32) {
+        if self.list.len() < 12 {
+            self.list.push((lane, t, next_rail_seq()));
+        }
+    }
+
+    /// F-59811 (RemoveLane) of the k-th entry: unlinked from its lane's car list (F-13436); the last entry, unlinked
+    /// too, is copied into the hole and linked again at the tail of its lane's list (F-30206) - it takes a new place there.
+    fn remove(&mut self, k: usize) {
+        let m = self.list.pop().unwrap();
+        if k < self.list.len() {
+            self.list[k] = (m.0, m.1, next_rail_seq());
+        }
+    }
+}
+
 /// F-93055 (ambient car slot 10): what becomes of the car's lane entries this frame. Some(true): the lane update (the
 /// obstacle's slot 11, F-58331); Some(false): every entry dropped (slot 14); None: the list as it is. `active`: F-17857 (the
 /// instance's body there and not at rest); `v2`: fma(z, z, fma(x, x, y y)) of the velocity +208; `hit`: +500 bit 0x10; `beh`:
@@ -10825,11 +10843,11 @@ impl Vehicles {
                         if d2 < w * w {
                             dl.list[k].1 = t;
                         } else {
-                            dl.list.swap_remove(k);
+                            dl.remove(k);
                         }
                     }
                     None => {
-                        dl.list.swap_remove(k);
+                        dl.remove(k);
                     }
                 }
             }
@@ -10844,12 +10862,12 @@ impl Vehicles {
                             if valid {
                                 dl.list[k].1 = t;
                             } else {
-                                dl.list.swap_remove(k);
+                                dl.remove(k);
                             }
                         }
                         None => {
-                            if valid && dl.list.len() < 12 {
-                                dl.list.push((lane, t, next_rail_seq()));
+                            if valid {
+                                dl.add(lane, t);
                             }
                         }
                     }
@@ -11459,6 +11477,38 @@ mod original_curve_tests {
             n += 1;
         }
         assert_eq!(n, 4000);
+    }
+
+    /// A car's lane entries (AddLane F-94578, RemoveLane F-59811) and the lanes' car lists (F-30206 / F-13436) against the
+    /// original's code run offline (tools/lane_entries_reference.py -> testdata/lane_entries_ref.txt: 2,000 cases of 160
+    /// operations on 8 cars and 6 lanes): each lane's cars in its list's order (the entries by their link order).
+    #[test]
+    fn lane_entries_match_the_original() {
+        let mut n = 0;
+        for line in include_str!("testdata/lane_entries_ref.txt").lines() {
+            let (ops, want) = line.split_once(" -> ").unwrap();
+            let mut cars: Vec<DriverLanes> = (0..8).map(|_| DriverLanes::default()).collect();
+            for op in ops.split(',') {
+                let w: Vec<&str> = op.split(' ').collect();
+                let (o, l): (usize, usize) = (w[1].parse().unwrap(), w[2].parse().unwrap());
+                let dl = &mut cars[o];
+                if w[0] == "A" {
+                    dl.add(l, 0.5);
+                } else if let Some(k) = dl.list.iter().position(|e| e.0 == l) {
+                    dl.remove(k);
+                }
+            }
+            let got: Vec<String> = (0..6)
+                .map(|l| {
+                    let mut e: Vec<(u64, usize)> = cars.iter().enumerate().flat_map(|(o, d)| d.list.iter().filter(|x| x.0 == l).map(move |x| (x.2, o))).collect();
+                    e.sort();
+                    e.iter().map(|x| x.1.to_string()).collect::<Vec<_>>().join(" ")
+                })
+                .collect();
+            assert_eq!(got.join("/"), want, "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 2000);
     }
 
     /// F-10286: the spawn matrix heading (guest atan2 wrapped to (0, 2 pi]) against the original's code run offline
