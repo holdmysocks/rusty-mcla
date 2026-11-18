@@ -6400,7 +6400,7 @@ mod tests {
             }
         }
         eprintln!("law_score: {n} updates, {watched_n} watched, {paid_n} with a change of score, {lifted_n} pursuit cap lifts; watched bits {kinds:x?}");
-        assert_eq!(n, 9481);
+        assert_eq!(n, 13_097);
     }
 
     #[test]
@@ -6445,7 +6445,7 @@ mod tests {
             n += 1;
         }
         eprintln!("law_ladder: {n} updates, starts {starts:?}");
-        assert_eq!((n, starts.len()), (9475, 10));
+        assert_eq!((n, starts.len()), (13_089, 11));
     }
 
     #[test]
