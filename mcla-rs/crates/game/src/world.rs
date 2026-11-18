@@ -2902,3 +2902,7 @@ mod sector_record_tests {
         eprintln!("{batches} batch boxes meet their record box; {inside} wholly inside, the most past it {worst} m");
     }
 }
+
+#[cfg(test)]
+#[path = "tex_audit_tests.rs"]
+mod tex_audit_tests;
