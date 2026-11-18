@@ -4091,6 +4091,19 @@ impl Game {
         let laps = self.mc4_arcade_laps(&def).unwrap_or(def.laps.max(1) as usize);
         // the race's script: which checkpoints are gates, and the routes the opponents know
         let course = easy_course.or_else(|| def.checkpoints.first().and_then(|f| crate::racescript::course(&self.data_dir, &def.id, Some(*f)))).filter(|c| c.cps.len() == def.checkpoints.len() && std::env::var("MCLA_NO_COURSE").is_err());
+        // (a freeway or red light race has no table of checkpoints in its script: the hookman's script fills the list
+        // itself - CheckpointList_ResizeList, Checkpoint_SetPosition with the activation radius (`althk.radius`), every
+        // checkpoint Normal, no alt paths - and the race core's BrainRacing_SetupRace (F-68332) reads that list as for
+        // any race. Without a course here the racer got the port's old driver (ai.rs) instead of the racing brain:
+        // GitHub #58, the freeway racer that kept to its lane behind traffic)
+        let course = course.or_else(|| {
+            (crate::althk::is_alt_race(&def.id) && !def.checkpoints.is_empty() && std::env::var("MCLA_NO_COURSE").is_err()).then(|| crate::racescript::Course {
+                cps: def.checkpoints.iter().map(|&pos| crate::racescript::CourseCp { pos, radius: self.althk.radius.max(1.0), gate: None }).collect(),
+                nodes: Vec::new(),
+                routes: Vec::new(),
+                cop_zones: Vec::new(),
+            })
+        });
         if let Some(c) = course.as_ref() {
             log::info!("race course: {} of {} checkpoints are gates, {} route nodes in {} routes ({} driven in the race), {} cop zones", c.cps.iter().filter(|p| p.gate.is_some()).count(), c.cps.len(), c.nodes.len(), c.routes.len(), c.routes.iter().filter(|r| r.weight > 0.0).count(), c.cop_zones.len());
         }
