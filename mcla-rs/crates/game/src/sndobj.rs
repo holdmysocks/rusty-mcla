@@ -324,7 +324,8 @@ impl Rt {
 /// A root's parent (none: 0 dB, 0 cents, no pan, 23900 / 0 Hz; F-63029) and its runtime terms from the request.
 fn root_ctx(r: &Req) -> (Ctx, Rt) {
     let ctx = Ctx { vol: 0.0, pitch: 0, pan: -1, category: if r.category != 0 { r.category } else { joaat("BASE") }, curve: 0, curve_scale: 1.0, doppler: 1.0, mask: 0, positional: 2, lpf: 23900, hpf: 0 };
-    (ctx, Rt { vol: r.volume, pitch: r.pitch, pan: r.pan, rpan: -1, lpf: Some(r.lpf), hpf: Some(r.hpf) })
+    // (entry +80 is an s16: the setter F-45018 stores the low 16 bits of its cents)
+    (ctx, Rt { vol: r.volume, pitch: r.pitch as i16 as i32, pan: r.pan, rpan: -1, lpf: Some(r.lpf), hpf: Some(r.hpf) })
 }
 
 /// The settings combine F-63029 of one node: volume = own (+28) + (runtime + the parent's unless do-not-inherit 0x80),
@@ -3736,6 +3737,40 @@ mod tests {
             n += 1;
         }
         assert_eq!(n, 3934);
+    }
+
+    /// The request entry's setters against the original's code run offline (tools/sound_setter_reference.py): F-45018 pitch,
+    /// F-46088 volume, F-78611 Doppler, F-62727 LPF, F-49040 HPF on 4,000 random blocks and values - the 128 bytes of the
+    /// block after equal the port's request fields (`Req`, the pitch as the root's run-time term) written at the original's
+    /// offsets (+80 s16, +64 f32, +84 f32, +88 u16, +90 u16) in the half the buffer table picks, and nothing else written.
+    #[test]
+    fn request_setters_are_the_originals() {
+        use super::*;
+        let t = include_str!("testdata/sound_setter_ref.txt");
+        let hx = |w: &str| u32::from_str_radix(w, 16).unwrap();
+        let (mut n, mut bad) = (0, Vec::new());
+        for l in t.lines().filter(|l| l.starts_with("S ")) {
+            let w: Vec<&str> = l.split_whitespace().collect();
+            let (k, half, v) = (hx(w[1]), hx(w[3]) as usize * 32, hx(w[4]));
+            let want: Vec<u8> = (0..128).map(|i| u8::from_str_radix(&w[6][2 * i..2 * i + 2], 16).unwrap()).collect();
+            let mut have: Vec<u8> = (0..128u32).map(|o| 0xA5 ^ o as u8).collect();
+            let mut put = |off: usize, b: &[u8]| have[half + off..half + off + b.len()].copy_from_slice(b);
+            match k {
+                0 => put(80, &(root_ctx(&Req::default().pitch(v as i32)).1.pitch as i16).to_be_bytes()),
+                1 => put(64, &Req::default().vol(f32::from_bits(v)).volume.to_bits().to_be_bytes()),
+                2 => put(84, &Req { doppler: f32::from_bits(v), ..Default::default() }.doppler.to_bits().to_be_bytes()),
+                3 => put(88, &Req { lpf: v as u16, ..Default::default() }.lpf.to_be_bytes()),
+                _ => put(90, &Req { hpf: v as u16, ..Default::default() }.hpf.to_be_bytes()),
+            }
+            n += 1;
+            if have != want {
+                bad.push(l.to_string());
+            }
+        }
+        assert_eq!(n, 4000);
+        assert!(bad.is_empty(), "{} of {n}:
+{}", bad.len(), bad[..bad.len().min(10)].join("
+"));
     }
 
     /// A Randomized sound's weighted pick (F-39111) against the original's code run offline with the game's rand

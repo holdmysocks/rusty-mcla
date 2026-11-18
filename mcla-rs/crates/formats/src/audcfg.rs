@@ -1021,6 +1021,55 @@ mod tests {
         assert!(gains.len() <= 3, "{gains:x?}");
     }
 
+    /// The category lookup F-80535 against the original's code run offline (tools/category_lookup_reference.py): the binary search
+    /// of the manager's +72 / +76 table that the original's loader F-45518 builds, on the disc's categories.dat and copies with
+    /// random own fields, for every hash in the file, its neighbours (+-1), random hashes and 0. The port's lookup is a map of the
+    /// categories reached from BASE (`SoundLib::category`): found exactly where the original's search finds a record, the same one.
+    #[test]
+    fn category_lookup_is_the_originals() {
+        let t = include_str!("testdata/category_lookup_ref.txt");
+        let hx = |w: &str| u32::from_str_radix(w, 16).unwrap();
+        let mut objs: Vec<(u32, Vec<u8>)> = Vec::new();
+        let mut got: Option<HashMap<u32, Category>> = None;
+        let (mut n, mut hits, mut bad) = (0, 0, Vec::new());
+        for l in t.lines() {
+            let w: Vec<&str> = l.split_whitespace().collect();
+            match w[0] {
+                "L" => {
+                    objs.clear();
+                    got = None;
+                }
+                "O" => objs.push((hx(w[1]), (0..w[2].len() / 2).map(|i| u8::from_str_radix(&w[2][2 * i..2 * i + 2], 16).unwrap()).collect())),
+                "K" => {
+                    let g = got.get_or_insert_with(|| {
+                        let mut d = Dat { version: 15, data: Vec::new(), objects: Vec::new(), by_hash: HashMap::new(), banks: Vec::new() };
+                        for (h, b) in &objs {
+                            d.by_hash.insert(*h, d.objects.len());
+                            d.objects.push((String::new(), d.data.len(), b.len()));
+                            d.data.extend_from_slice(b);
+                        }
+                        resolve_categories_rt(&d, &HashMap::new(), &HashMap::new(), &HashMap::new())
+                    });
+                    let (key, found) = (hx(w[1]), hx(w[2]));
+                    n += 1;
+                    let port = if g.contains_key(&key) { key } else { 0 };
+                    if found != 0 {
+                        hits += 1;
+                    }
+                    if port != found {
+                        bad.push(format!("{l} | port {port:08x}"));
+                    }
+                }
+                _ => {}
+            }
+        }
+        eprintln!("{n} searches, {hits} found, {} different", bad.len());
+        assert!(n > 2000 && hits > 500);
+        assert!(bad.is_empty(), "{} of {n}:
+{}", bad.len(), bad[..bad.len().min(20)].join("
+"));
+    }
+
     /// The category tree against the original's code run offline (tools/category_tree_reference.py): the loader F-45518 whole
     /// (the .dat reader, the build from BASE F-48971 / F-31533 / F-26947 / F-41684, the sort) on the disc's categories.dat and
     /// copies with random own fields, the runtime volume / pitch / LPF / HPF set through the setters F-87261 / F-60329 /

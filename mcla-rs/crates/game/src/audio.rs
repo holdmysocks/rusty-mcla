@@ -2838,6 +2838,41 @@ mod tests {
 }
 
 #[cfg(test)]
+mod source_filter_tests {
+    use super::SourceFilter;
+
+    /// The source filter's parameter set F-30281 against the original's code run offline (tools/sound_setter_reference.py):
+    /// 2,000 random calls. Param 0 (the LPF, the only one the game sets) stores the float truncated at +80 - the port's
+    /// `set_lpf` holds the same u32; param 1 the HPF at +76 (the port takes the same truncation, never asked for); any
+    /// other returns E_FAIL (0x80004005) and writes nothing.
+    #[test]
+    fn the_filter_parameter_set_is_the_originals() {
+        let t = include_str!("testdata/sound_setter_ref.txt");
+        let hx = |w: &str| u32::from_str_radix(w, 16).unwrap();
+        let (mut n, mut bad) = (0, Vec::new());
+        for l in t.lines().filter(|l| l.starts_with("F ")) {
+            let w: Vec<&str> = l.split_whitespace().collect();
+            let (p, hz, r3, p76, p80) = (hx(w[1]), f32::from_bits(hx(w[2])), hx(w[4]), hx(w[5]), hx(w[6]));
+            let mut f = SourceFilter::new((23900, 0));
+            f.set_lpf(hz);
+            let have = match p {
+                0 => (0, 0x1111_1111, f.lpf),
+                1 => (0, hz as u32, 0x2222_2222),
+                _ => (0x8000_4005, 0x1111_1111, 0x2222_2222),
+            };
+            n += 1;
+            if have != (r3, p76, p80) {
+                bad.push(format!("{l} | port {have:x?}"));
+            }
+        }
+        assert_eq!(n, 2000);
+        assert!(bad.is_empty(), "{} of {n}:
+{}", bad.len(), bad[..bad.len().min(10)].join("
+"));
+    }
+}
+
+#[cfg(test)]
 mod music_button_tests {
     use super::{Handler, MusicEnv, MusicMgr, MusicTune};
 
