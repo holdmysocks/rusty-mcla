@@ -2048,7 +2048,7 @@ impl Drivers {
             if reset {
                 // (the reset F-55405 itself: one context step, F-71604, with every input 0, gesture 20 and dt 0x3D08AB7D)
                 if let Some(a) = self.cars.get_mut(&s.uid) {
-                    dm::context_step(&mut a.ctx, &dm::CtxIn { gesture: 20, ..Default::default() }, &dm::Tune::original(), f32::from_bits(0x3D08_AB7D));
+                    dm::far_reset(&mut a.ctx, &dm::Tune::original());
                 }
             }
             if on {

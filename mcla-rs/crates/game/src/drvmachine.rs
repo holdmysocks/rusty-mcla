@@ -580,6 +580,12 @@ pub struct CtxIn {
     pub shift: i32,
 }
 
+/// The far driver's input reset F-55405: one context step F-71604 with every input 0 (look, skid, goal / steer, smooth / add,
+/// to-limit, flags, shift, the velocity vector), gesture 20 and dt = the image word 0x3D08AB7D (1 / 29.97).
+pub fn far_reset(c: &mut Ctx, k: &Tune) {
+    context_step(c, &CtxIn { gesture: 20, ..Default::default() }, k, f32::from_bits(0x3D08_AB7D));
+}
+
 /// The context step F-71604: timers A / B / C gain dt (as given); dt <= 0 becomes 1 / 30. It takes the gatherer's
 /// inputs (the throttle negated while reversing, bit 7), the accelerations as the velocity's change x 1 / dt, the impact
 /// bits 0 - 3 from them (d = clamp(+148 + +152 |v|, 1, 100) with |v| over all four words, the lateral x / d against
@@ -2081,6 +2087,66 @@ mod tests {
             }
         }
         assert!(n > 5900, "{n} cases");
+        assert_eq!(bad, 0, "{bad} of {n} cases differ");
+    }
+
+    /// The far driver's input reset F-55405 run whole on the original's code (`work/cutscenes2/far/far_ref.py`, 6,000 random
+    /// old contexts and tunes, the context filled 0xCD first): every context word after it equals `far_reset`'s, and the words
+    /// it leaves are untouched.
+    #[test]
+    fn the_far_reset_matches_the_original() {
+        let text = include_str!("testdata/drvmachine_far_ref.txt");
+        let (mut n, mut bad) = (0, 0);
+        for line in text.lines() {
+            let (a, b) = line.split_once(" ->").unwrap();
+            let w: Vec<u32> = a.split_whitespace().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let want: Vec<u32> = b.split_whitespace().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let f = |i: usize| f32::from_bits(w[i]);
+            let mut c = Ctx {
+                steer: f(0),
+                to_left: (w[1] >> 16) & 0xFF != 0,
+                to_right: (w[1] >> 8) & 0xFF != 0,
+                skid_timer: f(2),
+                neutral_timer: f(3),
+                maxed_timer: f(4),
+                peak: f(5),
+                speed: f(6),
+                vel_x: f(7),
+                vel_y: f(8),
+                side_vals: [f(9), f(10), f(11), f(12)],
+                timer_a: f(13),
+                timer_b: f(14),
+                timer_c: f(15),
+                ..Ctx::default()
+            };
+            let k = Tune { impact: [f(16), f(17), f(18)], impact_d: [f(19), f(20)], ..Tune::original() };
+            far_reset(&mut c, &k);
+            let b = |x: bool| x as u32;
+            const KEPT: u32 = 0xCDCD_CDCD;
+            let got = [
+                c.gesture as u32, c.flags, KEPT, 0, c.goal.to_bits(), c.steer.to_bits(), c.smooth.to_bits(), c.steer_add.to_bits(),
+                c.to_limit.to_bits(), c.dsteer.to_bits(), c.phase_in.to_bits(), KEPT, KEPT, KEPT, KEPT, KEPT, KEPT,
+                b(c.to_left) << 16 | b(c.to_right) << 8 | b(c.side_changed), c.skid_timer.to_bits(), c.neutral_timer.to_bits(),
+                c.maxed_timer.to_bits(), c.peak.to_bits(), c.throttle.to_bits(), c.speed.to_bits(), c.vel_x.to_bits(),
+                c.vel_y.to_bits(), c.accel.to_bits(), c.lat_accel.to_bits(), c.vert_accel.to_bits(), c.look.to_bits(),
+                c.shift as u32, c.skid.to_bits(), c.side_vals[0].to_bits(), c.side_vals[1].to_bits(), c.side_vals[2].to_bits(),
+                c.side_vals[3].to_bits(), c.timer_a.to_bits(), c.timer_b.to_bits(), c.timer_c.to_bits(), KEPT, c.dt.to_bits(),
+            ];
+            assert_eq!(want.len(), got.len());
+            n += 1;
+            // (word 3, +16, is the tune's address)
+            let diff: Vec<usize> = (0..got.len()).filter(|&j| j != 3 && got[j] != want[j]).collect();
+            if !diff.is_empty() {
+                if bad < 8 {
+                    for &j in &diff {
+                        eprintln!("{a}
+  +{}: got {:08x} want {:08x}", 4 + 4 * j, got[j], want[j]);
+                    }
+                }
+                bad += 1;
+            }
+        }
+        assert_eq!(n, 6000, "{n} cases");
         assert_eq!(bad, 0, "{bad} of {n} cases differ");
     }
 
