@@ -266,6 +266,15 @@ impl ListenerHist {
 /// (fmadds(+15, 0.01, r x 0.01): the sound's +28), pitch (+19 + r, 16 bits: +32), pan (none when 0xFFFF and then no draw,
 /// else (s16(r) + s16(+23) + 360) % 360 truncating: +10), predelay (+27 + r: the word +88) and start offset (+31 + r: the
 /// word +104).
+/// Tristate pair 1 (Positional) as a node has it: its own value, or with 2 (inherit) the parent's - what the getter F-55012
+/// finds walking up from the node while the value is 2 (the root's parent value is 2: a chain of 2s stays 2).
+fn inherit_positional(h: &SoundHeader, parent: u8) -> u8 {
+    match h.tristate(1) {
+        2 => parent,
+        v => v,
+    }
+}
+
 fn variances(h: &SoundHeader) -> (f32, i16, i16, u32, u32) {
     let draw = |v: u32| if v == 0 { 0 } else { SharedMwc.int(-(v as i32), v as i32) };
     let r = draw(h.volume_var as u32);
@@ -2274,10 +2283,7 @@ impl SoundLib {
             curve_scale,
             doppler,
             mask,
-            positional: match h.tristate(1) {
-                2 => parent.positional,
-                v => v,
-            },
+            positional: inherit_positional(h, parent.positional),
             lpf,
             hpf,
         };
@@ -3741,6 +3747,28 @@ mod tests {
             n += 1;
         }
         assert_eq!(n, 4000);
+    }
+
+    /// The Positional tristate F-55012 against the original's code run offline (tools/positional_walk_reference.py): 3,000
+    /// random chains of 1 - 9 objects (random flag words, pair 1 = 2 half of the time, random pools); the value the getter
+    /// returns from the leaf equals the port's inheritance folded down from the root (the root context's 2).
+    #[test]
+    fn positional_matches_the_original() {
+        use super::*;
+        let mut n = 0;
+        for l in include_str!("testdata/positional_walk_ref.txt").lines() {
+            let w: Vec<u32> = l.split_whitespace().skip(1).filter(|x| *x != "->").map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let (want, words) = w.split_last().unwrap();
+            let mut p = 2u8;
+            for &f in words {
+                let mut o = [0u8; 15];
+                o[5..9].copy_from_slice(&f.to_be_bytes());
+                p = inherit_positional(&audcfg::parse_header(&o).0, p);
+            }
+            assert_eq!(p as u32, *want, "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 3000);
     }
 
     /// A new sound's variance draws (F-40563) against the original's code run offline with the game's rand
