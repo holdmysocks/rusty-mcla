@@ -625,6 +625,19 @@ pub struct BoomGround {
     pub shifting: i32,
     /// the chassis's air time (+584, F-75234): a fixed mount's frame snaps by min(air - 0.5, 1) above 0.5 s
     pub air: f32,
+    /// the followed matrix as the original holds it (T+144: rows x, y, z, then the place), where the sim has it to the
+    /// bit; else the step makes it from the target's quaternion and place
+    pub mat: Option<[Vec3; 4]>,
+}
+
+impl BoomGround {
+    /// The followed matrix's rows (as a matrix of columns x, y, z) and its place.
+    fn car_frame(&self, car: &BoomTarget) -> (Mat3, Vec3) {
+        match self.mat {
+            Some(m) => (Mat3::from_cols(m[0], m[1], m[2]), m[3]),
+            None => (Mat3::from_quat(car.rot), car.pos),
+        }
+    }
 }
 
 /// the world's up as the frame takes it (a global vector; (0, 1, 0))
@@ -797,7 +810,7 @@ impl BoomCam {
     /// snap share `k`; returns the frame's x and z.
     fn frame(&mut self, t: &BoomTune, car: &BoomTarget, g: &BoomGround, k: f32, dt: f32) -> (Vec3, Vec3) {
         use crate::physics::exact::{cross, fma};
-        let car_m = Mat3::from_quat(car.rot);
+        let (car_m, _) = g.car_frame(car);
         let s0 = fma(1.0 - t.s("OrientationFactor"), k, t.s("OrientationFactor"));
         let s1 = fma(1.0 - t.s("OrientationFilter"), k, t.s("OrientationFilter"));
         let s2 = fma(1.0 - t.s("DirectionFilter"), k, t.s("DirectionFilter"));
@@ -894,7 +907,7 @@ impl BoomCam {
         } else {
             0.0
         };
-        let car_m = Mat3::from_quat(car.rot);
+        let (car_m, car_pos) = g.car_frame(car);
 
         // ---- the lens, F-44852: from last call's filtered velocity (+464, +472) ----
         let q = fma(self.vel.x, self.vel.x, self.vel.z * self.vel.z).sqrt() / t.range("LinVelRange", 2);
@@ -937,33 +950,36 @@ impl BoomCam {
         let (x, z) = self.frame(t, car, g, k, dt);
         let ctr = t.v3("Center");
         let col = |i: usize| Vec3::new(car_m.x_axis[i], car_m.y_axis[i], car_m.z_axis[i]);
-        let origin = car.pos + Vec3::new(dot3(ctr, col(0)), dot3(ctr, col(1)), dot3(ctr, col(2)));
+        let origin = car_pos + Vec3::new(dot3(ctr, col(0)), dot3(ctr, col(1)), dot3(ctr, col(2)));
 
         // ---- the filters: velocity and turn rate (VelocityFilter), their changes (AccelFilter) ----
         // (the frame rate rounded, fctiwz of fps + 0.5, below 60)
         let half = if ((fps + 0.5) as i32) < 60 { 0.5 } else { 1.0 };
         let (mut kv, mut ka) = (t.s("VelocityFilter") * half, t.s("AccelFilter") * half);
+        let (mut kv1, mut ka1) = (1.0 - kv, 1.0 - ka);
         if let Some(rdt) = self.recomp_timing {
             // (the static recomp's own frame-time fix, not the original's: its hooks at these two factors make them
             // 1 - (1 - f)^(30 dt) - the recomp's RescaleCameraFactor, which halves a factor the game left whole (at a
-            // rounded 60 frames a second or more) first; only to compare with its recordings)
+            // rounded 60 frames a second or more) first; only to compare with its recordings. The hook leaves the factor
+            // a double in the register: the game stores it rounded (stfs) but takes 1 - it from the double (fsubs).)
             let per = |f: f32| {
                 if f > 0.0 && f < 1.0 && rdt > 0.0 {
                     let f = if half == 1.0 { 0.5 * f as f64 } else { f as f64 };
-                    (1.0 - (1.0 - f).powf(rdt as f64 * 30.0)) as f32
+                    let k = 1.0 - (1.0 - f).powf(rdt as f64 * 30.0);
+                    (k as f32, (1.0 - k) as f32)
                 } else {
-                    f
+                    (f, 1.0 - f)
                 }
             };
-            (kv, ka) = (per(kv), per(ka));
+            ((kv, kv1), (ka, ka1)) = (per(kv), per(ka));
         }
         let up_now = self.up;
         let to_frame = |v: Vec3| Vec3::new(dot3(x, v), dot3(up_now, v), dot3(z, v));
         let inv_dt = 1.0 / dt;
-        let vel = to_frame(car.vel) * kv + self.vel * (1.0 - kv);
-        let mut acc = (vel - self.vel) * inv_dt * ka + self.acc * (1.0 - ka);
-        let mut ang = to_frame(car.ang_vel) * kv + self.ang * (1.0 - kv);
-        let mut ang_acc = (ang - self.ang) * inv_dt * ka + self.ang_acc * (1.0 - ka);
+        let vel = to_frame(car.vel) * kv + self.vel * kv1;
+        let mut acc = (vel - self.vel) * inv_dt * ka + self.acc * ka1;
+        let mut ang = to_frame(car.ang_vel) * kv + self.ang * kv1;
+        let mut ang_acc = (ang - self.ang) * inv_dt * ka + self.ang_acc * ka1;
         // (below SpeedThreshold the changes and the turn are scaled by speed / threshold)
         let speed = fma(vel.z, vel.z, fma(vel.x, vel.x, vel.y * vel.y)).sqrt();
         let thr = t.s("SpeedThreshold");
@@ -973,6 +989,12 @@ impl BoomCam {
             ang *= s;
             ang_acc *= s;
         }
+        // (the vector unit flushes denormal results to zero, keeping the sign)
+        let ftz = |v: Vec3| {
+            let f = |x: f32| if x != 0.0 && x.abs() < f32::MIN_POSITIVE { 0.0f32.copysign(x) } else { x };
+            Vec3::new(f(v.x), f(v.y), f(v.z))
+        };
+        let (vel, acc, ang, ang_acc) = (ftz(vel), ftz(acc), ftz(ang), ftz(ang_acc));
         self.vel = vel;
         self.acc = acc;
         self.ang = ang;
@@ -1178,12 +1200,16 @@ impl BoomCam {
             foc = Vec3::new(fma(foc.x - self.foc.x, share, self.foc.x), fma(foc.y - self.foc.y, share, self.foc.y), fma(foc.z - self.foc.z, share, self.foc.z));
             roll = fma(roll - self.roll, share, self.roll);
         }
-        self.off = off;
-        self.foc = foc;
+        let ftz = |v: Vec3| {
+            let f = |x: f32| if x != 0.0 && x.abs() < f32::MIN_POSITIVE { 0.0f32.copysign(x) } else { x };
+            Vec3::new(f(v.x), f(v.y), f(v.z))
+        };
+        self.off = ftz(off);
+        self.foc = ftz(foc);
         self.roll = roll;
         self.lens = fov;
-        let frame = Mat3::from_cols(x, self.up, z);
-        let pos = origin + frame * off;
+        // (the place: the frame's matrix applied to the offset with w = 1, the vector unit's vmsum4fp per lane)
+        let pos = boom_point([x, self.up, z, origin], off);
         self.world = pos;
         self.draw(t, car)
     }
@@ -1253,6 +1279,10 @@ impl BoomGround {
             }
         }
         if let Some(v) = st.veh.as_ref() {
+            // (the followed matrix to the bit: the sim's own rows and place, while nothing else has moved the car)
+            if let Some(b) = v.body.as_ref().filter(|b| b.snap.0 == st.pos && b.snap.1 == st.rot) {
+                g.mat = Some([b.rows[0], b.rows[1], b.rows[2], b.origin]);
+            }
             g.gear = v.gear + 1;
             g.shifting = v.gear_change.direction as i32;
             g.air = v.air584();
@@ -5655,7 +5685,7 @@ camTrackCS {
     fn cockpit_240sx_swerve_matches_the_original() {
         let data = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| r"D:\MCLA\extracted\cache".into());
         let Some(set) = BoomSet::load(&data, "vp_nsn_240sx_98") else { return };
-        let (n, _) = boom_rec_check_tol(&set.views[3], include_str!("testdata/boom_step_pov240_rec.txt"), true, false, 2e-5);
+        let (n, _) = boom_rec_check_tol(&set.views[3], include_str!("testdata/boom_step_pov240_rec.txt"), true, false, 0.0);
         assert_eq!(n, 1792);
     }
 
@@ -6708,7 +6738,7 @@ SSFovMin 60
     /// (`fixed`) or with the look-back flag (`rev`), and asserts every field within 1e-5 of its size; returns the
     /// calls and those with a shift kick running.
     fn boom_rec_check(t: &BoomTune, text: &str, tail: bool, rev: bool) -> (usize, usize) {
-        boom_rec_check_tol(t, text, tail, rev, 1e-5)
+        boom_rec_check_tol(t, text, tail, rev, 0.0)
     }
 
     /// `boom_rec_check` with its own bar (the worst error over the field's size).
@@ -6728,6 +6758,7 @@ SSFovMin 60
             if tail {
                 g.air = f(r.len() - 2);
             }
+            g.mat = Some([v3(8), v3(12), v3(16), v3(20)]);
             for k in 0..nw.min(4) {
                 let b = 31 + 7 * k;
                 if r[b] != 0 {
@@ -6751,7 +6782,7 @@ SSFovMin 60
             };
             // (the followed matrix: T+144 x, +160 y, +176 z, +192 the place)
             let o = cam.step(t, &car, &g, dt, fps);
-            let got = [cam.up, cam.dir, Vec3::splat(cam.tumble), cam.vel, cam.acc, cam.ang, cam.ang_acc, cam.off, cam.foc, Vec3::splat(cam.roll), o.pos, Vec3::splat(cam.rate), Vec3::splat(cam.gz), Vec3::new(cam.shift, cam.shift_val, cam.shift_size), Vec3::splat(o.fov)];
+            let got = [cam.up, cam.dir, Vec3::splat(cam.tumble), cam.vel, cam.acc, cam.ang, cam.ang_acc, cam.off, cam.foc, Vec3::splat(cam.roll), cam.world, Vec3::splat(cam.rate), Vec3::splat(cam.gz), Vec3::new(cam.shift, cam.shift_val, cam.shift_size), Vec3::splat(o.fov)];
             let want = [v3(co), v3(co + 3), Vec3::splat(f(co + 6)), v3(co + 7), v3(co + 10), v3(co + 13), v3(co + 16), v3(co + 19), v3(co + 22), Vec3::splat(f(co + 25)), v3(co + 26), Vec3::splat(f(co + 29)), Vec3::splat(f(co + 30)), Vec3::new(f(co + 31), f(co + 32), f(co + 33)), Vec3::splat(f(co + 35))];
             for k in 0..names.len() {
                 let e = (got[k] - want[k]).abs().max_element() / want[k].abs().max_element().max(1.0);
@@ -6766,7 +6797,7 @@ SSFovMin 60
             eprintln!("{:8} worst {:e}", names[k], worst[k]);
         }
         for k in 0..names.len() {
-            assert!(worst[k] < tol, "{}: off by {:e} of its size", names[k], worst[k]);
+            assert!(worst[k] <= tol, "{}: off by {:e} of its size", names[k], worst[k]);
         }
         (n, kicks)
     }
