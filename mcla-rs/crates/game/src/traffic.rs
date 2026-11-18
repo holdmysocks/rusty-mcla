@@ -6056,8 +6056,8 @@ impl Vehicles {
         if let Some((cab_id, rot)) = q.cab {
             return self.make_trailer(gpu, world, nav, q, cab_id, rot, seed);
         }
-        if let Some(si) = q.park {
-            return self.make_parked(gpu, world, q, si, seed);
+        if q.park.is_some() || q.item.is_some() {
+            return self.make_parked(gpu, world, q, seed);
         }
         let Some((ground, normal)) = probe_ground(&world.collider, pos) else {
             if std::env::var("MCLA_TRAFFIC_TRACE").is_ok() {
@@ -6160,7 +6160,7 @@ impl Vehicles {
         let tty = *self.amb_types.entry(mname.clone()).or_insert_with(|| AmbType::load(root, &mname));
         let color = tty.color(shade).unwrap_or(super::TRAFFIC_PALETTE[shade % super::TRAFFIC_PALETTE.len()]);
         let f = cr * Vec3::NEG_Z;
-        let req = AmbReq { model: mi, ty: tty, link: r.link, s: r.s, pos, dir: f, color, road: 0, focus: pos, view: f, cab: Some((r.rng_id(), cr)), park: None };
+        let req = AmbReq { model: mi, ty: tty, link: r.link, s: r.s, pos, dir: f, color, road: 0, focus: pos, view: f, cab: Some((r.rng_id(), cr)), park: None, item: None };
         self.pool_pending.push(GhostPool::trailer_rec(req));
     }
 
@@ -9283,7 +9283,7 @@ impl Vehicles {
             // the request (F-86587, F-45833, queued F-13129): the car is made by the pool's next step (F-52865 runs
             // before the spawner in the manager's update, F-96156): its type budget, seed, ground probe and init there
             // (`amb_make`); the try counts as made here (F-92144's +128)
-            self.ghosts.pool.submit_amb(AmbReq { model: mi, ty, link, s, pos, dir, color, road: ri, focus, view, cab: None, park: None });
+            self.ghosts.pool.submit_amb(AmbReq { model: mi, ty, link, s, pos, dir, color, road: ri, focus, view, cab: None, park: None, item: None });
             sp.current += 1;
             n -= 1;
         }
@@ -11166,6 +11166,13 @@ impl Vehicles {
             self.remove_layout_item(h);
         }
         self.item_followers_due.retain(|(h, _)| !handles.contains(h));
+        let pending: Vec<i32> = self.ghosts.pool.items_pending().filter(|(_, h)| handles.contains(h)).map(|(id, _)| id).collect();
+        for id in pending {
+            let clock = self.clock;
+            let Vehicles { ghosts, park_rng, amb_rng2, .. } = self;
+            let mut w = LiveWorld { g: &mut ghosts.live, shared: park_rng, shared2: amb_rng2, nav: None, col: None, clock, cancelling: true };
+            ghosts.pool.cancel(id, &mut w);
+        }
     }
 }
 
@@ -11955,6 +11962,8 @@ pub struct AmbReq {
     pub cab: Option<(u32, Quat)>,
     /// a parked spot's request (F-74446 -> F-23864): the spot (req +12), which holds the request's id until it is made
     pub park: Option<usize>,
+    /// a layout item's parked car (F-90920's request): the item's handle
+    pub item: Option<u32>,
 }
 
 impl PoolRec {
@@ -12102,6 +12111,11 @@ impl GhostPool {
     /// The spots of the parked requests still pending (state 2).
     pub fn parked_pending(&self) -> impl Iterator<Item = usize> + '_ {
         self.recs.iter().filter(|r| r.state == 2).filter_map(|r| r.amb.as_ref().and_then(|q| q.park))
+    }
+
+    /// The layout items' parked requests still pending (state 2): (record id, item handle).
+    pub fn items_pending(&self) -> impl Iterator<Item = (i32, u32)> + '_ {
+        self.recs.iter().enumerate().filter(|(_, r)| r.state == 2).filter_map(|(i, r)| r.amb.as_ref().and_then(|q| q.item).map(|h| (i as i32, h)))
     }
 
     /// A cab's trailer (F-45988 -> F-86587, F-81524 -> F-13129): kind 0x80, steps (old & 0x5B) | 0x84 - the pose from
@@ -13256,7 +13270,7 @@ mod ghost_tests {
                 self.trailer.take().into_iter().collect()
             }
         }
-        let req = |road: u32| AmbReq { model: 0, ty: AmbType::default(), link: 0, s: 0.0, pos: Vec3::ZERO, dir: Vec3::X, color: [1.0; 4], road, focus: Vec3::ZERO, view: Vec3::Z, cab: None, park: None };
+        let req = |road: u32| AmbReq { model: 0, ty: AmbType::default(), link: 0, s: 0.0, pos: Vec3::ZERO, dir: Vec3::X, color: [1.0; 4], road, focus: Vec3::ZERO, view: Vec3::Z, cab: None, park: None, item: None };
         let trailer = || {
             let r = GhostPool::trailer_rec(AmbReq { cab: Some((5, Quat::IDENTITY)), ..req(9) });
             assert_eq!((r.kind, r.wanted, r.timeout.to_bits(), r.state), (0x80, 0x84, 0x3F80_0000, 1));
@@ -13291,7 +13305,7 @@ mod ghost_tests {
     /// the car from the record's seed.
     #[test]
     fn a_parked_spot_is_a_pool_request() {
-        let req = AmbReq { model: 0, ty: AmbType::default(), link: 0, s: 0.0, pos: Vec3::ZERO, dir: Vec3::NEG_Z, color: [1.0; 4], road: 4, focus: Vec3::ZERO, view: Vec3::Z, cab: None, park: Some(17) };
+        let req = AmbReq { model: 0, ty: AmbType::default(), link: 0, s: 0.0, pos: Vec3::ZERO, dir: Vec3::NEG_Z, color: [1.0; 4], road: 4, focus: Vec3::ZERO, view: Vec3::Z, cab: None, park: Some(17), item: None };
         let mut pool = GhostPool::new(0);
         let id = pool.submit_park(req);
         let r = &pool.recs[id as usize];
@@ -13342,6 +13356,19 @@ mod ghost_tests {
         assert_eq!((w.made, pool.count, pool.parked_pending().count()), (vec![(17, seed)], 0, 0));
     }
 
+    /// A layout item's parked car (F-90920 -> F-13129) is a pool request too: the item is held while it is pending (no
+    /// spot), and a cancel (an unloaded path, F-11284) frees it.
+    #[test]
+    fn a_parked_items_request_holds_its_item() {
+        let req = AmbReq { model: 0, ty: AmbType::default(), link: 0, s: 0.0, pos: Vec3::ZERO, dir: Vec3::NEG_Z, color: [1.0; 4], road: 4, focus: Vec3::ZERO, view: Vec3::Z, cab: None, park: None, item: Some(5) };
+        let mut pool = GhostPool::new(0);
+        let id = pool.submit_park(req);
+        assert_eq!((pool.recs[id as usize].kind, pool.recs[id as usize].wanted), (0x80, 0x84));
+        assert_eq!((pool.items_pending().collect::<Vec<_>>(), pool.parked_pending().count()), (vec![(id, 5)], 0));
+        pool.recs[id as usize].state = 7;
+        assert_eq!(pool.items_pending().count(), 0);
+    }
+
     #[test]
     fn spawner_requests_step_as_the_originals() {
         struct W {
@@ -13385,7 +13412,7 @@ mod ghost_tests {
                 self.ground
             }
         }
-        let req = || AmbReq { model: 0, ty: AmbType::default(), link: 0, s: 0.0, pos: Vec3::new(1.0, 2.0, 3.0), dir: Vec3::X, color: [1.0; 4], road: 0, focus: Vec3::ZERO, view: Vec3::Z, cab: None, park: None };
+        let req = || AmbReq { model: 0, ty: AmbType::default(), link: 0, s: 0.0, pos: Vec3::new(1.0, 2.0, 3.0), dir: Vec3::X, color: [1.0; 4], road: 0, focus: Vec3::ZERO, view: Vec3::Z, cab: None, park: None, item: None };
         let dt = 1.0f32 / 30.0;
         // the record as F-45833 fills it
         let mut pool = GhostPool::new(0);

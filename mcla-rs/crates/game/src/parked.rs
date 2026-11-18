@@ -681,7 +681,7 @@ impl Vehicles {
     /// spawner reports those in `item_peds`).
     fn items_taken(&self) -> Vec<bool> {
         let mut occ = vec![false; self.layout.len()];
-        for h in self.cars.iter().filter_map(|c| c.item).chain(self.item_peds.iter().copied()).chain(self.item_peds_due.iter().copied()).chain(self.item_followers_due.iter().map(|f| f.0)).chain(self.item_pending.iter().copied()) {
+        for h in self.cars.iter().filter_map(|c| c.item).chain(self.item_peds.iter().copied()).chain(self.item_peds_due.iter().copied()).chain(self.item_followers_due.iter().map(|f| f.0)).chain(self.item_pending.iter().copied()).chain(self.ghosts.pool.items_pending().map(|(_, h)| h)) {
             if let Some(o) = occ.get_mut(h as usize) {
                 *o = true;
             }
@@ -871,7 +871,7 @@ impl Vehicles {
             None => {}
             Some(ParkTry::Item { list, k }) => {
                 let h = self.items_of(self.park_lists[list])[k];
-                self.item_spawn(gpu, sp, h);
+                self.item_spawn(sp, h, focus, view);
             }
             Some(ParkTry::Spot { list, entry, ty, colour }) => {
                 let ni = self.park_lists[list];
@@ -887,7 +887,7 @@ impl Vehicles {
                 // (F-23864 / F-18708: z row (sin h, 0, cos h), the car facing -z = 0 - (sin h, 0, cos h), park_row - our yaw's
                 // forward is (-sin, 0, -cos)); a request of the pool, made by its next step (`make_parked`)
                 let dir = super::traffic::park_row(spot.heading);
-                let req = super::traffic::AmbReq { model: mi, ty, link: 0, s: 0.0, pos: spot.pos, dir, color, road: 0, focus, view, cab: None, park: Some(si) };
+                let req = super::traffic::AmbReq { model: mi, ty, link: 0, s: 0.0, pos: spot.pos, dir, color, road: 0, focus, view, cab: None, park: Some(si), item: None };
                 let id = self.ghosts.pool.submit_park(req);
                 if std::env::var("MCLA_PARK_DUMP").is_ok() {
                     let (o, t) = node_count(&self.parking, ni, &self.spots_taken(), cruise);
@@ -900,23 +900,40 @@ impl Vehicles {
     /// A parked spot's request made (F-42724's probe F-46111 - no ground: state 5 -, F-77422 with a spot): the car at the
     /// spot's place and heading, put on the ground by the spawn probe in the step (`PARK_PROBE`), the record's seed and
     /// the init draws (its life, the lights' offsets and its front wheels' random turn, the car MWC's Gaussian).
-    pub(super) fn make_parked(&mut self, gpu: &Gpu, world: &crate::world::World, q: &super::traffic::AmbReq, si: usize, seed: u32) -> bool {
+    pub(super) fn make_parked(&mut self, gpu: &Gpu, world: &crate::world::World, q: &super::traffic::AmbReq, seed: u32) -> bool {
         if super::traffic::probe_ground(&world.collider, q.pos).is_none() {
             return false;
         }
-        let Some(spot) = self.parking.spots.get(si).copied() else { return false };
+        // (a spot's car at the spot, a layout item's where the item stands)
+        let (pos, heading, at) = match (q.park, q.item) {
+            (Some(si), _) => {
+                let Some(spot) = self.parking.spots.get(si).copied() else { return false };
+                (spot.pos, spot.heading, si)
+            }
+            (None, Some(h)) => {
+                let Some(item) = self.layout.get(h as usize).cloned().flatten() else { return false };
+                (item.pos, item.heading, ITEM_SPOT)
+            }
+            (None, None) => return false,
+        };
         let model = self.models[q.model].clone();
-        let idx = self.spawn(gpu, model, spot.pos, spot.heading, q.color, false);
+        let idx = self.spawn(gpu, model, pos, heading, q.color, false);
         self.cars[idx].ai = None;
-        self.cars[idx].parked = Some(si);
-        let steer = self.amb_init_seeded(idx, &q.ty, true, seed).steer;
+        self.cars[idx].parked = Some(at);
+        self.cars[idx].item = q.item;
+        // (an item has no spot, so F-77422 draws no wheel turn and leaves +3584 as it was - what the pooled car holds
+        // there is not traced; the port's own draw stays)
+        let mut steer = self.amb_init_seeded(idx, &q.ty, q.park.is_some(), seed).steer;
+        if q.item.is_some() {
+            steer = super::traffic::parked_steer(1.0 - self.rand(), self.rand());
+        }
         self.cars[idx].park_steer = steer;
         for wh in self.cars[idx].state.wheels.iter_mut().take(2) {
             wh.steer = steer;
         }
         self.cars[idx].settle = PARK_PROBE;
         if std::env::var("MCLA_PARK_DUMP").is_ok() {
-            log::info!("parked spawn {} spot {}", self.cars[idx].model.name, si);
+            log::info!("parked spawn {} spot {:?} item {:?}", self.cars[idx].model.name, q.park, q.item);
         }
         true
     }
@@ -925,7 +942,7 @@ impl Vehicles {
     /// the person types), a colour of the type's twenty; parked where it stands (a script's item,
     /// a parked path or one waiting for its trigger: F-90920; a person F-39915), else
     /// following its path when its first vertex has a lane (F-45833), else nothing.
-    fn item_spawn(&mut self, gpu: &Gpu, sp: &Spawner, h: u32) -> bool {
+    fn item_spawn(&mut self, sp: &Spawner, h: u32, focus: Vec3, view: Vec3) -> bool {
         let Some(item) = self.layout.get(h as usize).cloned().flatten() else { return false };
         // (a path a trigger points at: its car comes from the trigger once it has fired, and only
         // from it with bSpawnWhenTriggered)
@@ -967,25 +984,12 @@ impl Vehicles {
         let root = std::path::PathBuf::from(&sp.data_dir);
         let ty = *self.amb_types.entry(mname.clone()).or_insert_with(|| super::traffic::AmbType::load(&root, &mname));
         let color = ty.color(shade).unwrap_or(TRAFFIC_PALETTE[shade % TRAFFIC_PALETTE.len()]);
-        let model = self.models[mi].clone();
-        // (F-90920: as a spot's car, F-23864 - its place and heading the item's)
-        let idx = self.spawn(gpu, model, item.pos, item.heading, color, false);
-        // (the request's seed and the init draws, `amb_init`: its life and lights' offsets. An item has no spot, so
-        // F-77422 draws no wheel turn and leaves +3584 as it was - what the pooled car holds there is not traced; the
-        // port's own draw stays)
-        self.amb_init(idx, &ty, false);
-        let steer = super::traffic::parked_steer(1.0 - self.rand(), self.rand());
-        let c = &mut self.cars[idx];
-        c.ai = None;
-        c.parked = Some(ITEM_SPOT);
-        c.item = Some(h);
-        c.park_steer = steer;
-        for wh in c.state.wheels.iter_mut().take(2) {
-            wh.steer = steer;
-        }
-        c.settle = PARK_PROBE;
+        // (F-90920: a request as a spot's, F-23864 - its place and heading the item's, steps 0x84: the behaviour bit 0x20
+        // of a path a trigger points at is not ported; made by the pool's next step, `make_parked`)
+        let req = super::traffic::AmbReq { model: mi, ty, link: 0, s: 0.0, pos: item.pos, dir: super::traffic::park_row(item.heading), color, road: 0, focus, view, cab: None, park: None, item: Some(h) };
+        let id = self.ghosts.pool.submit_park(req);
         if std::env::var("MCLA_PARK_DUMP").is_ok() {
-            log::info!("layout item {} spawn {} at {:?} node {}", h, item.name, item.pos, item.node);
+            log::info!("layout item {} request {} at {:?} node {} id {}", h, item.name, item.pos, item.node, id);
         }
         true
     }
