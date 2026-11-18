@@ -168,6 +168,18 @@ fn side_pick(a: bool, b: bool, c: bool, d: bool, on_right: bool) -> bool {
 /// and dx fused) must be under r^2; B's chassis speed `sb` (+224) above fMovingSpeed x 0.447 and above A's `sa`; then the
 /// unit of A - B (F-41334, eps 1e-5, fallback (1, 0, 0)) dotted with B's velocity / `sb` over 0.9. The vector unit's
 /// subtract and multiply flush denormals.
+/// The Arrow Trap's Halt (F-16041) for a cop with no steer yet (+16[k] == 0): closing in within the range, -1 with the
+/// target on its right, else 1; 0 otherwise (test halt_steer_matches_the_recording).
+fn halt_steer_take(closing: bool, on_right: bool) -> f32 {
+    if !closing {
+        0.0
+    } else if on_right {
+        -1.0
+    } else {
+        1.0
+    }
+}
+
 fn closing_in(a: Vec3, b: Vec3, sa: f32, sb: f32, vb: Vec3, r: f32, moving_speed: f32) -> bool {
     if r != 0.0 {
         let d2 = fmas(a.x - b.x, a.x - b.x, fmas(a.z - b.z, a.z - b.z, (a.y - b.y) * (a.y - b.y)));
@@ -5137,6 +5149,8 @@ impl Police {
         // the squad never swipes)
         let ed78 = !(self.in_race && !goons);
         let mut swipes: HashMap<u32, crate::ai::Overrides> = HashMap::new();
+        // (the cops whose Halt steer was taken in this update: it is written to the brain from the next one)
+        let mut halt_new: std::collections::HashSet<u32> = std::collections::HashSet::new();
         if self.kind.squad() && self.heat == Heat::Pursuit && self.flee_hold <= 0.0 && self.cops.len() == self.kind.cops() {
             let arrow = self.kind == TacKind::ArrowTrap;
             // (closing(r): the cop moving, faster than the target and heading at it within 25.8 deg, within r)
@@ -5200,8 +5214,8 @@ impl Police {
             swipes = s;
             self.radio_cue.extend(cues);
             if halted {
-                // Halt (F-58305 / F-16041): the cops within fSafeDist Stop again, x 0.5 when closing (the per-cop timer +16
-                // and the brain's +568 / +688 test are not ported)
+                // Halt (F-58305 / F-16041): the cops within fSafeDist Stop again, x 0.5 when closing (the brain's +568 /
+                // +688 test is not ported)
                 for c in vehicles.cars.iter_mut().filter(|c| pursuer(c) && c.state.pos.distance(ppos) < safe) {
                     let tc = tacs.entry(c.uid).or_default();
                     if tc.st != Tac::Halt {
@@ -5209,6 +5223,16 @@ impl Police {
                     }
                     if closing(c, 0.0) {
                         c.state.vel *= 0.5;
+                    }
+                }
+                // (the per-cop steer +16[k], 0 at the enter: a cop with none that closes in within the range (vt+32,
+                // fSafeDist; F-90575) takes -1 with the target on its right (F-30098), else 1 - written to its brain
+                // (F-77791) by every later update; recorded a2: the Halt cops' steer words +-1.0)
+                for c in vehicles.cars.iter().filter(|c| pursuer(c)) {
+                    let Some(tc) = tacs.get_mut(&c.uid).filter(|tc| tc.st == Tac::Halt && tc.halt_steer == 0.0) else { continue };
+                    tc.halt_steer = halt_steer_take(closing(c, safe), on_side(c.state.right(), c.state.pos, ppos));
+                    if tc.halt_steer != 0.0 {
+                        halt_new.insert(c.uid);
                     }
                 }
             }
@@ -5379,7 +5403,7 @@ impl Police {
                 };
                 let st = tac.st;
                 // (Halt's steer away as its tick writes it, F-84018: from the update after it was taken)
-                let halt_steer0 = if st == Tac::Halt { tac.halt_steer } else { 0.0 };
+                let halt_steer0 = if st == Tac::Halt && !halt_new.contains(&c.uid) { tac.halt_steer } else { 0.0 };
                 // ---- the goal plan (F-67303; docs/reference/hookmen/goal_speed.md). The cop is driven by the racers'
                 // brain (brain.rs, mcBrainPolice is an mcBrainRacing): its goals, a 5 m radius each, and the speed to
                 // reach the last with; the speed on the way is the race line's speed profile. Only the PullOver,
@@ -7801,6 +7825,41 @@ mod tests {
     /// frames, velocities and route points and the target's frame, velocity and chassis speed, and runs `squad_machine` with
     /// `squad_formation` and `squad_swipes` once: state, asked state and slots must be the exit's; after a CatchUp update also
     /// the lock, hysteresis, wait and latch bits and every cop's command, side and override words.
+    /// The Arrow Trap's Halt steer (F-16041 / F-58305) over the recorded Halt updates (testdata/halt_steer_rec.txt from
+    /// work/hookmen2/dp/conv_h.py of a4, a5): each cop's +16[k] at the exit - kept when set, else `halt_steer_take` on the
+    /// recorded geometry - and the brain's steer word at the exit, the steer at the entry when it was set.
+    #[test]
+    fn halt_steer_matches_the_recording() {
+        let rec = include_str!("testdata/halt_steer_rec.txt");
+        let hex = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let fl = |s: &str| f32::from_bits(hex(s));
+        let v3 = |v: &[&str]| Vec3::new(fl(v[0]), fl(v[1]), fl(v[2]));
+        let (safe, moving_speed) = (30.0f32, 1.0f32);
+        let (mut n, mut taken, mut held) = (0, 0, 0);
+        for line in rec.lines() {
+            let v: Vec<&str> = line.split_whitespace().collect();
+            assert_eq!(v[0], "H");
+            let (tspeed, tpos) = (fl(v[1]), v3(&v[2..]));
+            for k in 0..3 {
+                let w = &v[8 + 13 * k..];
+                let (cpos, row0, cvel, cspeed) = (v3(&w[0..]), v3(&w[3..]), v3(&w[6..]), fl(w[9]));
+                let (t0, t1, steer) = (fl(w[10]), w[11], w[12]);
+                let out = if t0 != 0.0 {
+                    assert_eq!(steer, w[10], "{line}");
+                    held += 1;
+                    t0
+                } else {
+                    let s = halt_steer_take(closing_in(tpos, cpos, tspeed, cspeed, cvel, safe, moving_speed), on_side(row0, cpos, tpos));
+                    taken += (s != 0.0) as u32;
+                    s
+                };
+                assert_eq!(format!("{:08X}", out.to_bits()), t1, "cop {k}: {line}");
+                n += 1;
+            }
+        }
+        assert!(n == 495 && taken == 5 && held == 232, "{n} {taken} {held}");
+    }
+
     #[test]
     fn arrow_trap_matches_the_recording() {
         let rec = include_str!("testdata/arrow_trap_rec.txt");
@@ -8251,7 +8310,7 @@ mod tests {
             zeroed += (a0 > 0.0 && p.arrest == 0.0) as u32;
             still += (p.t_still > 0.0) as u32;
         }
-        assert!(n == 31_059 && grows == 17_497 && held == 5_833 && zeroed == 48 && still == 20_695 && jumps == 89 && skipped == 1_080, "{n} {grows} {held} {zeroed} {still} {jumps} {skipped}");
+        assert!(n == 32_054 && grows == 17_804 && held == 6_012 && zeroed == 50 && still == 21_179 && jumps == 92 && skipped == 1_188, "{n} {grows} {held} {zeroed} {still} {jumps} {skipped}");
     }
 
     fn arrest_run(reference: &str, vt: bool) -> (u32, u32, u32, u32, u32, u32) {
