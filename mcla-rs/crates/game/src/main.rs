@@ -434,7 +434,7 @@ struct App {
     garage_cam: Option<(Vec3, Vec3, f32)>,
     /// the garage camera's move between views: where it came from, where it goes, the
     /// seconds gone and the up vector of this frame
-    garage_tr: Option<(garagecam::CamState, garagecam::CamState, f32)>,
+    garage_tr: Option<garagecam::Driver>,
     /// the cine scene whose lamp events run (vehicles.rs `CINE_LAMP_EVENTS`): its name, the clock already
     /// passed, every car's lamp switch as the scene found it (uid, off)
     cine_lamps: Option<(String, f32, Vec<(u32, bool)>)>,
@@ -10495,19 +10495,20 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             }
                             // glide from view to view
                             let k = 1.0 - (-dt * 3.2 / views.transition.max(0.1)).exp();
+                            // (the interior free look reads the pad record: its buttons word, LT bit 0 and RT bit 1, and
+                            // the right stick's bytes, F-28551)
+                            let pad = self.pad_state().map(|st| (st.buttons as u32 & 3, [st.sticks[2], st.sticks[3]]));
                             let cur = self.garage_cam.get_or_insert((pos, look, fov));
                             if original {
                                 // the game's own move (F-53958): the camera's figures eased from the
                                 // view left to the view entered, the azimuth the short way round
                                 let to = garagecam::CamState::of(&view, origin, render_state.rot, turn);
-                                let tr = self.garage_tr.get_or_insert((to, to, 1.0e3));
-                                let same = (tr.1.target - to.target).length() < 1e-3 && (tr.1.dist - to.dist).abs() < 1e-4 && (tr.1.azimuth - to.azimuth).abs() < 1e-4 && (tr.1.height - to.height).abs() < 1e-4;
-                                if !same {
-                                    let now = tr.0.eased(&tr.1, tr.2 / views.transition.max(0.01));
-                                    *tr = (now, to, 0.0);
-                                }
-                                tr.2 += dt;
-                                let (e, l, up, f) = tr.0.eased(&tr.1, tr.2 / views.transition.max(0.01)).place();
+                                let number = garagecam::view_number(name).unwrap_or(0);
+                                let tr = self.garage_tr.get_or_insert_with(|| garagecam::Driver::new(to, number));
+                                tr.ask(number, to, views.transition.max(0.01));
+                                let rot = render_state.rot;
+                                tr.step(dt, pad, |v| views.get(garagecam::VIEW_NAMES[v as usize]).map(|w| garagecam::CamState::of(&w, origin, rot, 0.0)));
+                                let (e, l, up, f) = tr.live().place();
                                 *cur = (e, l, f * if fov > 0.0 { fov / view.fov.to_radians().max(1e-3) } else { 1.0 });
                                 self.garage_up = up;
                             } else {
