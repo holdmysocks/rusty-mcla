@@ -719,8 +719,10 @@ struct App {
     /// 0x1522..0x15f6: Garage_TransitionOutOfGarage, then WAITUNWARPED(1000), then waits while a scene plays or a
     /// menu is up, then the save - the career handler F-20860's CAREER_AUTOSAVE arm writes mc4.sav)
     garage_save: Option<f32>,
-    /// seconds of cruising until a racer rings with a challenge (`game/race/TelephoneChallenge`)
-    phone_challenge_in: f32,
+    /// TelephoneChallenge's countdown (local 3, `RAND_INT_RANGE(2000, 2500)` at 0x10c; one off a 100 ms round whose gates
+    /// pass, the call at below 0), the time into the current round, and the script context's generator (F-36420 ->
+    /// F-82174, seeded from the game's global one: `Mwc::script`) that draws it and the caller (0x178)
+    phone_challenge_in: Option<(i32, f32, vehicles::parked::Mwc)>,
     /// the racer whose telephone challenge is up (GH_03 ..): his voice says the invite and the decline
     phone_caller: &'static str,
     /// TelephoneChallenge's wait for the player (0x347..0x469) once the call's line is over and the sidekick's wait
@@ -1746,7 +1748,7 @@ impl App {
             garage_mask: Default::default(),
             garage_out: None,
             garage_save: None,
-            phone_challenge_in: 0.0,
+            phone_challenge_in: None,
             phone_wait: None,
             phone_declining: false,
             scene_was: false,
@@ -7676,6 +7678,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             if self.phone_was_up && self.game.tip.is_none() {
                 self.phone_done = true;
             }
+            // (kept up to date here and below: a call put away later in this frame - the challenge's decline,
+            // Sidekick_SidekickToggleWaitForScriptFlag(0) - still counts as done, and the phone holds after it as after any)
+            self.phone_was_up = self.game.tip.is_some();
             let gates = self.phone_held();
             // (F-37697's tail, once its gates let it run: the call cleaned away, +788 = 1 and, in Cruising_Offline,
             // sidekickResume after SidekickDelayTime)
@@ -7851,11 +7856,23 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             // A racer rings: "LET'S RACE.  YOU PICK THE LOCATION." with ACCEPT on Back
             // (`ref/call_challenge.png`; the script `game/race/TelephoneChallenge`: one of GH_03,
-            // GH_07, GH_13, GH_16, GH_22 after 2000..2500 of its 100 ms rounds of cruising).
-            // approx.: asked of a career that has its garage; the call stands twelve seconds.
-            if matches!(self.game.mode, Mode::FreeRoam) && self.game.race.is_none() && self.roam.challenge.is_none() && self.game.flash_phone.is_some() && self.game.career.loaded() && self.game.career.reached("GARAGE_HOLLYWOOD") && !self.game.fresh_game {
-                if self.phone_challenge_in <= 0.0 {
-                    self.phone_challenge_in = std::env::var("MCLA_PHONE_CHALLENGE").ok().and_then(|v| v.parse().ok()).unwrap_or(200.0 + (self.tick_no % 500) as f32 * 0.1);
+            // GH_07, GH_13, GH_16, GH_22 after RAND_INT_RANGE(2000, 2500) + 1 of its 100 ms rounds of cruising, the caller
+            // RAND_INT_RANGE(0, 4) into that table (0x0..0x51); both on the script's own generator).
+            // The script runs once it is in the career's list: RACE_GH_02's story script starts it when that mission is
+            // complete (`mc4::COMPLETE_SCRIPTS`; the Complete Edition's Progression table no longer gives it at 15 %, as
+            // the first edition's table did); with the list not known, RACE_GH_02 complete. approx.: the call stands
+            // twelve seconds.
+            if matches!(self.game.mode, Mode::FreeRoam) && self.game.race.is_none() && self.roam.challenge.is_none() && self.game.flash_phone.is_some() && self.game.career.loaded() && !self.game.fresh_game
+                && self.game.mc4_running_scripts().map_or_else(|| self.game.career.mission_complete("RACE_GH_02"), |l| l.iter().any(|n| n == "telephonechallenge"))
+            {
+                // (a new countdown once the call is over: the call's function (0x193) returns after the decline line or the
+                // ARCADE menu's result, then 0x3345 jumps back to the wait for Cruising_Offline (0xed) and the draw at 0x10c)
+                if self.phone_challenge_in.is_none() && !self.game.phone_challenge && !self.phone_declining && !self.phone_challenge_due {
+                    let mut rng = vehicles::parked::Mwc::script();
+                    let n = rng.int_range(2000, 2500);
+                    // (test hook MCLA_PHONE_CHALLENGE=<seconds>: the countdown set to that many rounds instead)
+                    let n = std::env::var("MCLA_PHONE_CHALLENGE").ok().and_then(|v| v.parse::<f32>().ok()).map_or(n, |t| (t * 10.0) as i32 - 1);
+                    self.phone_challenge_in = Some((n, 0.0, rng));
                 }
                 if self.game.tip.is_none() && self.news.is_empty() && self.tips.is_empty() && self.cuts.idle() && !self.game.show_map {
                     // (the script's rounds count only while (0x131..0x162) the game is not paused (Game_IsPaused F-49028:
@@ -7864,10 +7881,19 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // F-15670: the nav map's +628, standing while the map has a target) and the camera
                     // is not held (UILogic_IsCameraPaused F-23025); the call it appends then waits for the phone's gates)
                     let paused = self.game.mode == Mode::Paused || self.game.show_map || self.game.album.stage != crate::photoalbum::Stage::Off;
-                    if !self.phone_challenge_due && !paused && self.police.activity().0 < 2 && !self.game.idle_cam && !self.game.map_target_selected() && !self.camera_held() {
-                        self.phone_challenge_in -= sim_dt;
-                        self.phone_challenge_due = self.phone_challenge_in <= 0.0;
-                        self.phone_challenge_in = self.phone_challenge_in.max(f32::MIN_POSITIVE);
+                    // (a round: WAITUNWARPED(100), then the gates read once, 0x131..0x171)
+                    let gates = !paused && self.police.activity().0 < 2 && !self.game.idle_cam && !self.game.map_target_selected() && !self.camera_held();
+                    if let Some((n, t, _)) = self.phone_challenge_in.as_mut() {
+                        if !self.phone_challenge_due {
+                            *t += sim_dt;
+                            while *t >= 0.1 && !self.phone_challenge_due {
+                                *t -= 0.1;
+                                if gates {
+                                    *n -= 1;
+                                    self.phone_challenge_due = *n < 0;
+                                }
+                            }
+                        }
                     }
                     // (test hook: MCLA_PHONE_DUE_AT=<tick> - the challenge's rounds run out at that tick)
                     if std::env::var("MCLA_PHONE_DUE_AT").ok().and_then(|v| v.parse::<u64>().ok()).is_some_and(|t| self.tick_no as u64 >= t) && !self.phone_challenge_seen {
@@ -7879,9 +7905,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                     if self.phone_challenge_due && !phone_held {
                         self.phone_challenge_due = false;
-                        self.phone_challenge_in = 0.0;
                         const WHO: [&str; 5] = ["GH_03", "GH_07", "GH_13", "GH_16", "GH_22"];
-                        let caller = WHO[(self.tick_no / 7) as usize % 5];
+                        let k = self.phone_challenge_in.take().map_or(0, |(_, _, mut rng)| rng.int_range(0, 4));
+                        let caller = WHO[k.clamp(0, 4) as usize];
                         let who = self.game.career.name_of(caller);
                         self.phone_caller = caller;
                         let st = |k: &str, d: &str| self.game.career.strings.get(k).map(|s| s.to_string()).unwrap_or_else(|| d.to_string());
@@ -7945,7 +7971,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                 }
             }
-            self.phone_was_up = self.game.tip.is_some();
+            self.phone_was_up |= self.game.tip.is_some();
             if std::mem::take(&mut self.game.phone_accept) {
                 self.game.phone_race = true;
                 self.pending_action = MenuAction::OpenRaceSelect;
