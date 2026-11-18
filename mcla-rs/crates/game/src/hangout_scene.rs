@@ -736,9 +736,10 @@ mod tests {
         assert!(burn >= 1.0 && spin > 1.0 && moved > 1.0, "the old input burns out: charge {burn}, spin {spin}, moved {moved} m");
         let (burn, spin, moved) = run(standing_input());
         assert_eq!(burn, 0.0, "no burnout charge");
-        // (measured: the old input charge 1, back wheels 4.33 rad/s, 2.63 m crept; this one 0, 0 and 0.079 m - the locked car's own
-        // settling on the test's flat ground; in the game the stand loop holds its place)
-        assert!(spin < 0.05 && moved < 0.1, "the wheels and the car stand: spin {spin}, moved {moved} m");
+        // (measured: the old input charge 1, back wheels 4.33 rad/s, 2.63 m crept; this one 0, 0 and 0.136 m - the locked car's own
+        // settling on the test's flat ground; in the game the stand loop holds its place. 0.079 m before F-10637's GravityPitch:
+        // the car has no wheel record in 248 of the 600 ticks here, and the original's GravityPitch has no speed gate)
+        assert!(spin < 0.05 && moved < 0.2, "the wheels and the car stand: spin {spin}, moved {moved} m");
     }
 
     /// F-17058 case 5's gear write: neutral while chassis +572 (the shaft speed x its wheel's radius, from the tick's entry)

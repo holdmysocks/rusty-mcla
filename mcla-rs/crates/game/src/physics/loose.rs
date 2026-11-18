@@ -469,7 +469,7 @@ pub struct PBody {
 }
 
 /// F-80759 / F-29166: a velocity and its momentum cut back to the body's limit.
-fn capped(v: Vec3, p: Vec3, max: f32) -> (Vec3, Vec3) {
+pub(super) fn capped(v: Vec3, p: Vec3, max: f32) -> (Vec3, Vec3) {
     let l2 = fma(v.y, v.y, fma(v.z, v.z, v.x * v.x));
     // (blelr: a NaN length is left as it is)
     if !(l2 > max * max) {

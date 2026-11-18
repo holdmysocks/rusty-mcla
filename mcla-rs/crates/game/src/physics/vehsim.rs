@@ -962,6 +962,13 @@ pub fn bike_old(vt: &VehTune) -> bool {
     vt.bike && *V.get_or_init(|| std::env::var_os("MCLA_DBG_Z3").is_some())
 }
 
+/// A car whose two-wheel stunt and air control run as mcCarGyro F-10637 has them (inside the exact gyro,
+/// `reference/vehicle/cargyro_lean_air_pseudo.md`); MCLA_DBG_OLDLEAN (or the old sums / gyro): the port's earlier blocks.
+pub fn lean_new(vt: &VehTune) -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    !vt.bike && *V.get_or_init(|| ["MCLA_DBG_OLDLEAN", "MCLA_DBG_OLDSUMS", "MCLA_DBG_OLDROWS", "MCLA_DBG_OLDTYREIN", "MCLA_DBG_OLDGYRO"].iter().all(|f| std::env::var_os(f).is_none()))
+}
+
 /// The brain's no-line gear rule (F-17058 case 5): neutral below this chassis +572 (the original's float constant 8.94).
 pub const NEUTRAL_BELOW: f32 = 8.94;
 
@@ -1056,6 +1063,13 @@ pub struct VehState {
     two_trim: f32,
     two_wait: u8,
     two_acc: f32,
+    /// F-10637 (`lean_new`): the air timer gyro +96 (unscaled steps summed with no wheel down), the hold-off
+    /// counter +100 (frames), the centre of mass's x the two-wheel stunt wrote (chassis +112), and this tick's
+    /// angular impulse the gyro adds to the body (+384, slot 38)
+    g96: f32,
+    g100: i16,
+    lean_cg: Option<f32>,
+    gyro_impulse: Vec3,
     pub air_acc: [f32; 3],
     /// how long the car has stood still with no pedal (chassis +588), and the speed it came
     /// into its last tick with (chassis +224)
@@ -1230,6 +1244,8 @@ pub struct VehState {
     sss_chassis: f32,
     /// a replay's: the pad's steering of the frame (the input object's), and what the last update left in chassis +132
     pub pad_steer: f32,
+    /// chassis +132 as the update leaves it for the gyro: the steering, on two wheels with LeanSteerBias (F-17997)
+    pub steer132: f32,
     /// each wheel's static weight (wheel +428) as the last tick had it
     pub w_then: [f32; 4],
     /// Z3: mcBikeGyro's own state, and what its update leaves for the physics step: the turning
@@ -1267,7 +1283,7 @@ pub struct VehState {
 
 impl Default for VehState {
     fn default() -> Self {
-        VehState { fluid: None, shaft_speed_in: 0.0, wipe_dir: Vec3::ZERO, set_down: false, prev_up: None, body_exact: None, seen_exact: None, body_now: None, rest_exact: None, body_at_exact: None, sums_gyro: [Vec3::ZERO; 4], gyro_sums_exact: None, com_exact: None, body: None, momentum_exact: None, drift_level: 1.0, wheel_grip: [1.0; 4], hull_kept: Vec::new(), manifolds: Vec::new(), wipe: None, wipe_hit: false, rider_vel: None, rider: None, rider_out: None, rider_job: None, loose: Default::default(), hull_last: None, cell_ball: None, by: BurnTick { exact: false, state_in: 0, held: false, brake_layout: None, cg: None, cg_return: true, launch: None, launch_layout: 0 }, lift_err: 0.0, rev: RevLimit { cut: 0.0, timer: 0.0, on: false, left: 0.0, pad: 0.0 }, last_seen: None, push_turn_left: Vec3::ZERO, deep_count: 0, last_set: false, stuck: 0, stuck_at: Vec3::ZERO, stuck_timer: 0.0, stuck_cool: 0.0, still_timer: 0.0, last_speed: 0.0, drive: 255, engine_w: 100.0, gear: 1, shift_timer: 0.0, gear_change: GearChange::default(), engine_pedal: 0.0, engine_torque: 0.0, engine_roll: 0.0, engine_shake: 0.0, shake_rng: [0x2545_F491, 1], engine_auxiliary: 0.0, trans_inhibited: false, hold_gear: None, shift_mod: [1.0; 2], pedal_was: 0.0, hyd: Hydraulics::default(), air: AirRide::default(), two: 0, two_target: 0.0, two_err: 0.0, two_trim: 0.0, two_wait: 0, two_acc: 0.0, omega: [0.0; 2], diff: [1.0; 2], wheels: [WheelSim::default(); 4], boost_timer: 0.0, steer: 0.0, nitro_timer: 0.0, turn_err: 0.0, turn_force: 0.0, melt: 0.0, sst: super::sst::SsTurbo::default(), lean: 0.0, lean_acc: 0.0, wheelie: 0, wheelie_boost: 0.0, wheelie_pitch: 0.0, wheelie_err: 0.0, wheelie_lift: 0.0, air_roll: 0.0, air_acc: [0.0; 3], torque_mult: 1.0, clutch: true, auto_brake: 0.0, started: false, nitro_level: 0.0, nitro_held: false, nitro_burning: false, nitro_records: 0, nitro_fires: 0, air584: 0.0, air584_before: 0.0, nitro_rest: 0.0, nitro_view: 0.0, nitro_pad: 0.0, nitro_left: false, aero_damp: 1.0, fric_boost: false, grip_h: 1.0, air_time: 0.0, burn_state: 0, burn: 0.0, burn_yaw: 0.0, bump_phase: 0.0, rng: [0x2545_F491, 0x1234_5678], gauss_spare: None, last_force: Vec3::ZERO, last_torque: Vec3::ZERO, pulse: None, last_gyro: Vec3::ZERO, cg: [0.0; 2], cg_set: false, bike_vel: Vec3::ZERO, bike_acc: Vec3::ZERO, lean_scale: 0.0, lean_lat: 0.0, lean_target: 0.0, bike_turn: Vec3::ZERO, bike_push: Vec3::ZERO, sss_chassis: 1.0, pad_steer: 0.0, w_then: [0.0; 4], bg: BikeGyro::default(), bike_spin: None, bike_pending: None, sss_chassis_exact: 1.0, way_after: 0, pad: super::pad::PadHeld { pedals: super::pad::Pedals { state: 0, throttle: 0.0, brake: 0.0, way: 1 }, steer_next: 0.0, stick_y: 0.0, stick_next: 0.0, second_tick: false, live: false, cruise: super::pad::CruiseHeld { on: false, speed: 0.0, quiet: false }, button: false, handbrake: false, goal: 0.0, stomp: false }, kick_fwd: None, steer_back: 0.0, out_steer: None, grid_reset: false, agro: Default::default(), engine_stopped: false, deact_seen: false, susp: None, live_axle: None }
+        VehState { fluid: None, shaft_speed_in: 0.0, wipe_dir: Vec3::ZERO, set_down: false, prev_up: None, body_exact: None, seen_exact: None, body_now: None, rest_exact: None, body_at_exact: None, sums_gyro: [Vec3::ZERO; 4], gyro_sums_exact: None, com_exact: None, body: None, momentum_exact: None, drift_level: 1.0, wheel_grip: [1.0; 4], hull_kept: Vec::new(), manifolds: Vec::new(), wipe: None, wipe_hit: false, rider_vel: None, rider: None, rider_out: None, rider_job: None, loose: Default::default(), hull_last: None, cell_ball: None, by: BurnTick { exact: false, state_in: 0, held: false, brake_layout: None, cg: None, cg_return: true, launch: None, launch_layout: 0 }, lift_err: 0.0, rev: RevLimit { cut: 0.0, timer: 0.0, on: false, left: 0.0, pad: 0.0 }, last_seen: None, push_turn_left: Vec3::ZERO, deep_count: 0, last_set: false, stuck: 0, stuck_at: Vec3::ZERO, stuck_timer: 0.0, stuck_cool: 0.0, still_timer: 0.0, last_speed: 0.0, drive: 255, engine_w: 100.0, gear: 1, shift_timer: 0.0, gear_change: GearChange::default(), engine_pedal: 0.0, engine_torque: 0.0, engine_roll: 0.0, engine_shake: 0.0, shake_rng: [0x2545_F491, 1], engine_auxiliary: 0.0, trans_inhibited: false, hold_gear: None, shift_mod: [1.0; 2], pedal_was: 0.0, hyd: Hydraulics::default(), air: AirRide::default(), two: 0, two_target: 0.0, two_err: 0.0, two_trim: 0.0, two_wait: 0, two_acc: 0.0, g96: 0.0, g100: 0, lean_cg: None, gyro_impulse: Vec3::ZERO, omega: [0.0; 2], diff: [1.0; 2], wheels: [WheelSim::default(); 4], boost_timer: 0.0, steer: 0.0, nitro_timer: 0.0, turn_err: 0.0, turn_force: 0.0, melt: 0.0, sst: super::sst::SsTurbo::default(), lean: 0.0, lean_acc: 0.0, wheelie: 0, wheelie_boost: 0.0, wheelie_pitch: 0.0, wheelie_err: 0.0, wheelie_lift: 0.0, air_roll: 0.0, air_acc: [0.0; 3], torque_mult: 1.0, clutch: true, auto_brake: 0.0, started: false, nitro_level: 0.0, nitro_held: false, nitro_burning: false, nitro_records: 0, nitro_fires: 0, air584: 0.0, air584_before: 0.0, nitro_rest: 0.0, nitro_view: 0.0, nitro_pad: 0.0, nitro_left: false, aero_damp: 1.0, fric_boost: false, grip_h: 1.0, air_time: 0.0, burn_state: 0, burn: 0.0, burn_yaw: 0.0, bump_phase: 0.0, rng: [0x2545_F491, 0x1234_5678], gauss_spare: None, last_force: Vec3::ZERO, last_torque: Vec3::ZERO, pulse: None, last_gyro: Vec3::ZERO, cg: [0.0; 2], cg_set: false, bike_vel: Vec3::ZERO, bike_acc: Vec3::ZERO, lean_scale: 0.0, lean_lat: 0.0, lean_target: 0.0, bike_turn: Vec3::ZERO, bike_push: Vec3::ZERO, sss_chassis: 1.0, pad_steer: 0.0, steer132: 0.0, w_then: [0.0; 4], bg: BikeGyro::default(), bike_spin: None, bike_pending: None, sss_chassis_exact: 1.0, way_after: 0, pad: super::pad::PadHeld { pedals: super::pad::Pedals { state: 0, throttle: 0.0, brake: 0.0, way: 1 }, steer_next: 0.0, stick_y: 0.0, stick_next: 0.0, x36: 0.0, x36_next: 0.0, start80: false, start80_next: false, btn40: false, btn40_next: false, second_tick: false, live: false, cruise: super::pad::CruiseHeld { on: false, speed: 0.0, quiet: false }, button: false, handbrake: false, goal: 0.0, stomp: false }, kick_fwd: None, steer_back: 0.0, out_steer: None, grid_reset: false, agro: Default::default(), engine_stopped: false, deact_seen: false, susp: None, live_axle: None }
     }
 }
 
@@ -1917,6 +1933,17 @@ pub async fn step_async(st: &mut CarState, p: &CarParams, vt: &VehTune, input: C
     if vs.drive == 255 {
         vs.drive = vt.t.drivetrain_type as u8;
     }
+    // (F-53665: while the gyro's two-wheel state, gyro +18, is set, the car's update writes LeanSteerLimit over
+    // the front wheel tune's SteeringLimit (+40) every frame, ahead of the sim - the port steps on a copy so tuned;
+    // the start's own write, in the gyro, is the turn's below)
+    let two_in = vs.two;
+    let vt_two;
+    let vt = if two_in != 0 && lean_new(vt) {
+        vt_two = { let mut c = vt.clone(); c.t.wheel_front.steering_limit = c.t.gyro.lean_steer_limit; c };
+        &vt_two
+    } else {
+        vt
+    };
     let t = &vt.t;
     let e = &t.engine.s;
     // (N-VP-1, recorded: a.1 k114 -> k115, every opponent's first burst - in one tick the engine is at idle,
@@ -1975,6 +2002,9 @@ pub async fn step_async(st: &mut CarState, p: &CarParams, vt: &VehTune, input: C
             input.brake = held.brake;
         }
         vs.pad.stick_y = vs.pad.stick_next;
+        vs.pad.x36 = vs.pad.x36_next;
+        vs.pad.start80 = vs.pad.start80_next;
+        vs.pad.btn40 = vs.pad.btn40_next;
         // (A6: the handbrake too is the chassis's +144 as the pad's last frame wrote it, not the button this tick -
         // sd.2 s241: written in the frame, the update before it still without. MCLA_DBG_A6: the raw button.)
         if !dbg_flag("MCLA_DBG_A6") {
@@ -2395,6 +2425,17 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
         if vs.gear < 0 { input.brake = allowed; } else { input.throttle = allowed; }
         vs.rev.left = allowed;
     }
+    // (F-17997 A-41627's tail, after the rev limiter: while the gyro's +18 is not 0 - on two wheels, as the
+    // gyro left it the tick before - the pedal (chassis +136) above a half is cut to LeanThrottleLimit of the
+    // part above it, (t - 0.5) x limit + 0.5 fused, and written back before the engine takes it. Recorded gy13
+    // k1483: 0.676908 -> 0.544227, engine torque 299 -> 76. MCLA_DBG_LEANTHR0: none.)
+    if lean_new(vt) && vs.two != 0 && !dbg_flag("MCLA_DBG_LEANTHR0") {
+        let thr = if vs.gear < 0 { input.brake } else { input.throttle };
+        if thr > 0.5 {
+            let cut = fma32(thr - 0.5, t.gyro.lean_throttle_limit, 0.5);
+            if vs.gear < 0 { input.brake = cut; } else { input.throttle = cut; }
+        }
+    }
     let engine_ratio = ratio_of(vs.gear);
     // (mcCarTireFric::Update runs ahead of the engine and the transmission, F-97237: the
     // layout it switches is the one the transmission's update finds. What mcCarSim::Update
@@ -2455,7 +2496,10 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
         // (vehTransmission + 16, set each tick by F-68619: 0 manual, 1 automatic)
         mode: if forced == 0 && !(input.manual && !input_ai) { 1 } else { 0 }, gear: vs.gear,
         direction: vs.gear_change.direction as i32, inhibited: vs.trans_inhibited,
-        held: vs.by.exact && vs.by.held, elapsed: vs.shift_timer, modulation: vs.shift_mod,
+        // (+33: the burnout's hold, or F-17997 A-41627's tail while the gyro's +18 is not 0 - on two wheels no automatic
+        // shift; recorded gy13: past the upshift point from k1551, first shift at k1587, the tick after +18 went back to 0.
+        // MCLA_DBG_TWOSHIFT: no hold on two wheels.)
+        held: (vs.by.exact && vs.by.held) || (lean_new(vt) && vs.two != 0 && !dbg_flag("MCLA_DBG_TWOSHIFT")), elapsed: vs.shift_timer, modulation: vs.shift_mod,
     }, super::transmission::AutomaticFrame {
         tune: &t.trans, points: &vt.shift, engine_speed: vs.engine_w,
         pedal: vs.engine_pedal, contacts: &contacts[..count], dt,
@@ -2578,6 +2622,12 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
     // the melt's when the tyres are melted; mcCarTireFric's flag +20 = A > 1; every wheel's +524 = the tune's
     // CarFrictionHandlingStandard when A >= 1 or the tyres are melted, else Wipeout + (Standard - Wipeout) x A.
     // A wiped-out or damaged-out car's +524 is not this: see `wiped`, and the car's case is not ported)
+    // (F-17997's two-wheel branch, after it weighs the wheels: the aero object's factor +4 = LandingDampFactor (tune +300)
+    // every tick gyro +18 is not 0 - so a car on two wheels has mcCarTireFric's landing frictions, static x 1.1;
+    // recorded gy13 k1483, the front tyres' sideways give 1.1 x the port's)
+    if lean_new(vt) && vs.two != 0 {
+        vs.aero_damp = t.s.landing_damp_factor;
+    }
     {
         let a = if !vt.bike && t.s.tire_melt_damp_factor < 1.0 && melt_before > 0.01 { fma32(t.s.tire_melt_damp_factor - 1.0, melt_before, 1.0) } else { vs.aero_damp };
         vs.fric_boost = a > 1.0 && !dbg_flag("MCLA_DBG_OLDFRIC");
@@ -2683,7 +2733,9 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
     // LeanDamp). Letting the button go, slowing down, rolling backwards or full lock puts it
     // back down with a kick; then it rests for ten frames. ----
     vs.two_acc = 0.0;
-    if !vt.bike && t.gyro.lean > 0.0 && !input_ai {
+    if lean_new(vt) {
+        // (the exact gyro runs it, F-10637)
+    } else if !vt.bike && t.gyro.lean > 0.0 && !input_ai {
         let gt = &t.gyro;
         let grounded = st.wheels.iter().filter(|w| w.grounded).count();
         let roll = st.right().y.clamp(-1.0, 1.0).asin();
@@ -2731,7 +2783,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
         vs.two = 0;
     }
     // (on two wheels the steering is held to LeanSteerLimit of its lock)
-    let lock = if vs.two != 0 && t.gyro.lean_steer_limit > 0.0 { t.gyro.lean_steer_limit.min(1.0) } else { 1.0 };
+    let lock = if vs.two != 0 && t.gyro.lean_steer_limit > 0.0 && !lean_new(vt) { t.gyro.lean_steer_limit.min(1.0) } else { 1.0 };
     // (mcPlayerInput A-62088 with mcCarDamage F-10364: a badly damaged car pulls to one
     // side at low speed - past MedDamage the pull grows as (share of the way to MaxDamage)^0.3,
     // times SteerDamageBias, fading out up to SteerDamageSpeedThreshold)
@@ -2871,6 +2923,16 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
         vs.steer = s;
         vs.steer_back = s;
     }
+    // (F-17997 A-41627's tail: the wheels are steered with the value above, then, while the gyro's +18 is not 0,
+    // +132 takes s - (1 - |s|) x (LeanSteerBias / LeanSteerLimit) x clamp(+18, -1, 1), fused, and the gyro
+    // reads that. Recorded gy13 k1484: +132 0.0880 against the pad's 0.207. MCLA_DBG_LEANSTEER0: none.)
+    vs.steer132 = vs.steer;
+    if lean_new(vt) && vs.two != 0 && !dbg_flag("MCLA_DBG_LEANSTEER0") {
+        let side = vs.two.clamp(-1, 1) as f32;
+        let k = (1.0 - vs.steer.abs()) * (t.gyro.lean_steer_bias / t.gyro.lean_steer_limit);
+        vs.steer132 = super::exact::fnms(k, side, vs.steer);
+        vs.steer_back = vs.steer132;
+    }
 
     // (chassis +572 is from the tick's entry: by the layout as the melt found it)
     let drive_then = if vs.drive == drive_melted { drive_before } else { vs.drive };
@@ -2962,7 +3024,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
         // (R2: not a motorcycle on the original's path - this levelling is the port's own; the recorded sums of
         // a ZX-14 in the air hold the air's damping and the gyro's gravity pitch and nothing else: V se.0
         // 163.. with the rider off, 179 stood up again. MCLA_DBG_R2: as before.)
-        if grounded == 0.0 && st.airborne_time > 0.15 && !(vt.bike && !bike_old(vt) && !dbg_flag("MCLA_DBG_R2")) {
+        if grounded == 0.0 && st.airborne_time > 0.15 && !(vt.bike && !bike_old(vt) && !dbg_flag("MCLA_DBG_R2")) && !lean_new(vt) {
             let (mut r, mut gain) = (roll, gt.roll);
             if gt.roll_limit > 0.0 {
                 r = r.clamp(-gt.roll_limit, gt.roll_limit);
@@ -2985,7 +3047,9 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
                 vs.air_acc[0] = -(gain * r + gain.sqrt() * gt.roll_damp * 2.0 * (roll - vs.air_roll) / dt);
             }
         }
-        vs.air_roll = roll;
+        if !lean_new(vt) {
+            vs.air_roll = roll;
+        }
         // DriftTorque: the engine pulls harder the more the car steers or slides sideways
         // (mcCarGyro A-79226..A-87897: only while no burnout is charged and the car moves
         // faster than 1 m/s - below that the multiplier keeps its last value, so a car that
@@ -3003,7 +3067,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
                 let vn = unit_or_zero(v);
                 let side = fma(vn.x, rows[0].x, fma(rows[0].z, vn.z, rows[0].y * vn.y)).abs();
                 let side = if side - 1.0 >= 0.0 { 1.0 } else { side };
-                let (slide, wheel) = (ease(side), vs.steer.abs());
+                let (slide, wheel) = (ease(side), vs.steer132.abs());
                 let drift = (if slide - wheel >= 0.0 { slide } else { wheel }) * gt.drift_torque;
                 let climb = if input_ai {
                     0.0
@@ -3314,6 +3378,14 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
                 // one key for the rider's weight is the button and the stick together - through the stick's two
                 // dead zones; otherwise nothing at once)
                 vs.pad.stick_next = super::pad::lean_step(vs.pad.stick_y, super::pad::stick_byte(raw_input.lean), vs.pad.button, frame);
+                vs.pad.x36_next = super::pad::steer36_step(vs.pad.x36, super::pad::stick_byte(raw_input.steer), vs.pad.button, vs.pad.start80, frame);
+                // (F-56064 A-62810: +36 crossing past 0.75 either way in this frame - the frame before's +36, loaded ahead of its
+                // update, not past it on that side - with the button down; recorded gy11: held past 0.75 from 8 m/s, no
+                // start at 10 m/s. MCLA_DBG_START80LEVEL: past 0.75 at all, as before.)
+                let (new, old) = (vs.pad.x36_next, vs.pad.x36);
+                let crossed = if dbg_flag("MCLA_DBG_START80LEVEL") { new.abs() > 0.75 } else { (new > 0.75 && !(old > 0.75)) || (new < -0.75 && !(old < -0.75)) };
+                vs.pad.start80_next = raw_input.xfer && crossed && vs.two == 0;
+                vs.pad.btn40_next = raw_input.xfer;
                 vs.pad.button = raw_input.xfer || raw_input.lean != 0.0;
             } else {
             let mut y = vs.pad.stick_y;
@@ -3556,6 +3628,11 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
             }
             vs.cg[0] += (tuned[0] - vs.cg[0]).clamp(-0.5 * dt, 0.5 * dt);
         }
+        // (F-17997 after the motorcycle's +16 branches: a car on two wheels - gyro +18 not 0, as the gyro's last update
+        // left it, and four wheels (lean_new is no bike) - has chassis +112's z set to 0 every tick; gy13 k1483: 0.12 -> 0)
+        if lean_new(vt) && vs.two != 0 {
+            vs.cg[1] = 0.0;
+        }
     }
     // (P3: the wheels are weighed by the centre of mass as mcCarSim::Update leaves it; the chassis's update
     // that follows then holds it at CenterOfMass + (ModelOffset - CenterOfMass) x (q x UpsetCG), q the
@@ -3597,6 +3674,8 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
         held_x = Some(held.x);
     }
     let com_local = {
+        // (the two-wheel stunt's centre of mass across the car, chassis +112 x, as the gyro wrote it)
+        let held_x = held_x.or(if lean_new(vt) { vs.lean_cg } else { None });
         let tuned = Vec3::new(held_x.unwrap_or(t.s.com_x), vs.cg[0], vs.cg[1]);
         let k = if in_fluid || car_cg { 0.0 } else if st.damage >= 1.0 { 1.0 } else { st.upset };
         tuned + (Vec3::new(t.s.model_offset_x, t.s.model_offset_y, t.s.model_offset_z) - tuned) * (t.s.upset_cg.clamp(0.0, 1.0) * k)
@@ -3684,7 +3763,13 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
     // as the stunt lasts, springs and dampers twice as stiff with it)
     // (Z3, A-41627: ((gravity factor x mass) x 9.8) x (2 / wheels), set while the gyro's state is
     // 1 or -1 and left standing while it is 99 / -99 - the weights are only made afresh at state 0)
-    let (w_front, w_rear) = if vt.bike && vs.wheelie != 0 {
+    // (and a car on two wheels the same, F-17997 with gyro +18 not 0: every wheel ((gravity factor x mass) x 9.8) x
+    // (2 / wheels) - recorded gy13 from k1483, 10,427.2 N on each of the R8's four, until a tick with +18 at 0)
+    let (w_front, w_rear) = if lean_new(vt) && vs.two != 0 {
+        let n = 4.0f32;
+        let whole = (((if t.s.bound_gravity > 0.1 { t.s.bound_gravity } else { 1.0 }) * mass) * 9.8f32) * (2.0 / n);
+        (whole, whole)
+    } else if vt.bike && vs.wheelie != 0 {
         if bike_old(vt) { (mass * g, mass * g) } else {
             let whole = (((if t.s.bound_gravity > 0.1 { t.s.bound_gravity } else { 1.0 }) * mass) * 9.8f32) * (2.0 / 2.0);
             (whole, whole)
@@ -5018,7 +5103,7 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
             let v = if fwd_speed < 0.0 && !(-vs.omega[0] > 0.0) { -fwd_speed } else { fwd_speed };
             let blend = fma(-gt.turn_factor, vs.sss_chassis, gt.turn_factor);
             let yaw = fma(w.x, n.x, fma(w.y, n.y, w.z * n.z));
-            let base = (((t.wheel_front.steering_limit * vs.steer) * v) * gt.turn_bias) * (-1.0 / wb);
+            let base = (((t.wheel_front.steering_limit * vs.steer132) * v) * gt.turn_bias) * (-1.0 / wb);
             let pedal = clamp((if btn { -1.0 } else { 0.0 }) + throttle_in, -1.0, 1.0);
             let target = fma(fma(pedal, gt.turn_oversteer, 1.0) * base, blend, (1.0 - blend) * yaw);
             vs.bg.yaw_target = target;
@@ -5475,7 +5560,7 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
         let v = st.vel.dot(fwd);
         if v > 10.0 {
             let s = if v >= 25.0 { v } else { v * v * 0.04 };
-            vs.turn_force += -vs.steer * t.gyro.drift * mass * s * (grounded_count as f32 / wheel_count);
+            vs.turn_force += -vs.steer132 * t.gyro.drift * mass * s * (grounded_count as f32 / wheel_count);
         }
     }
     vs.last_gyro = Vec3::ZERO;
@@ -5553,7 +5638,7 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
                 // (engine +72: the speed of its best power, as vehEngine::Init finds it on the curve)
                 let best = vt.torque_curve.as_ref().map_or(t.engine.s.opt_rpm * 0.104_719_76, |c| c.peak().0);
                 let root = ((vs.engine_w / best) as f64).powf(0.5) as f32;
-                let mut k = (vs.steer * root) * vs.burn;
+                let mut k = (vs.steer132 * root) * vs.burn;
                 let way = gear_direction(Some(vs.gear)) as f32;
                 let first = if vs.drive == 0 { 2 } else { 0 };
                 let hold = vs.wheel_grip[first] * if way < 0.0 { gt.burnout_turn_rev } else { gt.burnout_turn };
@@ -5615,6 +5700,142 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
         if vs.burn == 0.0 && !dbg_flag("MCLA_DBG_BURNYAW0") {
             vs.burn_yaw = -w.y;
         }
+
+        // ---- the two-wheel stunt, F-10637 (cargyro_lean_air_pseudo.md section 2). Lean > 0 gates only the
+        // controller; the start, the kicks, the centre of mass, the steering and the end tests run without it.
+        // Chassis +576 bit 0x2 (F-17816's mask) and gyro +28 bit 0x80000 (set on every car recorded, +28 =
+        // 0x1F0001) gate it all. ----
+        if lean_new(vt) {
+            let gt = &t.gyro;
+            // (every frame, ahead of the branches: the air timer +96, the unscaled step summed with no wheel down;
+            // on landing back to 0 and the start held off 30 frames)
+            if grounded_count == 0 {
+                vs.g96 += dt;
+            } else if vs.g96 > 0.0 {
+                vs.g96 = 0.0;
+                vs.g100 = 30;
+            }
+            if input.lock & 0x2 == 0 {
+                const THIRTIETH: f32 = f32::from_bits(0x3d08_8889);
+                let up_y = body_rows[1].y;
+                let v = st.vel;
+                let speed224 = fma(v.z, v.z, fma(v.x, v.x, v.y * v.y)).sqrt();
+                // (input +36, the stick's X as the bike gyro reads it; +40 bit 0x80, the pad's start: the weight button
+                // with it past 0.75 while +18 is 0 - a computer driver never sets it)
+                let (steer36, start_flag) = if vs.pad.live {
+                    (vs.pad.x36, vs.pad.start80)
+                } else {
+                    (input.steer, !input_computer && input.xfer && input.steer.abs() > 0.75 && vs.two == 0)
+                };
+                if vs.g100 == 0 && grounded_count != 0 && up_y > 0.8 && vs.burn == 0.0 {
+                    let mut s = vs.two;
+                    if start_flag && speed224 > gt.lean_speed_min {
+                        if steer36 < 0.0 {
+                            s = -2;
+                        } else if steer36 > 0.0 {
+                            s = 2;
+                        }
+                    }
+                    if s == -2 || s == 2 {
+                        // (the centre of mass moves to the side that stays down - stick left lifts the right side)
+                        let x = (t.s.size_x * 0.5) * gt.lean_offset_cg;
+                        vs.lean_cg = Some(if s == -2 { -x } else { x });
+                        // (an angular impulse about the body's back row, by the mass: body slot 38, +384)
+                        let k = (gt.lean_impulse_up * mass) * if s == -2 { THIRTIETH } else { -THIRTIETH };
+                        vs.gyro_impulse += body_rows[2] * k;
+                        vs.g100 = 30;
+                        vs.two = if s == -2 { -1 } else { 1 };
+                        vs.two_err = 0.0;
+                        vs.two_target = super::exact::guest_asin(body_rows[0].y as f64) as f32;
+                    }
+                }
+                if vs.g100 > 0 {
+                    vs.g100 -= 1;
+                }
+                let s = vs.two;
+                if s != 0 {
+                    // (input +40 bit 0, the weight button, as the pad's last frame wrote it - like the start's +36 / 0x80:
+                    // recorded gy13, the button let go in the frame after k1584's update, the end at k1586)
+                    let button = if vs.pad.live && !dbg_flag("MCLA_DBG_TWOBTNRAW") { vs.pad.btn40 } else { input.xfer };
+                    if !button || s == 99 || s == -99 {
+                        // (END A: the button let go, or knocked off - with a wheel down an impulse by the mass)
+                        if grounded_count != 0 {
+                            let k = (gt.lean_impulse_dn * mass) * if s < 0 { -THIRTIETH } else { THIRTIETH };
+                            vs.gyro_impulse += body_rows[2] * k;
+                        }
+                        vs.two = 0;
+                        vs.g100 = 10;
+                    } else {
+                        // (1: END B, a frame of turning acceleration with a wheel down; 2: END C, in the air over a
+                        // second; the tests after the speed wait for the counter)
+                        let end = if speed224 < gt.lean_speed_min {
+                            1
+                        } else if vs.g100 != 0 {
+                            0
+                        } else if up_y < 0.0 || steer36.abs() > 0.95 || vs.nitro_burning {
+                            1
+                        } else if grounded_count != 0 {
+                            0
+                        } else if vs.g96 > 1.0 {
+                            2
+                        } else {
+                            0
+                        };
+                        if end == 1 && grounded_count != 0 {
+                            let a = if s == -1 { -gt.lean_impulse_dn } else { gt.lean_impulse_dn };
+                            calls.push((526, Vec3::ZERO, body_rows[2] * (inertia.z * a)));
+                        }
+                        if end != 0 {
+                            vs.two = 0;
+                            vs.g100 = 10;
+                        }
+                    }
+                    if vs.two == 0 {
+                        vs.lean_cg = Some(0.0);
+                        vs.two_err = 0.0;
+                        vs.two_target = 0.0;
+                    }
+                }
+                // (the controller: a torque about the line of the two contacts that stay down, by the mass, through
+                // F-81152 at their middle with the ground's normal)
+                if vs.two != 0 && gt.lean > 0.0 {
+                    let rest_z = |j: usize| match vs.rest_exact { Some(r) => r[j][2], None => p.wheel_pos[j].z };
+                    let d = rest_z(2) - rest_z(0);
+                    let (a, b) = if vs.two < 0 { (0usize, 2usize) } else { (1, 3) };
+                    let (fa, fb) = (vs.wheels[a].frame, vs.wheels[b].frame);
+                    let n = super::exact::unit_or_zero(fa[1] + fb[1]);
+                    let mid = (fa[3] + fb[3]) * 0.5;
+                    let axis = (fb[3] - fa[3]) * super::exact::recip(d);
+                    let goal = gt.lean_angle * -(vs.two as f32);
+                    super::exact::approach(&mut vs.two_target, goal, gt.lean_rate_up, dt);
+                    if (goal - vs.two_target).abs() > 0.1 {
+                        let x = (1.0 / dt) * 0.5;
+                        vs.g100 = (if x < 0.0 { x - 0.5 } else { x + 0.5 }) as i16;
+                    }
+                    let roll = super::exact::guest_asin(body_rows[0].y as f64) as f32;
+                    let mut err = roll - vs.two_target;
+                    let rate = if vs.two_err != 0.0 { (err - vs.two_err) * (1.0 / dt) } else { 0.0 };
+                    vs.two_err = err;
+                    let mut k = gt.lean;
+                    if gt.lean_limit > 0.0 {
+                        let lo = -gt.lean_limit;
+                        err = if err - lo >= 0.0 { err } else { lo };
+                        err = if err - gt.lean_limit >= 0.0 { gt.lean_limit } else { err };
+                        k = gt.lean / gt.lean_limit;
+                    }
+                    let pp = k * err;
+                    let dd = ((k.sqrt() * gt.lean_damp) * 2.0) * rate;
+                    let out = -((pp + dd) * mass);
+                    let rows = [body_rows[0], body_rows[1], body_rows[2]];
+                    let (tq, f) = gyro_turn(axis * out, mid - body_at, &[rows[0], rows[1], rows[2], chassis_at], &rows, inverse, mass);
+                    calls.push((527, Vec3::ZERO, tq));
+                    calls.push((528, super::exact::off_ground(f, n), Vec3::ZERO));
+                    if n.y < 0.4 {
+                        vs.two = if vs.two < 0 { -99 } else { 99 };
+                    }
+                }
+            }
+        }
         // ---- the launch's lift (A-22070..A-57456, gyro flag 0x100000; ahead of the turn): with
         // charge and the handbrake off, the car's pitch is driven to the lean its acceleration asks
         // for - a torque about the rear axle's line (from the left rear contact to the right; one
@@ -5657,7 +5878,7 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
         if t.gyro.turn > 0.0 {
         if hand > 0.0 && brake_in > 0.0 && vs.burn == 0.0 {
             // (A-78592, brake and handbrake together: Spin - the car is turned by its steering alone)
-            let mut k = vs.steer;
+            let mut k = vs.steer132;
             if along.abs() < 25.0 {
                 k = (along.abs() * k) * f32::from_bits(0x3d23_d70a);
             }
@@ -5674,7 +5895,7 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
             // RevSpin x the inertia about the up, by the wheels on the ground. V: sc.0 k 290..360 in the
             // one-step replay. MCLA_DBG_RB5: nothing, as before.)
             if vs.gear < 0 && along < -5.0 && !dbg_flag("MCLA_DBG_RB5") {
-                let mut k = -vs.steer;
+                let mut k = -vs.steer132;
                 if along.abs() < 10.0 {
                     k = (along.abs() * k) * f32::from_bits(0x3dcc_cccd);
                 }
@@ -5685,7 +5906,9 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
             let rest_z = |j: usize| match vs.rest_exact { Some(r) => r[j][2], None => p.wheel_pos[j].z };
             let wheelbase = rest_z(2) - rest_z(0);
             let wf = &t.wheel_front;
-            let ideal = (((((1.0 - wf.optimum_slip) * wf.steering_limit) * vs.steer) * along) * (-1.0 / wheelbase)) * gt.turn_bias;
+            // (on two wheels the tune's +40 is LeanSteerLimit: the start in this frame's gyro wrote it, F-53665 every frame after)
+            let limit = if lean_new(vt) && vs.two != 0 { gt.lean_steer_limit } else { wf.steering_limit };
+            let ideal = (((((1.0 - wf.optimum_slip) * limit) * vs.steer132) * along) * (-1.0 / wheelbase)) * gt.turn_bias;
             let ideal = ideal * fma((throttle_in - 0.5) * 2.0, gt.turn_oversteer, 1.0);
             let mut x = 1.0 - vs.melt;
             if fast < t.s.sss_threshold_min {
@@ -5696,7 +5919,10 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
             }
             let x = if x >= 0.0 { x } else { 0.0 };
             let x = if x - 1.0 >= 0.0 { 1.0 } else { x };
-            let blend = if input_computer && gyro_full() { 1.0 } else { gt.turn_factor * x };
+            // (A-55009: the player's car - F-14919 - with the air's damping factor above one, chassis +8's +4, takes
+            // the whole ideal: on two wheels F-17997 sets it to LandingDampFactor, after a landing it decays to one.
+            // Recorded gy13 k1483: gyro +64 = the ideal itself, -0.03437. MCLA_DBG_BLENDOLD: as before.)
+            let blend = if !input_computer && vs.aero_damp > 1.0 && !dbg_flag("MCLA_DBG_BLENDOLD") { 1.0 } else if input_computer && gyro_full() { 1.0 } else { gt.turn_factor * x };
             let aim = fma(1.0 - blend, yaw, blend * ideal);
             let mut err = aim - yaw;
             let d = if vs.turn_err != 0.0 { (err - vs.turn_err) * (1.0 / dt) } else { 0.0 };
@@ -5712,7 +5938,7 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
             if fast < 10.0 {
                 out = (out * fast) * 0.1;
             }
-            if dbg_flag("MCLA_DBG_TRACE") { eprintln!("TURN yaw {yaw:?} ideal {ideal:?} x {x:?} blend {blend:?} err {err:?} d {d:?} gain {gain:?} out {out:?} fast {fast:?} grounded {grounded_count} grip {:?} thr {throttle_in:?} steer {:?} burn {:?} melt {:?}", vs.wheel_grip[0], vs.steer, vs.burn, vs.melt); }
+            if dbg_flag("MCLA_DBG_TRACE") { eprintln!("TURN yaw {yaw:?} ideal {ideal:?} x {x:?} blend {blend:?} err {err:?} d {d:?} gain {gain:?} out {out:?} fast {fast:?} grounded {grounded_count} grip {:?} thr {throttle_in:?} steer {:?} burn {:?} melt {:?}", vs.wheel_grip[0], vs.steer132, vs.burn, vs.melt); }
             size = (((grounded_count as f32 / wheel_count) * out) * vs.wheel_grip[0]) * mass;
         }
         let rows = [body_rows[0], body_rows[1], body_rows[2]];
@@ -5720,6 +5946,54 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
         calls.push((530, Vec3::ZERO, tq));
         calls.push((531, f, Vec3::ZERO));
         vs.last_gyro = tq;
+        }
+
+        // ---- F-10637's end: GravityPitch, then the air control (cargyro_lean_air_pseudo.md section 3) ----
+        if lean_new(vt) {
+            let gt = &t.gyro;
+            let air = vs.air584;
+            if gt.gravity_pitch != 0.0 && air > 0.0 {
+                let d = super::exact::unit_or_zero(st.vel);
+                let climb = super::exact::guest_asin(d.y as f64) as f32;
+                let lo = f32::from_bits(0xbf06_0a92);
+                let hi = f32::from_bits(0x3f06_0a92);
+                let climb = if climb - lo >= 0.0 { climb } else { lo };
+                let climb = if climb - hi >= 0.0 { hi } else { climb };
+                let a = climb - super::exact::guest_asin(-body_rows[2].y as f64) as f32;
+                calls.push((545, Vec3::ZERO, body_rows[0] * (inertia.x * (gt.gravity_pitch * a))));
+            }
+            // (chassis +576 bit 0x1 and gyro +28 bit 0x40000; the air threshold a tenth of the time scale - F-87783,
+            // which would make it 0, open; gyro +16 is 0 on every car recorded)
+            if input.lock & 0x1 == 0 {
+                let scale = f32::from_bits(TIME_SCALE84.load(std::sync::atomic::Ordering::Relaxed));
+                let thr = 0.1 * scale;
+                let roll_now = super::exact::guest_asin(body_rows[0].y as f64) as f32;
+                let button = if vs.pad.live && !dbg_flag("MCLA_DBG_TWOBTNRAW") { vs.pad.btn40 } else { input.xfer };
+                if air > thr && button && vs.two == 0 && (gt.yaw > 0.0 || gt.pitch > 0.0 || gt.roll > 0.0) {
+                    let inv = 1.0 / if scale - 0.1 >= 0.0 { scale } else { 0.1 };
+                    let (ay, ap) = (gt.yaw * inv, gt.pitch * inv);
+                    let mut a = roll_now;
+                    let rate = (a - vs.air_roll) * (1.0 / dt);
+                    vs.air_roll = a;
+                    let mut k = gt.roll;
+                    if gt.roll_limit > 0.0 {
+                        let lo = -gt.roll_limit;
+                        a = if a - lo >= 0.0 { a } else { lo };
+                        a = if a - gt.roll_limit >= 0.0 { gt.roll_limit } else { a };
+                        k = gt.roll / gt.roll_limit;
+                    }
+                    let (sx, sy) = (input.steer, input.lean);
+                    if sx.abs() > 0.5 || sy.abs() > 0.5 {
+                        calls.push((546, Vec3::ZERO, body_rows[1] * (inertia.y * -(sx * ay))));
+                        calls.push((547, Vec3::ZERO, body_rows[0] * (inertia.x * (sy * ap))));
+                    } else {
+                        let acc = -fma((k.sqrt() * gt.roll_damp) * 2.0, rate, k * a);
+                        calls.push((548, Vec3::ZERO, body_rows[2] * (inertia.z * acc)));
+                    }
+                } else {
+                    vs.air_roll = roll_now;
+                }
+            }
         }
     }
 
@@ -6233,6 +6507,17 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
                 (body_at + push, super::solver::rows_pushed(&rows0, turn), w_in)
             }
             None => (body_at, rows0, w_in),
+        };
+        // (the gyro's slot 38 calls of this tick, body +384, the two-wheel stunt's kicks: taken into the angular momentum
+        // ahead of the move as F-21091 takes a body's pending impulses, the turning rate following, cut at two turns a
+        // second - not through the integrate's damped solve. MCLA_DBG_KICKLATE: in the integrate, as before)
+        let w_in = if vs.gyro_impulse != Vec3::ZERO && !dbg_flag("MCLA_DBG_KICKLATE") {
+            lm = lm + std::mem::take(&mut vs.gyro_impulse);
+            let w;
+            (w, lm) = super::loose::capped(ex::spin_of(lm, &rows0, inverse), lm, 12.566_371);
+            w
+        } else {
+            w_in
         };
         let mut at1 = v_in * dt + body_at;
         let mut rows1 = ex::rows_turned(&rows0, w_in * dt);
@@ -7081,7 +7366,9 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
                 Vec::new()
             }
         };
-        // (each qualifying contact's slot 38 call adds its own impulse to +384, in order)
+        // (the gyro's own slot 38 calls this tick, the two-wheel stunt's kicks; then each qualifying contact's adds
+        // its own impulse to +384, in order)
+        turning += std::mem::take(&mut vs.gyro_impulse);
         for s in head_hits.iter().flat_map(|h| h.spins.iter()) {
             turning += *s;
         }
@@ -7969,7 +8256,7 @@ struct DamageRun {
 
 pub(super) fn dbg_flag(name: &'static str) -> bool {
     static FLAGS: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
-    FLAGS.get_or_init(|| ["MCLA_DBG_R1", "MCLA_DBG_R2", "MCLA_DBG_R3", "MCLA_DBG_R4", "MCLA_DBG_RB2", "MCLA_DBG_RB3", "MCLA_DBG_RB4", "MCLA_DBG_RB5", "MCLA_DBG_RB6", "MCLA_DBG_P1", "MCLA_DBG_P2", "MCLA_DBG_P3", "MCLA_DBG_RA1", "MCLA_DBG_RA2", "MCLA_DBG_RA3", "MCLA_DBG_RA4", "MCLA_DBG_RA5", "MCLA_DBG_RA6", "MCLA_DBG_RA7", "MCLA_DBG_RA8", "MCLA_DBG_RA9", "MCLA_DBG_RB1", "MCLA_DBG_RD1", "MCLA_DBG_A1", "MCLA_DBG_A2", "MCLA_DBG_A3", "MCLA_DBG_A4", "MCLA_DBG_A6", "MCLA_DBG_A7", "MCLA_DBG_A8", "MCLA_DBG_A9", "MCLA_DBG_Z1", "MCLA_DBG_Z2", "MCLA_DBG_HIT", "MCLA_DBG_OLDCOLLIDE", "MCLA_DBG_NORESOLVE", "MCLA_DBG_NODAMP", "MCLA_DBG_NOROLLBAR", "MCLA_DBG_YAW", "MCLA_DBG_SPHERES", "MCLA_DBG_RAYWHEEL", "MCLA_DBG_HANG", "MCLA_DBG_GYRO", "MCLA_DBG_NOBOX", "MCLA_DBG_NOSTEEP", "MCLA_DBG_NOCAMBER", "MCLA_DBG_NOLEANPROBE", "MCLA_DBG_OLDWHEEL", "MCLA_DBG_ZEROTYRE", "MCLA_DBG_TERMS", "MCLA_DBG_SUBDAMP", "MCLA_DBG_NOFREEZE", "MCLA_DBG_STEEPWHEEL", "MCLA_DBG_NOPIVOT", "MCLA_DBG_NOSETTLE", "MCLA_DBG_NOSTUCK", "MCLA_DBG_STUCK", "MCLA_DBG_SYMSOLVE", "MCLA_DBG_OLDWHEELPOSE", "MCLA_DBG_OLDSUSP", "MCLA_DBG_OLDROWS", "MCLA_DBG_OLDTYREIN", "MCLA_DBG_OLDSUMS", "MCLA_DBG_OLDSTEP", "MCLA_DBG_OLDPOSE", "MCLA_DBG_AXLEORDER", "MCLA_DBG_CALLS", "MCLA_DBG_OLDGYRO", "MCLA_DBG_NOBOTTOM", "MCLA_DBG_WHEELORDER", "MCLA_DBG_OLDMELT", "MCLA_DBG_OLDHANG", "MCLA_DBG_GEAR", "MCLA_DBG_OLDORDER", "MCLA_DBG_OLDSTEER", "MCLA_DBG_OLDDOWN", "MCLA_DBG_OLDDRIFT", "MCLA_DBG_NOENGINEROLL", "MCLA_DBG_OLDAUTOBRAKE", "MCLA_DBG_Y1", "MCLA_DBG_Y2", "MCLA_DBG_Y3", "MCLA_DBG_Y4", "MCLA_DBG_Y5", "MCLA_DBG_Y6", "MCLA_DBG_Y7", "MCLA_DBG_Y8", "MCLA_DBG_Y9", "MCLA_DBG_TRACE", "MCLA_DBG_WORLDHIT", "MCLA_DBG_NOWORLDHIT", "MCLA_DBG_SCRAPEPOST", "MCLA_DBG_STUCKROWS", "MCLA_DBG_HOLDLATE", "MCLA_DBG_BURNYAW0", "MCLA_DBG_TOUCHMOVE0", "MCLA_DBG_STOMPCHASSIS"].into_iter().filter(|n| std::env::var(n).is_ok()).collect()).contains(&name)
+    FLAGS.get_or_init(|| ["MCLA_DBG_R1", "MCLA_DBG_R2", "MCLA_DBG_R3", "MCLA_DBG_R4", "MCLA_DBG_RB2", "MCLA_DBG_RB3", "MCLA_DBG_RB4", "MCLA_DBG_RB5", "MCLA_DBG_RB6", "MCLA_DBG_P1", "MCLA_DBG_P2", "MCLA_DBG_P3", "MCLA_DBG_RA1", "MCLA_DBG_RA2", "MCLA_DBG_RA3", "MCLA_DBG_RA4", "MCLA_DBG_RA5", "MCLA_DBG_RA6", "MCLA_DBG_RA7", "MCLA_DBG_RA8", "MCLA_DBG_RA9", "MCLA_DBG_RB1", "MCLA_DBG_RD1", "MCLA_DBG_A1", "MCLA_DBG_A2", "MCLA_DBG_A3", "MCLA_DBG_A4", "MCLA_DBG_A6", "MCLA_DBG_A7", "MCLA_DBG_A8", "MCLA_DBG_A9", "MCLA_DBG_Z1", "MCLA_DBG_Z2", "MCLA_DBG_HIT", "MCLA_DBG_OLDCOLLIDE", "MCLA_DBG_NORESOLVE", "MCLA_DBG_NODAMP", "MCLA_DBG_NOROLLBAR", "MCLA_DBG_YAW", "MCLA_DBG_SPHERES", "MCLA_DBG_RAYWHEEL", "MCLA_DBG_HANG", "MCLA_DBG_GYRO", "MCLA_DBG_NOBOX", "MCLA_DBG_NOSTEEP", "MCLA_DBG_NOCAMBER", "MCLA_DBG_NOLEANPROBE", "MCLA_DBG_OLDWHEEL", "MCLA_DBG_ZEROTYRE", "MCLA_DBG_TERMS", "MCLA_DBG_SUBDAMP", "MCLA_DBG_NOFREEZE", "MCLA_DBG_STEEPWHEEL", "MCLA_DBG_NOPIVOT", "MCLA_DBG_NOSETTLE", "MCLA_DBG_NOSTUCK", "MCLA_DBG_STUCK", "MCLA_DBG_SYMSOLVE", "MCLA_DBG_OLDWHEELPOSE", "MCLA_DBG_OLDSUSP", "MCLA_DBG_OLDROWS", "MCLA_DBG_OLDTYREIN", "MCLA_DBG_OLDSUMS", "MCLA_DBG_OLDSTEP", "MCLA_DBG_OLDPOSE", "MCLA_DBG_AXLEORDER", "MCLA_DBG_CALLS", "MCLA_DBG_OLDGYRO", "MCLA_DBG_NOBOTTOM", "MCLA_DBG_WHEELORDER", "MCLA_DBG_OLDMELT", "MCLA_DBG_OLDHANG", "MCLA_DBG_GEAR", "MCLA_DBG_OLDORDER", "MCLA_DBG_OLDSTEER", "MCLA_DBG_OLDDOWN", "MCLA_DBG_OLDDRIFT", "MCLA_DBG_NOENGINEROLL", "MCLA_DBG_OLDAUTOBRAKE", "MCLA_DBG_Y1", "MCLA_DBG_Y2", "MCLA_DBG_Y3", "MCLA_DBG_Y4", "MCLA_DBG_Y5", "MCLA_DBG_Y6", "MCLA_DBG_Y7", "MCLA_DBG_Y8", "MCLA_DBG_Y9", "MCLA_DBG_TRACE", "MCLA_DBG_WORLDHIT", "MCLA_DBG_NOWORLDHIT", "MCLA_DBG_SCRAPEPOST", "MCLA_DBG_STUCKROWS", "MCLA_DBG_HOLDLATE", "MCLA_DBG_BURNYAW0", "MCLA_DBG_TOUCHMOVE0", "MCLA_DBG_STOMPCHASSIS", "MCLA_DBG_KICKLATE", "MCLA_DBG_LEANTHR0", "MCLA_DBG_LEANSTEER0", "MCLA_DBG_BLENDOLD", "MCLA_DBG_TWOSHIFT", "MCLA_DBG_TWOBTNRAW", "MCLA_DBG_START80LEVEL"].into_iter().filter(|n| std::env::var(n).is_ok()).collect()).contains(&name)
 }
 
 fn dbg_angdrag() -> f32 {

@@ -1,10 +1,10 @@
-//! The player's pad as the original reads it (mcPlayerInput::Update, 0x822A2988), the part
+//! The player's pad as the original reads it (mcPlayerInput::Update, F-56064), the part
 //! that makes the steering value the chassis is handed (input object +24).
 //!
 //! Per frame the original does: stick -> dead zone -> exponent -> target T (input +84, with the
-//! damaged car's pull); then 0x822A1520 moves the held value P (input +24) and the result is
+//! damaged car's pull); then F-63605 moves the held value P (input +24) and the result is
 //! clamped to -1..1. mcCarSim::Update copies P to chassis +132 every tick and steers with
-//! P x the chassis's own speed factor (0x8232D800).
+//! P x the chassis's own speed factor (F-40603).
 //!
 //! The original runs this once a frame with the frame's step (0x827D7558), between a tick's
 //! vehicle update and its physics step, every other tick. Stage A2: so does the port in normal
@@ -14,7 +14,7 @@
 use super::exact::{approach, ease, fma, fnms, guest_asin};
 use mcla_formats::rage::simtune::InputTune;
 
-/// 0x8260C5C8: nothing inside the dead zone, the rest stretched over what is left.
+/// F-93983: nothing inside the dead zone, the rest stretched over what is left.
 pub fn dead_zone(x: f32, zone: f32) -> f32 {
     if x > zone {
         (x - zone) / (1.0 - zone)
@@ -25,14 +25,14 @@ pub fn dead_zone(x: f32, zone: f32) -> f32 {
     }
 }
 
-/// The mapper's value of a trigger (0x822A4BB8 -> 0x822A49D0, type 8): the pad's byte over 255
+/// The mapper's value of a trigger (F-33017 -> F-64289, type 8): the pad's byte over 255
 /// (0x82003C04) through a dead zone of 0.05. mcPlayerInput then takes 0.2 more off (`TRIGGER_ZONE`).
 /// Stage R (D + V: every logged frame of sb.0 / sd.2 / sd.3 / sf.*: byte 150 -> throttle 0.6769).
 pub fn trigger_axis(byte: u8) -> f32 {
     dead_zone(byte as f32 * f32::from_bits(0x3B80_8081), 0.05)
 }
 
-/// The mapper's value of a stick's axis (0x822A4BB8 -> 0x822A48F0, types 9 / 11 / 1 on a stick):
+/// The mapper's value of a stick's axis (F-33017 -> F-78158, types 9 / 11 / 1 on a stick):
 /// (byte - 127.5) x (1 / 127.5) (0x82008F34, 0x82035788) kept in -1..1, through a dead zone of 0.1.
 /// (The steering then goes through `steer_target`'s own 0.1.)
 pub fn stick_axis(byte: u8) -> f32 {
@@ -51,7 +51,7 @@ pub fn stick_byte(unit: f32) -> u8 {
     (unit.clamp(-1.0, 1.0) * 127.5 + 127.5).round().clamp(0.0, 255.0) as u8
 }
 
-/// The throttle "stomp" (0x822A2EBC..0x822A2ED8, 0x822A3274..0x822A32A0; flag 0x2000 of input +40):
+/// The throttle "stomp" (A-48966..A-73498, A-44598..A-35065; flag 0x2000 of input +40):
 /// (max(new, 0.5) - max(old, 0.5)) x the frame's 1 / step above ThrottleInputVelocityThreshold.
 /// `old`: input +12 as the frame before left it; `new`: this frame's. Stage R (V: the logged flag
 /// of every frame: set for 0 -> 1 and 0.1 -> 1, clear for 0 -> 0.677 and 0.677 -> 1, threshold 10).
@@ -61,7 +61,7 @@ pub fn stomp(old: f32, new: f32, frame_rate: f32, t: &InputTune) -> bool {
     t.throttle_input_velocity_threshold > 0.0 && (b - a) * frame_rate > t.throttle_input_velocity_threshold
 }
 
-/// 0x8255FF78: mcPlayerInput's own factor for the car's speed (chassis +224): 1 with no
+/// F-40620: mcPlayerInput's own factor for the car's speed (chassis +224): 1 with no
 /// SSSThreshold, SSSValue from the threshold up, eased from 1 below it.
 pub fn speed_factor(t: &InputTune, speed: f32) -> f32 {
     if t.sss_threshold == 0.0 {
@@ -73,7 +73,7 @@ pub fn speed_factor(t: &InputTune, speed: f32) -> f32 {
     }
 }
 
-/// 0x822A2F74..0x822A3024: the stick (-1..1) through its dead zone (0.1; the sensitivity
+/// A-58585..A-77150: the stick (-1..1) through its dead zone (0.1; the sensitivity
 /// setting `sens`, input +156, widens it when negative) and SteerInputExp (lowered by half the
 /// setting's share, never under 0.8).
 pub fn steer_target(stick: f32, sens: f32, t: &InputTune) -> f32 {
@@ -106,7 +106,7 @@ pub fn steer_pull(target: f32, share: f32, speed224: f32, t: &InputTune) -> f32 
     sel(f - 1.0, 1.0, f)
 }
 
-/// What 0x822A1520 reads besides the held value and the target.
+/// What F-63605 reads besides the held value and the target.
 pub struct SteerIn {
     /// chassis +224: the car's speed as vehAero last wrote it
     pub speed: f32,
@@ -126,7 +126,7 @@ pub struct SteerIn {
     pub cruise: bool,
 }
 
-/// 0x822A1520: the held steering value `held` (input +24) moved towards the target.
+/// F-63605: the held steering value `held` (input +24) moved towards the target.
 /// Steering further out from the countersteer reference - the slip angle over the lock, times
 /// CountersteerFactor - it approaches target x the speed factor at SteerRate (ReturnRate with
 /// the brake or the handbrake fully on, between them in proportion); otherwise it goes back
@@ -140,7 +140,7 @@ pub fn steer_step(held: f32, target: f32, t: &InputTune, i: &SteerIn) -> f32 {
     let harder = if i.brake - i.handbrake >= 0.0 { i.brake } else { i.handbrake };
     let rate_out = fma(harder, t.return_rate - t.steer_rate, t.steer_rate);
     let rate_back = if t.return_rate > 0.0 { t.return_rate } else { t.steer_rate };
-    // (0x822A163C, stage R: while the cruise is on - input byte +101 - the steering goes out and comes back
+    // (A-83075, stage R: while the cruise is on - input byte +101 - the steering goes out and comes back
     // at SteerRate whatever the brake, and the countersteer reference is nothing. V: sd.3, 11 frames.)
     let (reference, rate_out, rate_back) = if i.cruise { (0.0, t.steer_rate, t.steer_rate) } else { (reference, rate_out, rate_back) };
     let gain = fma(i.sens, 0.33, 1.0);
@@ -164,7 +164,7 @@ pub fn steer_step(held: f32, target: f32, t: &InputTune, i: &SteerIn) -> f32 {
     p.clamp(-1.0, 1.0)
 }
 
-/// The stick's other axis, input +32 (0x822A30AC..0x822A3120; a motorcycle's rider leaning back / forward):
+/// The stick's other axis, input +32 (A-70968..A-52186; a motorcycle's rider leaning back / forward):
 /// read only while the weight button was down the frame before (flag 1 of input +40; or flag 0x80) -
 /// the mapper's value through a second dead zone of 0.2, approached at 5 a second; otherwise nothing at
 /// once. Stage R (V: se.0's wheelie, sd.2's stick without the button).
@@ -177,6 +177,26 @@ pub fn lean_step(held: f32, byte: u8, button_was: bool, dt: f32) -> f32 {
     let y = if y - 1.0 >= 0.0 { 1.0 } else { y };
     let mut v = held;
     approach(&mut v, dead_zone(y, TRIGGER_ZONE), 5.0, dt);
+    v
+}
+
+/// The stick's X as mcPlayerInput keeps it, input +36 (A-52186..A-58920, the twin of `lean_step`): while the
+/// weight button was down the frame before (flag 1 or 0x80 of input +40) the mapper's value, clamped, through the
+/// stick's dead zone of 0.1 - taken at once when the frame before set 0x80, else approached at 8 a second (0x8202BA2C);
+/// with the button up 0 at once. The car gyro's two-wheel start and its air control read it (F-10637).
+pub fn steer36_step(held: f32, byte: u8, button_was: bool, start_was: bool, dt: f32) -> f32 {
+    if !button_was {
+        return 0.0;
+    }
+    let x = stick_axis(byte);
+    let x = if x - -1.0 >= 0.0 { x } else { -1.0 };
+    let x = if x - 1.0 >= 0.0 { 1.0 } else { x };
+    let x = dead_zone(x, 0.1);
+    if start_was {
+        return x;
+    }
+    let mut v = held;
+    approach(&mut v, x, 8.0, dt);
     v
 }
 
@@ -195,14 +215,14 @@ pub struct CruiseIn {
     pub speed: f32,
     /// input +104: the speed limit of the road the car is on, in mph (the world's; 40 and 55 seen). Nothing: 0.
     pub limit_mph: f32,
-    /// the car answers its pad, its gearbox points forward (0x8255ADE0 > 0), no nitrous shot burns, the
+    /// the car answers its pad, its gearbox points forward (F-80284 > 0), no nitrous shot burns, the
     /// gyro's intent (+18) is nothing
     pub driving: bool,
     /// transmission +148: the downshift modulator (1 after a launch or wheelspin, 0 driving steadily)
     pub modulation: f32,
 }
 
-/// The cruise, mcPlayerInput 0x822A25E0 (stage R, D + V: sd.3's 598 frames, 23 of them cruising): called
+/// The cruise, mcPlayerInput F-43388 (stage R, D + V: sd.3's 598 frames, 23 of them cruising): called
 /// after the pedals and the stomp test, ahead of the steering. The smoothed speed (+108) follows the car's
 /// by a fifth a frame. Driving forward faster than 10 mph (4.47 m/s) on a road with a limit: while the
 /// transmission's modulator is under 0.1 the cruise comes ON once the smoothed speed (x 2.237 = mph) is
@@ -297,15 +317,15 @@ pub struct PedalIn {
     pub speed: f32,
     /// the body's velocity along the car (minus its third row), m/s
     pub forward: f32,
-    /// 0x82332098: a motorcycle - no throttle from the brake trigger in reverse, 0.1 at most
+    /// F-54299: a motorcycle - no throttle from the brake trigger in reverse, 0.1 at most
     pub bike: bool,
 }
 
-/// The triggers' dead zone (the float ahead of the table 0x822A2CD8 reads through r26).
+/// The triggers' dead zone (the float ahead of the table A-57706 reads through r26).
 pub const TRIGGER_ZONE: f32 = 0.2;
 
-/// mcPlayerInput's pedals for one frame (0x822A2CD8..0x822A2EC8 with the auto-reverse state
-/// machine 0x822A06C0), operation for operation: triggers through their dead zone; x = RT - LT
+/// mcPlayerInput's pedals for one frame (A-57706..A-83301 with the auto-reverse state
+/// machine F-50919), operation for operation: triggers through their dead zone; x = RT - LT
 /// in -1..1; the state machine gives throttle / brake / way; the trigger that points the
 /// gearbox's way is the throttle whatever the machine says, the other one brakes with 0.75 of
 /// itself at least; BrakeInputExp and ThrottleInputExp; both kept in 0..1.
@@ -315,7 +335,7 @@ pub fn pedals(held: Pedals, t: &InputTune, i: &PedalIn) -> Pedals {
     let x = -lt + rt;
     let x = if x - -1.0 >= 0.0 { x } else { -1.0 };
     let x = if x - 1.0 >= 0.0 { 1.0 } else { x };
-    // ---- 0x822A06C0 ----
+    // ---- F-50919 ----
     let mut state = held.state;
     let mut way: i8 = if state == 2 { -1 } else { 1 };
     let x = if x.abs() < f32::from_bits(0x38D1_B717) { 0.0 } else { x };
@@ -383,7 +403,7 @@ pub fn pedals(held: Pedals, t: &InputTune, i: &PedalIn) -> Pedals {
             state = 1;
         }
     }
-    // ---- back in 0x822A2988 ----
+    // ---- back in F-56064 ----
     let larger = |a: f32, b: f32| if a - b >= 0.0 { a } else { b };
     if way > 0 {
         throttle = larger(throttle, rt);
@@ -411,6 +431,15 @@ pub struct PadHeld {
     pub steer_next: f32,
     pub stick_y: f32,
     pub stick_next: f32,
+    /// input +36 (`steer36_step`) and +40 bit 0x80 (the two-wheel start: the weight button with +36 past 0.75 while
+    /// the car is not on two wheels), as the update reads them and as the frame made them for the next
+    pub x36: f32,
+    pub x36_next: f32,
+    pub start80: bool,
+    pub start80_next: bool,
+    /// input +40 bit 0, the weight button, as the update reads it (the pad's last frame) and as this frame made it
+    pub btn40: bool,
+    pub btn40_next: bool,
     pub second_tick: bool,
     pub live: bool,
     /// stage R: the cruise's state (input byte +101, +108)
