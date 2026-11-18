@@ -1386,6 +1386,12 @@ pub fn reaches_record(nav: &NavSys, lane: usize, road: mcla_formats::rage::navsy
     })
 }
 
+/// An ambient car (the ambient manager's own: riding traffic, a parked car or a layout item's car), not the
+/// player's, a cop's, a racer's or a script's pinned car.
+pub fn is_ambient_car(c: &super::CarInstance) -> bool {
+    !c.is_player && !c.cop && !c.racer && !c.pinned && (c.rail.is_some() || c.parked.is_some())
+}
+
 /// The race traffic clearing's cut-off (the image's word 0.643, F-20685): a road whose arm's |dot| with the record's direction is
 /// at most this is a cross road.
 pub const CLEAR_DOT: f32 = f32::from_bits(0x3F24_9BA6);
@@ -8790,12 +8796,30 @@ impl Vehicles {
         log::info!("ambient: reset - {} cars taken out, {} left", n, self.cars.len());
     }
 
+    /// A race's start (or end) keeps the ambient cars: no race script calls AmbientMgr_Reset, DisableTraffic or
+    /// SetTrafficEnable (only the red light cores, the flag games, the hangouts, the police's arrest and pull-over and
+    /// the online scripts do), and the removal F-99126 is called only by the native setters, the reset, the garage's
+    /// flag (F-86550's 0x70 when the garage byte comes on), the replay manager's reset, the online invite and the mode
+    /// switch. The race's own cars go; the ambient ones are taken out of the list (in order) to be put back after them.
+    pub fn take_ambient(&mut self) -> Vec<super::CarInstance> {
+        let mut kept = Vec::new();
+        let mut i = 0;
+        while i < self.cars.len() {
+            if is_ambient_car(&self.cars[i]) {
+                kept.push(self.cars.remove(i));
+            } else {
+                i += 1;
+            }
+        }
+        kept
+    }
+
     /// The ambient manager's removal message (F-99126): every ambient car whose kind byte (F-30914) shares a bit of
     /// 0xf0 with `msg` goes at once (the people, kind 0x10, are not the cars' and stay here). Returns how many went.
     pub fn ambient_remove(&mut self, msg: u8) -> usize {
         let before = self.cars.len();
         self.cars.retain(|c| {
-            let ambient = !c.is_player && !c.cop && !c.racer && !c.pinned && (c.rail.is_some() || c.parked.is_some());
+            let ambient = is_ambient_car(c);
             // (a car type: vfunc 24 = 1, vfunc 28 = 0; its spot +44: a parking spot, not a layout item's)
             let spot = c.parked.is_some_and(|s| s != super::parked::ITEM_SPOT);
             !ambient || !removal_hits(ambient_kind(0, spot as u32, 1, 0), msg)

@@ -4345,7 +4345,9 @@ impl Game {
         let diff = ((self.rep as f32 / crate::catalog::MAX_REP as f32) * 4.0).floor().clamp(0.0, 3.0) as usize;
         let time_limit = if kind == RaceKind::Race { 0.0 } else { def.target_times.get(diff).or(def.target_times.first()).copied().unwrap_or(0.0) };
         self.mission_diff = diff;
-        // grid
+        // grid (the race's cars only: the ambient ones stay - no race start removes them, `Vehicles::take_ambient` -
+        // and go back after the race's)
+        let ambient = vehicles.take_ambient();
         vehicles.cars.retain(|c| c.is_player);
         let pi = 0;
         if kind == RaceKind::Race {
@@ -4515,6 +4517,7 @@ impl Game {
             log::info!("race checkpoints: {} of a lap from the script ({} lines, radii {:?})", r.cp_specs.len(), r.cp_specs.iter().filter(|c| c.second.is_some()).count(), r.cp_specs.iter().map(|c| c.radius).collect::<Vec<_>>());
         }
         vehicles.fragile = target;
+        vehicles.cars.extend(ambient);
         self.current_race = Some(idx);
         self.mode = Mode::Race;
         true
@@ -4582,6 +4585,7 @@ impl Game {
         let right = Vec3::new(-dir.z, 0.0, dir.x);
         let yaw = (-dir.x).atan2(-dir.z);
         let base = l.point_at(t);
+        let ambient = vehicles.take_ambient();
         vehicles.cars.retain(|c| c.is_player);
         let pi = 0;
         vehicles.cars[pi].state = crate::physics::CarState::new(base + Vec3::Y * 0.8, yaw);
@@ -4614,6 +4618,7 @@ impl Game {
         self.race_arrested = false;
         self.race = Some(Race { path: None, route, checkpoints, next: vec![0; n], finish_time: vec![None; n], time: 0.0, countdown: 3.5, total_len: total, participants, lap_len, laps: 1, name: "Street race".into(), goal_time: 0.0, kind: RaceKind::Race, time_limit: 0.0, target: None, failed: None, cp_radius: Vec::new(), cp_gate: Vec::new(), prev_pos: Vec::new(), shortcuts: Vec::new(), cop_zones: Vec::new(), shortcut_lines: Default::default(), rivals_checkpoints: None, cp_specs: Vec::new(), cp_state: Default::default(), gps_cp: None });
         vehicles.fragile = None;
+        vehicles.cars.extend(ambient);
         self.mode = Mode::Race;
         true
     }

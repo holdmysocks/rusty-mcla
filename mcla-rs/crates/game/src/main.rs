@@ -15154,7 +15154,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     let story_leave = self.roam.leave_after.take();
                     let keep = story_leave.as_ref().and_then(|(_, cfg)| self.vehicles.cars.iter().find(|c| !c.is_player && c.pinned && c.vinyl_name == *cfg).map(|c| c.uid));
                     let kept: Vec<(u32, usize)> = leave.as_ref().map(|(p, _)| p.keep.clone()).unwrap_or_default();
-                    self.vehicles.cars.retain(|c| c.is_player || Some(c.uid) == keep || kept.iter().any(|k| k.0 == c.uid && Some(c.uid) != keep));
+                    // (the ambient cars stay: the race's end removes only its own - `Vehicles::take_ambient`)
+                    self.vehicles.cars.retain(|c| c.is_player || vehicles::traffic::is_ambient_car(c) || Some(c.uid) == keep || kept.iter().any(|k| k.0 == c.uid && Some(c.uid) != keep));
                     if let (Some((m, _)), Some(uid)) = (story_leave, keep) {
                         self.roam.drive_away(&m, uid, &mut self.vehicles, &world.collider);
                     }
