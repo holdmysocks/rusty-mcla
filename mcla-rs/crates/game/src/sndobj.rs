@@ -4278,6 +4278,32 @@ mod tests {
     /// A stop in the update a sound was started (128 times in a recorded drive: bumper creaks, scrapes, skids, terrain
     /// loops; verify_audio_b1.md batch 49): the sound plays that one update, then the next update's top kills it with no
     /// release. A stop after its first update is the release stop.
+    /// The curves' FindByHash F-67395 against the original's code run offline on the disc's curves.dat
+    /// (tools/curve_find_reference.py): every curve's hash, its neighbours, 0 and 2,000 random keys - `SoundLib::curve`
+    /// finds a curve exactly when the original does, and the same object's curve.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn the_curve_lookup_is_the_originals() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let lib = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
+        let crv = Dat::load(&a.cfg.join("curves.dat")).expect("curves.dat");
+        let (mut n, mut found) = (0, 0);
+        for l in include_str!("testdata/curve_find_ref.txt").lines() {
+            let t: Vec<&str> = l.split_whitespace().collect();
+            let h = u32::from_str_radix(t[1], 16).unwrap();
+            let got = lib.curve(h);
+            assert_eq!(got.is_some(), t[3] == "1", "{l}");
+            if let Some(c) = got {
+                let want = Curve::parse(crv.get_name(t[4]).expect(t[4]));
+                assert_eq!(format!("{c:?}"), format!("{want:?}"), "{l}");
+                found += 1;
+            }
+            n += 1;
+        }
+        assert_eq!((n, found), (2259, 86));
+    }
+
     #[test]
     #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
     fn a_sound_stopped_before_its_first_update_plays_one_update() {
