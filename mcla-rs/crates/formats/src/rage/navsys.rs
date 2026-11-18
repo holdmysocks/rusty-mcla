@@ -195,10 +195,81 @@ impl LaneCurve {
         (n, d)
     }
 
-    /// The point at phase `t` (0 .. 1) and the derivative dP/dt (F-87587; the point as
-    /// F-40353): u = min(t x TRange, TMax) in the knot span holding it, the sum of the
-    /// degree + 1 control points weighted by the basis. Degree 1 is the control polygon
-    /// (t x (CVCount - 1), t = 1 read as 0.9999).
+    /// The cubic basis N(i, 4) at u as the original's vector routine F-79184 computes it (the basis F-44250 sends k = 4
+    /// there): each of the twelve span quotients (u - K) / (K' - K) with a reciprocal refined by one Newton step
+    /// (r = 1 / x, r x (1 - r x) + r, every operation rounded to single), 0 for a zero width; the four order-2 values
+    /// as two masked pieces added (the knot interval tests u >= K and K' > u); N(i, 3) = c0 a0 + c1 a3, N(i + 1, 3) =
+    /// c2 a1 + c3 a4; N(i, 4) = b1 N(i + 1, 3) + b0 N(i, 3) - separate multiplies and adds.
+    fn basis4(&self, i: usize, u: f32) -> f32 {
+        fn q(num: f32, den: f32) -> f32 {
+            if den == 0.0 {
+                return 0.0;
+            }
+            let r = 1.0 / den;
+            let e = -(r * den - 1.0);
+            num * (r * e + r)
+        }
+        let kn = &self.knots;
+        let (k0, k1, k2, k3, k4) = (kn[i], kn[i + 1], kn[i + 2], kn[i + 3], kn[i + 4]);
+        let inside = |a: f32, b: f32| u >= a && b > u;
+        let piece = |on: bool, num: f32, den: f32| if on { q(num, den) } else { 0.0 };
+        // the order-2 values: the rising piece of its first interval plus the falling piece of its second
+        let c0 = piece(inside(k0, k1), u - k0, k1 - k0) + piece(inside(k1, k2), u - k2, k1 - k2);
+        let c1 = piece(inside(k1, k2), u - k1, k2 - k1) + piece(inside(k2, k3), u - k3, k2 - k3);
+        let c3 = piece(inside(k2, k3), u - k2, k3 - k2) + piece(inside(k3, k4), u - k4, k3 - k4);
+        let (a0, a1, a3, a4) = (q(u - k0, k2 - k0), q(u - k1, k3 - k1), q(u - k3, k1 - k3), q(u - k4, k2 - k4));
+        let (b0, b1) = (q(u - k0, k3 - k0), q(u - k4, k1 - k4));
+        let n3a = c0 * a0 + c1 * a3;
+        let n3b = c1 * a1 + c3 * a4;
+        b1 * n3b + b0 * n3a
+    }
+
+    /// The point at phase `t` as the lane's point routine F-40353 computes it (lane slot 7, F-99015): t clamped to
+    /// 0 .. 1 (a NaN gives 0); degree 1 the control polygon (`eval`'s); else u = t x TRange capped at TMax, the knot span
+    /// holding u (F-85280: the first j with K[j] <= u < K[j + 1]), and the degree + 1 control points from j - degree on,
+    /// each multiplied by its basis weight and added in turn (separate multiply and add; the basis F-44250: `basis4` for
+    /// a cubic, the order-3 recursion otherwise).
+    pub fn point(&self, t: f32) -> Vec3 {
+        let d = self.degree as usize;
+        if self.linear() || self.pts.len() < 2 {
+            return self.eval_linear(t);
+        }
+        let t13 = if t >= 0.0 { t } else { 0.0 };
+        let t = if t13 - 1.0 >= 0.0 { 1.0 } else { t13 };
+        let prod = self.t_range * t;
+        let u = if prod - self.t_max >= 0.0 { self.t_max } else { prod };
+        let kn = &self.knots;
+        let mut j = 0;
+        while j + 2 < kn.len() && !(kn[j] <= u && u < kn[j + 1]) {
+            j += 1;
+        }
+        let start = j.saturating_sub(d).min(self.pts.len().saturating_sub(d + 1));
+        let mut p = Vec3::ZERO;
+        for i in start..=start + d {
+            let w = if d == 3 { self.basis4(i, u) } else { self.basis(i, d + 1, u).0 };
+            let c = self.pts[i];
+            p = Vec3::new(c.x * w + p.x, c.y * w + p.y, c.z * w + p.z);
+        }
+        p
+    }
+
+    /// Degree 1 (or a curve without its knot vector): the control polygon, t x (CVCount - 1), t = 1 read as 0.9999.
+    fn eval_linear(&self, t: f32) -> Vec3 {
+        let n = self.pts.len();
+        if n < 2 {
+            return self.pts.first().copied().unwrap_or(Vec3::ZERO);
+        }
+        let t = t.clamp(0.0, 1.0);
+        let t = if t >= 1.0 { 0.9999 } else { t };
+        let f = (n - 1) as f32 * t;
+        let i = (f as usize).min(n - 2);
+        let (a, b) = (self.pts[i], self.pts[i + 1]);
+        a + (b - a) * (f - i as f32)
+    }
+
+    /// The point at phase `t` (0 .. 1) and the derivative dP/dt (F-87587; the point `point`, F-99015): u = min(t x
+    /// TRange, TMax) in the knot span holding it, the sum of the degree + 1 control points weighted by the basis. Degree
+    /// 1 is the control polygon (t x (CVCount - 1), t = 1 read as 0.9999).
     pub fn eval(&self, t: f32) -> (Vec3, Vec3) {
         let t = t.clamp(0.0, 1.0);
         let n = self.pts.len();
@@ -221,13 +292,12 @@ impl LaneCurve {
             j += 1;
         }
         let j = j.clamp(d, n - 1);
-        let (mut p, mut dp) = (Vec3::ZERO, Vec3::ZERO);
+        let mut dp = Vec3::ZERO;
         for i in j - d..=j {
-            let (w, dw) = self.basis(i, d + 1, u);
-            p += self.pts[i] * w;
+            let dw = self.basis(i, d + 1, u).1;
             dp += self.pts[i] * dw;
         }
-        (p, dp * self.t_range)
+        (self.point(t), dp * self.t_range)
     }
 
     /// F-75457: the B-spline basis N(i, k) at u and its derivative, in the original's recursion and arithmetic: the
@@ -2670,6 +2740,39 @@ mod verify_lanes_tests {
     /// F-99015 (point), F-26650 / F-26180 (derivative sum), F-42884 and F-71868 (point, derivative
     /// and speed), F-42559 (speed): `LaneCurve::eval` / `speed` against the original's lane curve
     /// functions on all 10,031 city lanes at 84,547 phases.
+    #[test]
+    #[ignore = "requires user's extracted data (MCLA_DATA_DIR) and the original's reference csv"]
+    fn lane_point_matches_the_original() {
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let bytes = std::fs::read(std::path::Path::new(&root).join("resources/city/sc/0x9960fcd8.r66")).unwrap();
+        let data = bytes[16..].to_vec();
+        let virtual_size = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let res = Resource { rtype: 66, flags: 0, virtual_size, physical_size: data.len() - virtual_size, data };
+        let nav = NavSys::parse(&res).unwrap();
+        let dir = std::env::var("MCLA_VERIFY_LANES").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../work/verify-people/lanes"));
+        let cases = std::fs::read_to_string(dir.join("cases4.txt")).unwrap();
+        let orig = std::fs::read_to_string(dir.join("stage4_original.csv")).unwrap();
+        let mut by_degree: std::collections::BTreeMap<u8, [usize; 2]> = Default::default();
+        let mut bad = Vec::new();
+        for (i, (c, o)) in cases.lines().zip(orig.lines().skip(1)).enumerate() {
+            let lane = usize::from_str_radix(c.split(' ').next().unwrap(), 16).unwrap();
+            let t = f32::from_bits(u32::from_str_radix(c.split(' ').nth(1).unwrap(), 16).unwrap());
+            let v: Vec<u32> = o.split(',').map(|x| x.parse().unwrap()).collect();
+            let curve = &nav.curves[lane];
+            let p = curve.point(t);
+            let ok = [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()] == [v[1], v[2], v[3]];
+            let e = by_degree.entry(curve.degree).or_default();
+            e[0] += 1;
+            e[1] += ok as usize;
+            if !ok && bad.len() < 10 {
+                bad.push((i, curve.degree, t));
+            }
+        }
+        println!("by degree [cases, point equal]: {by_degree:?}; first unequal: {bad:?}");
+        assert!(bad.is_empty());
+        assert_eq!(by_degree.values().map(|e| e[0]).sum::<usize>(), 84_547);
+    }
+
     #[test]
     #[ignore = "requires user's extracted data (MCLA_DATA_DIR) and the original's reference csv"]
     fn lane_curve_eval_against_the_original() {
