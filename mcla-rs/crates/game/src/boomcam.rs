@@ -1665,7 +1665,7 @@ fn ease_sin_quarter(x: f32) -> f32 {
 }
 
 /// F-39265: cos(x pi) in 0..1 (1 below, -1 above).
-fn cos_pi(x: f32) -> f32 {
+pub(crate) fn cos_pi(x: f32) -> f32 {
     use crate::physics::exact::guest_cos;
     if x <= 0.0 {
         1.0

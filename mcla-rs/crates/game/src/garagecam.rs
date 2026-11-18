@@ -205,19 +205,14 @@ impl CamState {
         self
     }
 
-    /// `self` moved towards `to` by the transition's share `t` (0..1 of its duration).
-    /// The azimuth goes the short way round (0x826B3AD0).
+    /// `self` moved towards `to` by the transition's share `t` (the timer over the duration, 1 from 1 on): F-53958,
+    /// k = (1 - cos(pi t)) / 2 by the game's cosine, each figure fma(B - A, k, A) (fmadds), the target
+    /// (B - A) k + A unfused (vmaddfp). The short way round is chosen once, when the move starts (`start_move`).
     pub fn eased(&self, to: &CamState, t: f32) -> CamState {
-        let k = (1.0 - (std::f32::consts::PI * t.clamp(0.0, 1.0)).cos()) * 0.5;
-        let mut from_az = self.azimuth;
-        while to.azimuth - from_az > std::f32::consts::PI {
-            from_az += std::f32::consts::TAU;
-        }
-        while from_az - to.azimuth > std::f32::consts::PI {
-            from_az -= std::f32::consts::TAU;
-        }
-        let l = |a: f32, b: f32| a + (b - a) * k;
-        CamState { target: self.target.lerp(to.target, k), height: l(self.height, to.height), dist: l(self.dist, to.dist), azimuth: l(from_az, to.azimuth), incline: l(self.incline, to.incline), roll: l(self.roll, to.roll), fov: l(self.fov, to.fov), heading: l(self.heading, to.heading) }
+        let t = if t >= 1.0 { 1.0 } else { t };
+        let k = (1.0 - crate::boomcam::cos_pi(t)) * 0.5;
+        let l = |a: f32, b: f32| (b - a).mul_add(k, a);
+        CamState { target: (to.target - self.target) * k + self.target, height: l(self.height, to.height), dist: l(self.dist, to.dist), azimuth: l(self.azimuth, to.azimuth), incline: l(self.incline, to.incline), roll: l(self.roll, to.roll), fov: l(self.fov, to.fov), heading: l(self.heading, to.heading) }
     }
 
     /// Eye, the point looked at, the up vector and the field of view (radians).
@@ -265,6 +260,35 @@ pub struct Flip {
 /// The flip's duration (F-57991).
 pub const FLIP_TIME: f32 = 0.4;
 
+/// A move F-34768 starts: the view and saved view after it, its ends A (the camera at the call) and B, and its time.
+#[derive(Clone, Copy, Debug)]
+pub struct Move {
+    pub view: u32,
+    pub saved: u32,
+    pub a: CamState,
+    pub b: CamState,
+    pub dur: f32,
+}
+
+/// F-34768 for a view other than Rotate: from view `cur` (saved view `saved`) to `new`, the camera now `cam`, the new
+/// view's figures `row` (the table's, the target the car's place plus the offset), `trans` camTransDuration. None when
+/// it starts nothing: the same view, or an interior view asked while in Interior2, both unless forced. An interior
+/// view entered from outside the class is saved; B's azimuth goes the short way round from A's (once, here).
+pub fn start_move(cur: u32, saved: u32, new: u32, forced: bool, trans: f32, cam: &CamState, row: &CamState) -> Option<Move> {
+    if !forced && (new == cur || (interior(new) && cur == 4)) {
+        return None;
+    }
+    let saved = if interior(new) && !interior(cur) { new } else { saved };
+    let mut b = *row;
+    let pi = f32::from_bits(0x4049_0FDB);
+    if cam.azimuth > 0.0 && cam.azimuth - b.azimuth > pi {
+        b.azimuth = (b.azimuth + pi) + pi;
+    } else if b.azimuth > 0.0 && b.azimuth - cam.azimuth > pi {
+        b.azimuth = f32::from_bits(0xC049_0FDB) - (pi - b.azimuth);
+    }
+    Some(Move { view: new, saved, a: *cam, b, dur: trans })
+}
+
 /// The game frame the garage camera's per-frame step F-53958 runs at.
 const GAME_FRAME: f32 = 1.0 / 30.0;
 
@@ -301,40 +325,46 @@ impl Driver {
 
     /// The camera's figures now.
     pub fn live(&self) -> CamState {
-        if self.moving() { self.from.eased(&self.to, self.timer / self.dur.max(0.01)) } else { self.to }
+        if self.moving() { self.from.eased(&self.to, self.timer / self.dur) } else { self.to }
     }
 
-    fn start(&mut self, to: CamState, dur: f32) {
-        self.from = self.live();
-        self.to = to;
+    fn apply(&mut self, m: Move) {
+        self.view = m.view;
+        self.saved = m.saved;
+        self.from = m.a;
+        self.to = m.b;
         self.timer = 0.0;
-        self.dur = dur;
+        self.dur = m.dur;
     }
 
-    /// The menu's view `view` with figures `to` (F-34768, not forced): the same view, or an interior view while the
-    /// camera is in Interior2, starts nothing; an interior view entered from outside them is saved.
+    /// The menu's view `view` with figures `to` (F-34768, not forced, from the camera as it is).
     pub fn ask(&mut self, view: u32, to: CamState, dur: f32) {
         let changed = !same(&self.base, &to);
         self.base = to;
-        if view == self.view || (interior(view) && self.view == 4) {
+        match start_move(self.view, self.saved, view, false, dur, &self.live(), &to) {
+            Some(m) => self.apply(m),
             // (the port's own: another car's figures in the same view move the camera to them)
-            if changed {
-                self.view = view;
-                self.start(to, dur);
+            None if changed => {
+                let m = start_move(self.view, self.saved, view, true, dur, &self.live(), &to).expect("forced");
+                self.apply(m);
             }
-            return;
+            None => {}
         }
-        if interior(view) && !interior(self.view) {
-            self.saved = view;
-        }
-        self.view = view;
-        self.start(to, dur);
     }
 
     /// `dt` seconds: the move goes on, and each game frame the camera is still in an interior view or Interior2 the
     /// free look runs on the pad's buttons word and right stick bytes. `table` gives a view number's figures.
     pub fn step(&mut self, dt: f32, pad: Option<(u32, [u8; 2])>, table: impl Fn(u32) -> Option<CamState>) {
+        let was = self.moving();
         self.timer += dt;
+        if was && !self.moving() {
+            // the move's last frame (F-53958 at t = 1): the camera stays where the ease put it; outside the interior
+            // views, Interior2 and Rotate its azimuth is the view's own again (the start may have wrapped it)
+            self.to = self.from.eased(&self.to, 1.0);
+            if !(interior(self.view) || self.view == 4 || self.view == 0) {
+                self.to.azimuth = self.base.azimuth;
+            }
+        }
         self.pending = (self.pending + dt).min(0.25);
         while self.pending >= GAME_FRAME {
             self.pending -= GAME_FRAME;
@@ -455,6 +485,69 @@ mod tests {
     /// random buttons, stick bytes, online-room flag, lens, azimuth and incline at and around the limits): the camera's
     /// FOV, azimuth and incline equal word for word, the view and saved view, the flip asked (view, forced) with the
     /// camera's figures at the call, then the move's end azimuth = the azimuth at the call and its time 0.4 s.
+    /// F-34768 (views other than Rotate) and one game frame of F-53958 against the original's code run offline
+    /// (tools/garage_move_reference.py -> testdata/garage_move_ref.txt, 8,000 + 8,000 cases): the skip rules, the saved
+    /// view, A, B with the short-way wrap at and around pi, both targets and the time; the eased camera figures and
+    /// target word for word, the end of the move (t >= 1, the view's own azimuth outside the interior views, Interior2
+    /// and Rotate).
+    #[test]
+    fn move_matches_the_original() {
+        let h = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let (mut starts, mut skipped, mut wraps, mut eases, mut ends) = (0, 0, 0, 0, 0);
+        for line in include_str!("testdata/garage_move_ref.txt").lines() {
+            let tag = &line[..2];
+            let w: Vec<u32> = line[2..].split_whitespace().filter(|s| *s != "->").map(h).collect();
+            let f = |i: usize| f32::from_bits(w[i]);
+            let v3 = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+            let figs = |c: &CamState| [c.height, c.dist, c.azimuth, c.incline, c.roll, c.fov].map(f32::to_bits);
+            let tb = |v: Vec3| [v.x, v.y, v.z].map(f32::to_bits);
+            if tag == "GS" {
+                assert_eq!(w.len(), 52, "{line}");
+                let cam = CamState { target: v3(11), height: f(5), dist: f(6), azimuth: f(7), incline: f(8), roll: f(9), fov: f(10), heading: 0.0 };
+                let row = CamState { target: v3(14) + v3(23), dist: f(17), azimuth: f(18), incline: f(19), height: f(20), roll: f(21), fov: f(22), heading: 0.0 };
+                assert_eq!(w[51], 0, "{line}");
+                match start_move(w[0], w[1], w[2], w[3] != 0, f(4), &cam, &row) {
+                    None => {
+                        skipped += 1;
+                        assert_eq!(&w[26..32], &[w[0], w[1], 0x7f, 0x7f7f_7f7f, 0x7f, 0x7f7f_7f7f], "{line}");
+                        assert!(w[32..51].iter().all(|&x| x == 0x7f7f_7f7f || x == 0), "{line}");
+                    }
+                    Some(m) => {
+                        starts += 1;
+                        wraps += (m.b.azimuth != row.azimuth) as usize;
+                        assert_eq!(&w[26..32], &[m.view, m.saved, interior(m.view) as u32, 0, 1, m.dur.to_bits()], "{line}");
+                        assert_eq!(&w[32..38], &figs(&m.a), "A {line}");
+                        assert_eq!(&w[38..44], &figs(&m.b), "B {line}");
+                        assert_eq!(&w[44..47], &tb(m.a.target), "{line}");
+                        assert_eq!(&w[47..50], &tb(m.b.target), "{line}");
+                        assert_eq!(w[50], 1, "{line}");
+                    }
+                }
+            } else {
+                assert_eq!(w.len(), 39, "{line}");
+                let a = CamState { target: v3(17), height: f(5), dist: f(6), azimuth: f(7), incline: f(8), roll: f(9), fov: f(10), heading: 0.0 };
+                let b = CamState { target: v3(20), height: f(11), dist: f(12), azimuth: f(13), incline: f(14), roll: f(15), fov: f(16), heading: 0.0 };
+                let (view, timer) = (w[0], f(3) + f(4));
+                let t = timer / f(2);
+                let mut c = a.eased(&b, t);
+                let end = t >= 1.0;
+                if end && !(interior(view) || view == 4 || view == 0) {
+                    c.azimuth = f(23);
+                }
+                eases += 1;
+                ends += end as usize;
+                assert_eq!(&w[24..30], &figs(&c), "{line}");
+                assert_eq!(&w[30..33], &tb(c.target), "{line}");
+                assert_eq!([w[33], w[34], w[38]], [timer.to_bits(), !end as u32, 0], "{line}");
+                // (the UI broadcast F-42428: 0 while moving, 1 on the end in view 21 with +21676 = 2)
+                let call = if !end { Some(0) } else if view == 21 && w[1] == 2 { Some(1) } else { None };
+                assert_eq!((w[35], w[36]), call.map_or((0, 0), |x| (1, x)), "{line}");
+            }
+        }
+        eprintln!("move: {starts} starts, {skipped} skipped, {wraps} wrapped, {eases} eases, {ends} ends");
+        assert!(starts >= 4_000 && skipped >= 500 && wraps >= 500 && eases == 8_000 && ends >= 1_000);
+    }
+
     #[test]
     fn free_look_matches_the_original() {
         let h = |s: &str| u32::from_str_radix(s, 16).unwrap();
