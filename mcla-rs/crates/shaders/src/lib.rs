@@ -48,6 +48,8 @@ const POND: &str = "shaders/city/fxl_final/0x5a516d4c";
 const SHORE: &str = "shaders/city/fxl_final/0x6940ee63";
 /// The UI's Gloss effect (the pause menu's frames and screen, the garage and GPS frames).
 const UI_GLOSS: &str = "shaders/ui/fxl_final/0x35719848";
+/// GlossRuntimeAlpha (the phone's body): its own PS_TexturedGloss, with Gloss, Spec and Bump maps
+const UI_GLOSS_RT: &str = "shaders/ui/fxl_final/0xb527a8b6";
 
 /// First line of every translated file.
 const FIRST_LINE: &str = "// GENERATED on this machine from your own game disc by Rusty MCLA (mcla-shaders, install stage \"Translate shaders\") - do not edit, do not share.";
@@ -226,6 +228,28 @@ pub fn build(data: &Path, name: &str) -> Result<String> {
             }
             body = body.replace(pw, "let v = select((r[9]).yyyy * (xs_c[106]).xxxx, vec4<f32>(0.0), (xs_c[106]).xxxx == vec4<f32>(0.0));");
             let used: Vec<String> = ps.samplers.iter().map(|u| u.replace("xs_s", "xs_gloss_s")).collect();
+            // the variant of the menus hung in the world (the garage's): the same light, a Fresnel term of its own, and its
+            // alpha 0 where the scene's depth (DepthSampler) lies in front
+            let cd = tr(out, &fx, "PS_TexturedGlossCustomDepth", "xs_gloss_cd_ps")?;
+            let mut cd_body = word_renamed(&cd.wgsl, |n| format!("xs_gloss_s{n}"));
+            let pw = "let v = (r[8]).wwww * (xs_c[106]).xxxx;";
+            if cd_body.matches(pw).count() != 1 {
+                return Err(ShaderError::Translate { output: out, reason: "PS_TexturedGlossCustomDepth: the shininess multiply is not where expected".into() });
+            }
+            cd_body = cd_body.replace(pw, "let v = select((r[8]).wwww * (xs_c[106]).xxxx, vec4<f32>(0.0), (xs_c[106]).xxxx == vec4<f32>(0.0));");
+            let cd_used: Vec<String> = cd.samplers.iter().map(|u| u.replace("xs_s", "xs_gloss_s")).collect();
+            // GlossRuntimeAlpha's pixel program (its VS_TransformAndTextureAlpha disassembles to the same text as the one above):
+            // the normal from its Bump map in the tangent frame, Gloss scaled by its Gloss map, the specular by its Spec map;
+            // its samplers 2 - 4 are its own (`xs_gloss_rt_s<n>`)
+            let fx_rt = read_input(data, UI_GLOSS_RT)?;
+            let rt = tr(out, &fx_rt, "PS_TexturedGloss", "xs_gloss_rt_ps")?;
+            let rt_name = |n: u32| if n < 2 { format!("xs_gloss_s{n}") } else { format!("xs_gloss_rt_s{n}") };
+            let mut rt_body = word_renamed(&rt.wgsl, rt_name);
+            if rt_body.matches(pw).count() != 1 {
+                return Err(ShaderError::Translate { output: out, reason: "GlossRuntimeAlpha PS_TexturedGloss: the shininess multiply is not where expected".into() });
+            }
+            rt_body = rt_body.replace(pw, "let v = select((r[8]).wwww * (xs_c[106]).xxxx, vec4<f32>(0.0), (xs_c[106]).xxxx == vec4<f32>(0.0));");
+            let rt_used: Vec<String> = rt.samplers.iter().map(|u| u.trim_start_matches("xs_s").parse::<u32>().map_or(u.clone(), rt_name)).collect();
             let head = format!(
                 "{FIRST_LINE}
 // The UI's Gloss programs (effect ui/0x35719848), microcode instruction by instruction.
@@ -233,14 +257,22 @@ pub fn build(data: &Path, name: &str) -> Result<String> {
 // (VS_TransformSkinned, the frame's, indexes its bone constants by the vertex: the port stretches the frame on the CPU and
 // draws it with VS_TransformAndTextureAlpha, game/src/menugloss.rs)
 // PS_TexturedGloss reads constants {} and samplers {}
+// PS_TexturedGlossCustomDepth reads constants {} and samplers {}
+// GlossRuntimeAlpha (effect ui/0xb527a8b6) PS_TexturedGloss reads constants {} and samplers {}
 ",
                 cs(&vs.consts),
                 cs(&ps.consts),
-                used.join(" ")
+                used.join(" "),
+                cs(&cd.consts),
+                cd_used.join(" "),
+                cs(&rt.consts),
+                rt_used.join(" ")
             );
             Ok(format!("{head}
 {}
-{}", vs.wgsl, body))
+{}
+{}
+{}", vs.wgsl, body, cd_body, rt_body))
         }
         "xs_pond.wgsl" => {
             // the fountain basins' and ponds' water (effect CityPondWater): VSCityPondWater + PSCityPondWater

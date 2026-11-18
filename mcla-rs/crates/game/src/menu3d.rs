@@ -326,6 +326,10 @@ pub struct UiMesh {
     pub max: Vec3,
     /// the material when its shader is the Gloss effect (menugloss.rs)
     pub gloss: Option<crate::menugloss::GlossMat>,
+    /// tangents (w: handedness) for GlossRuntimeAlpha's bump frame
+    pub tangent: Vec<[f32; 4]>,
+    /// GlossRuntimeAlpha's Gloss, Spec and Bump map names (the phone's body and shell)
+    pub maps: Option<[String; 3]>,
 }
 
 impl UiMesh {
@@ -362,13 +366,14 @@ impl UiMesh {
                 }
             }
         }
-        let mut m = UiMesh { pos: Vec::new(), normal: Vec::new(), uv: Vec::new(), bone: Vec::new(), indices: Vec::new(), texture: String::new(), skinned: false, min: Vec3::splat(f32::MAX), max: Vec3::splat(f32::MIN), gloss: None };
+        let mut m = UiMesh { pos: Vec::new(), normal: Vec::new(), uv: Vec::new(), bone: Vec::new(), indices: Vec::new(), texture: String::new(), skinned: false, min: Vec3::splat(f32::MAX), max: Vec3::splat(f32::MIN), gloss: None, tangent: Vec::new(), maps: None };
         for model in &d.models {
             for (mesh, si) in &model.parts {
                 let base = m.pos.len() as u32;
                 if m.texture.is_empty() {
                     m.texture = d.shader_group.shaders.get(*si as usize).and_then(|s| s.diffuse()).unwrap_or("").to_ascii_lowercase();
                     m.gloss = d.shader_group.shaders.get(*si as usize).and_then(crate::menugloss::GlossMat::of);
+                    m.maps = d.shader_group.shaders.get(*si as usize).and_then(crate::menugloss::rt_maps);
                 }
                 for i in 0..mesh.positions.len() {
                     let p = mesh.positions[i];
@@ -377,6 +382,7 @@ impl UiMesh {
                     m.pos.push(p);
                     m.normal.push(mesh.normals.get(i).copied().unwrap_or(Vec3::Y));
                     m.uv.push(mesh.uv0.get(i).map_or([0.0, 0.0], |u| [u.x, u.y]));
+                    m.tangent.push(mesh.tangents.get(i).map_or([1.0, 0.0, 0.0, 1.0], |t| t.to_array()));
                     let mut b = Vec3::ZERO;
                     // (approx.) the vertex follows its heaviest bone. VS_TransformSkinned blends all four by their
                     // weights; done so here (p + sum(w * bone) * (scale - 1)) the frame's front sheet comes to lie over
@@ -610,10 +616,16 @@ pub fn paint_scene(ctx: &egui::Context, painter: &egui::Painter, meshes: &mut Me
                         .map(|&i| {
                             let i = i as usize;
                             let p = if skinned { mesh.pos[i] + mesh.bone[i] * (n.scale - Vec3::ONE) } else { mesh.pos[i] };
-                            crate::menugloss::Vtx { pos: p.extend(1.0).to_array(), normal: mesh.normal[i].to_array(), uv: mesh.uv.get(i).copied().unwrap_or([0.0; 2]) }
+                            crate::menugloss::Vtx { pos: p.extend(1.0).to_array(), normal: mesh.normal[i].to_array(), uv: mesh.uv.get(i).copied().unwrap_or([0.0; 2]), tangent: mesh.tangent.get(i).copied().unwrap_or([1.0, 0.0, 0.0, 1.0]) }
                         })
                         .collect();
                     let c = |k: usize| n.color[k] as f32 / 255.0;
+                    let map_names = mesh.maps.clone();
+                    // (all three or none: without one of them the mesh keeps PS_TexturedGloss)
+                    let maps = map_names.and_then(|m| {
+                        let t: Vec<crate::menugloss::Tex> = m.iter().filter_map(|nm| meshes.rgba(nm).map(|(sz, px)| crate::menugloss::Tex::Mesh(nm.clone(), sz, px))).collect();
+                        <[crate::menugloss::Tex; 3]>::try_from(t).ok()
+                    });
                     if std::env::var("MCLA_MENU3D_LOG").is_ok() {
                         log::info!("menu3d: {} drawn with the Gloss programs: {:?}, hue {:?} {:.2}", n.file, mat, n.color, n.alpha);
                     }
@@ -627,6 +639,12 @@ pub fn paint_scene(ctx: &egui::Context, painter: &egui::Painter, meshes: &mut Me
                         ambient: Vec3::splat(scene.ambient).extend(1.0),
                         light: Vec3::splat(scene.diffuse).extend(-1.0),
                         tex,
+                        // (the original: PS_TexturedGlossCustomDepth for the garage's menu in the world, garage_main draws
+                        // 2836 / 2837; PS_TexturedGloss for the pause's own camera, pause_main 5109 / 5110)
+                        custom_depth: n.view == "world" && world.is_some(),
+                        maps,
+                        // (the world camera's projection is reverse-Z; the scene's own camera, View::look, is not)
+                        reverse_z: n.view == "world" && world.is_some(),
                     });
                     continue;
                 }

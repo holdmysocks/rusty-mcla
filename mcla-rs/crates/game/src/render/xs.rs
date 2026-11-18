@@ -66,6 +66,10 @@ fn stub(name: &str) -> &'static str {
             "fn xs_gloss_vs(vin: array<vec4<f32>, 16>) -> XsVsOut { return XsVsOut(vec4<f32>(0.0, 0.0, 0.0, 1.0), array<vec4<f32>, 16>()); }
 ",
             "fn xs_gloss_ps(rin: array<vec4<f32>, 16>) -> vec4<f32> { return vec4<f32>(0.0); }
+",
+            "fn xs_gloss_cd_ps(rin: array<vec4<f32>, 16>) -> vec4<f32> { return vec4<f32>(0.0); }
+",
+            "fn xs_gloss_rt_ps(rin: array<vec4<f32>, 16>) -> vec4<f32> { return vec4<f32>(0.0); }
 "
         ),
         _ => "",
@@ -75,15 +79,20 @@ fn stub(name: &str) -> &'static str {
 /// Read the eleven files from `<data>/shaders_wgsl/`. The first call decides (later calls change nothing); one error is logged when
 /// anything is missing. A file an older install did not write (its effect is in the data folder, the translator has a newer list) is
 /// translated here once, as the install stage would (`mcla_shaders::write_output`).
+/// A function each output must have since it was added to it (older installs wrote the file without it).
+const NEEDS: [(&str, &str); 2] = [("xs_gloss.wgsl", "fn xs_gloss_cd_ps("), ("xs_gloss.wgsl", "fn xs_gloss_rt_ps(")];
+
 pub fn load(data: &Path) {
     PROGRAMS.get_or_init(|| {
         let dir = data.join(mcla_shaders::OUT_DIR);
         let mut text = HashMap::new();
         let mut bad: Vec<&'static str> = Vec::new();
         for name in mcla_shaders::OUTPUTS {
-            if !dir.join(name).is_file() {
+            // (a file written by an older install that lacks a program added since is translated again)
+            let stale = |t: String| NEEDS.iter().any(|(n, f)| *n == name && !t.contains(f));
+            if !dir.join(name).is_file() || std::fs::read_to_string(dir.join(name)).is_ok_and(stale) {
                 match mcla_shaders::write_output(data, name) {
-                    Ok(_) => log::info!("shader programs: {name} was not there; translated from the data folder"),
+                    Ok(_) => log::info!("shader programs: {name} was not there or was older than this version; translated from the data folder"),
                     Err(e) => log::warn!("shader programs: {name} was not there and could not be translated: {e}"),
                 }
             }

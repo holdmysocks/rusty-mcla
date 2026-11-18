@@ -19,9 +19,10 @@ const EXPECTED: [(&str, &str); 11] = [
     ("xs_water.wgsl", "9f7cf194d48c1502968b017f81bb8aae66e49663020725349e96f1a725150de0"),
     ("xs_pond.wgsl", "a4439d5bcf19a08dc6022342fa8103e353a487e1078eb124d728aece66f920dc"),
     ("xs_shore.wgsl", "328e649de5b0e2024c4015cbc11ca2d698bc75fd4021859188c77748896ceb7d"),
-    // (the reference translation of VS_TransformAndTextureAlpha and PS_TexturedGloss with its names given, and the
-    // shininess multiply guarded for an exponent of 0 - the Xenos's 0 x inf = 0)
-    ("xs_gloss.wgsl", "2425efc7795f348296d809e139241d07c9ab081bbca862fd194b478506db2504"),
+    // (VS_TransformAndTextureAlpha and PS_TexturedGloss as the reference translation with their names given; then this
+    // crate's own translation of PS_TexturedGlossCustomDepth and GlossRuntimeAlpha's PS_TexturedGloss; the shininess
+    // multiplies guarded for an exponent of 0 - the Xenos's 0 x inf = 0)
+    ("xs_gloss.wgsl", "85809532080f488268f434197655efb00ff94166cdaebb21039236b919f56b7b"),
 ];
 
 fn data_dir() -> Option<PathBuf> {

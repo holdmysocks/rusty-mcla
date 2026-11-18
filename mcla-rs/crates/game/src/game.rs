@@ -9652,7 +9652,7 @@ impl Game {
                                 }
                                 p.set_path("cur_Menuscale.0", Value::Float(scale[0]));
                                 p.set_path("cur_Menuscale.1", Value::Float(scale[1]));
-                                Some(crate::menu3d::View { vp, frame, view_inverse: None })
+                                Some(crate::menu3d::View { vp, frame, view_inverse: hud.cam_view_inv })
                             }
                             _ => None,
                         };
@@ -12811,6 +12811,8 @@ pub struct HudInfo {
     /// the frame's camera, for what is drawn into the world from here (the rain): view
     /// projection, place, flat heading, speed; and whether it is night
     pub cam_vp: Option<glam::Mat4>,
+    /// the inverse of the world camera's view (its eye and axes in the world): the Gloss programs' gViewInverse (menugloss.rs)
+    pub cam_view_inv: Option<glam::Mat4>,
     pub cam_pos: Vec3,
     /// the point the camera looks at (its forward is `cam_look - cam_pos`)
     pub cam_look: Vec3,

@@ -1,5 +1,25 @@
 //! The UI meshes of the `Gloss` effect (ui/0x35719848) drawn with the original's own programs: the pause menu's glass
-//! frame (`pause_screen`) and the pane that carries the menu's picture.
+//! frame (`pause_screen`) and the pane that carries the menu's picture; the garage's (the same meshes hung in the world);
+//! the phone's body, shell and screen (effect GlossRuntimeAlpha, the same programs).
+//!
+//! Garage (work/recomp-light, garage_main draws 2836 / 2837): the frame and pane with PS_TexturedGlossCustomDepth - the
+//! same light, a Fresnel term of its own (gloss x (0.75 N.V + 0.25)) and alpha 0 where the scene's depth (DepthSampler,
+//! the 1280 x 720 depth) lies in front; constants equal to the port's meshes (frame 0.5 / 60 / hue alpha 0.5, pane
+//! 0.314 / 25 / 0.8), the world camera as gViewInverse. *(approx.)* no scene depth in the UI pass: nothing hides the menu
+//! (it stands clear of the garage's scene). The world camera is reverse-Z: its depth is turned round here (`reverse_z`).
+//! Against garage_main (port at 1600 x 900, another car, so another camera and scene behind): rim 150 - 187 / port 177 -
+//! 188, margin 89 - 96 / 86 - 88, panel inside 26 - 32 / 21 - 25 (the egui path: 4 - 6).
+//!
+//! Phone (phone_c draws 1634 - 1636, the load's "DON'T FORGET" call): the body and shell with GlossRuntimeAlpha's own
+//! programs (ui/0xb527a8b6: its PS_TexturedGloss takes the normal from its Bump map in the tangent frame, scales Gloss by
+//! its Gloss map and the specular by its Spec map; its VS disassembles to the same text as the Gloss one), the screen with
+//! the Gloss effect's. Constants: body and shell gloss 0.843, diffuse 0.669, emissive alpha 0.76, shininess 30, maps
+//! sidekick_glossmap (Gloss and Spec, one texture as in the original) and sidekick_bump; the screen gloss 0.24, emissive
+//! 0.504, diffuse 0; gLightAmbient 0.25, gLightColor 0.7 (lights[0] of the movie), its own camera - the port's meshes give
+//! the same. Night, mean colour of regions (original / port / egui path): screen 105 / 118 / 159, top bezel 19 / 35 / 43
+//! (green), lid edge 72 / 87 / 111, keypad 22 / 36 / 43. OPEN: the port is 6 - 15 brighter in every region, the screen
+//! (another program) as much as the body. *(approx.)* dpFront, the maps' sampler (the diffuse's), and the 960 x 640
+//! picture (the original's screen picture is 256 x 256).
 //!
 //! The original (recorded with work/recomp-light, pause menu over Hollywood, draws 5109 / 5110 of `pause_main`): the
 //! frame with VS_TransformSkinned + PS_TexturedGloss, then the pane with VS_TransformAndTextureAlpha + PS_TexturedGloss,
@@ -72,10 +92,15 @@ pub mod ph {
 }
 
 impl GlossMat {
-    /// The material of a shader instance of the Gloss effect; `None` for any other effect.
+    /// The material of a shader instance of the Gloss effect or of GlossRuntimeAlpha (the phone's: the same
+    /// VS_TransformAndTextureAlpha + PS_TexturedGloss, phone_c draws 1634 - 1636; its Gloss / Spec / Bump samplers are bound
+    /// but the program does not read them); `None` for any other effect.
     pub fn of(s: &mcla_formats::rage::drawable::Shader) -> Option<GlossMat> {
         use mcla_formats::rage::drawable::ShaderParam;
-        if !s.name.eq_ignore_ascii_case("gloss") {
+        if std::env::var("MCLA_MENU3D_LOG").is_ok() {
+            log::info!("menu3d: shader {} textures {:?}", s.name, s.textures().collect::<Vec<_>>());
+        }
+        if !s.name.eq_ignore_ascii_case("gloss") && !s.name.eq_ignore_ascii_case("glossruntimealpha") {
             return None;
         }
         let v = |h: u32, d: Vec4| {
@@ -95,6 +120,21 @@ impl GlossMat {
     }
 }
 
+/// GlossRuntimeAlpha's Gloss, Spec and Bump map names (its samplers GlossSampler, SpecSampler, BumpSampler); `None` for any
+/// other effect or when one is missing.
+pub fn rt_maps(s: &mcla_formats::rage::drawable::Shader) -> Option<[String; 3]> {
+    if !s.name.eq_ignore_ascii_case("glossruntimealpha") {
+        return None;
+    }
+    let j = mcla_formats::hash::joaat;
+    let find = |n: &str| s.textures().find(|(h, _)| *h == j(n)).map(|(_, t)| t.to_ascii_lowercase());
+    let m = [find("glosssampler")?, find("specsampler")?, find("bumpsampler")?];
+    if std::env::var("MCLA_MENU3D_LOG").is_ok() {
+        log::info!("menu3d: GlossRuntimeAlpha maps {:?}", m);
+    }
+    Some(m)
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Vtx {
@@ -102,6 +142,8 @@ pub struct Vtx {
     pub pos: [f32; 4],
     pub normal: [f32; 3],
     pub uv: [f32; 2],
+    /// the tangent, w its handedness (GlossRuntimeAlpha's bump frame; unused by the other programs)
+    pub tangent: [f32; 4],
 }
 
 /// The constant registers the programs read, in this order in the uniform block.
@@ -111,7 +153,7 @@ const REGS: [u32; 22] = [0, 1, 2, 3, 8, 9, 10, 11, 12, 13, 14, 15, 26, 39, 100, 
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Consts {
     c: [[f32; 4]; 22],
-    /// (unused)
+    /// x: 1 for PS_TexturedGlossCustomDepth, 2 for GlossRuntimeAlpha's PS_TexturedGloss
     flags: [f32; 4],
     _pad: [[f32; 4]; 9],
 }
@@ -137,11 +179,19 @@ pub struct Draw {
     pub ambient: Vec4,
     pub light: Vec4,
     pub tex: Tex,
+    /// drawn with PS_TexturedGlossCustomDepth (a menu hung in the world: the garage's) instead of PS_TexturedGloss
+    pub custom_depth: bool,
+    /// GlossRuntimeAlpha's Gloss, Spec and Bump maps (meshtextures.r9): drawn with its own PS_TexturedGloss
+    pub maps: Option<[Tex; 3]>,
+    /// `vp` gives depth 1 near, 0 far (the world camera's reverse-Z, camera.rs): turned to this pass's 0 near, 1 far
+    pub reverse_z: bool,
 }
 
 impl Draw {
     fn consts(&self) -> Consts {
-        let wvp = self.vp * self.world;
+        // (z' = w - z: the reversed depth turned round for this pass's LessEqual test and its clear to 1)
+        let flip = if self.reverse_z { Mat4::from_cols(Vec4::X, Vec4::Y, Vec4::new(0.0, 0.0, -1.0, 0.0), Vec4::new(0.0, 0.0, 1.0, 1.0)) } else { Mat4::IDENTITY };
+        let wvp = flip * self.vp * self.world;
         let mut c = [[0.0f32; 4]; 22];
         let put = |c: &mut [[f32; 4]; 22], r: u32, v: Vec4| {
             if let Some(i) = REGS.iter().position(|x| *x == r) {
@@ -163,7 +213,7 @@ impl Draw {
         put(&mut c, 105, self.mat.specular);
         put(&mut c, 106, Vec4::new(self.mat.shininess, 0.0, 0.0, 0.0));
         put(&mut c, 208, self.hue);
-        Consts { c, flags: [0.0; 4], _pad: [[0.0; 4]; 9] }
+        Consts { c, flags: [if self.maps.is_some() { 2.0 } else { self.custom_depth as u32 as f32 }, 0.0, 0.0, 0.0], _pad: [[0.0; 4]; 9] }
     }
 }
 
@@ -182,6 +232,12 @@ pub struct Shared {
     pipeline: Option<wgpu::RenderPipeline>,
     c_layout: wgpu::BindGroupLayout,
     t_layout: wgpu::BindGroupLayout,
+    /// group 2: GlossRuntimeAlpha's three maps
+    m_layout: wgpu::BindGroupLayout,
+    /// the mesh textures uploaded, by name
+    views: HashMap<String, wgpu::TextureView>,
+    /// group 2 by the three maps' names ("" for the other programs: a white texel each)
+    maps: HashMap<String, wgpu::BindGroup>,
     sampler: wgpu::Sampler,
     env_sampler: wgpu::Sampler,
     env: Option<wgpu::TextureView>,
@@ -209,6 +265,7 @@ impl Shared {
             ],
         });
         let t_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("menu gloss texture"), entries: &[tex(0, wgpu::TextureViewDimension::D2), samp(1)] });
+        let m_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("menu gloss maps"), entries: &[tex(0, wgpu::TextureViewDimension::D2), tex(1, wgpu::TextureViewDimension::D2), tex(2, wgpu::TextureViewDimension::D2)] });
         let pic_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("menu gloss picture"),
             entries: &[wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None }],
@@ -224,7 +281,7 @@ impl Shared {
             ..Default::default()
         });
         let env_sampler = device.create_sampler(&wgpu::SamplerDescriptor { label: Some("menu gloss env"), mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
-        Arc::new(Mutex::new(Shared { pipeline: None, c_layout, t_layout, sampler, env_sampler, env: None, slots: Vec::new(), textures: HashMap::new(), target: None, pic_layout, pic_bg: None, drawn: 0 }))
+        Arc::new(Mutex::new(Shared { pipeline: None, c_layout, t_layout, m_layout, views: HashMap::new(), maps: HashMap::new(), sampler, env_sampler, env: None, slots: Vec::new(), textures: HashMap::new(), target: None, pic_layout, pic_bg: None, drawn: 0 }))
     }
 
     /// The environment cube (set once by the render loop; a read-only view of the cars' cube).
@@ -239,7 +296,7 @@ impl Shared {
         if self.pipeline.is_none() {
             let src = crate::render::xs::split_consts(&format!("{GLUE}\n{}", crate::render::xs::text("xs_gloss.wgsl")));
             let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("menu gloss"), source: wgpu::ShaderSource::Wgsl(src.into()) });
-            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("menu gloss"), bind_group_layouts: &[&self.c_layout, &self.t_layout], push_constant_ranges: &[] });
+            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("menu gloss"), bind_group_layouts: &[&self.c_layout, &self.t_layout, &self.m_layout], push_constant_ranges: &[] });
             // SRC_ALPHA / INV_SRC_ALPHA on colour; alpha accumulated "over" so the picture is premultiplied
             let colour = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::SrcAlpha, dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha, operation: wgpu::BlendOperation::Add };
             let alpha = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha, operation: wgpu::BlendOperation::Add };
@@ -250,7 +307,7 @@ impl Shared {
                     module: &shader,
                     entry_point: Some("vs_main"),
                     compilation_options: Default::default(),
-                    buffers: &[wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<Vtx>() as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x3, 2 => Float32x2] }],
+                    buffers: &[wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<Vtx>() as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x3, 2 => Float32x2, 3 => Float32x4] }],
                 },
                 fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs_main"), compilation_options: Default::default(), targets: &[Some(wgpu::ColorTargetState { format: FORMAT, blend: Some(wgpu::BlendState { color: colour, alpha }), write_mask: wgpu::ColorWrites::ALL })] }),
                 primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: Some(wgpu::Face::Back), front_face: wgpu::FrontFace::Ccw, ..Default::default() },
@@ -277,24 +334,56 @@ impl Shared {
         self.target = Some(Target { size, msaa, depth, resolve });
     }
 
+    /// A mesh texture's view, uploaded once.
+    fn view(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, name: &str, size: [u32; 2], rgba: &[u8]) -> Option<wgpu::TextureView> {
+        if let Some(v) = self.views.get(name) {
+            return Some(v.clone());
+        }
+        let [w, h] = size;
+        if w == 0 || h == 0 || rgba.len() < (w * h * 4) as usize {
+            return None;
+        }
+        use wgpu::util::DeviceExt;
+        let t = device.create_texture_with_data(queue, &wgpu::TextureDescriptor { label: Some("menu gloss mesh texture"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba8Unorm, usage: wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] }, wgpu::util::TextureDataOrder::LayerMajor, &rgba[..(w * h * 4) as usize]);
+        let v = t.create_view(&Default::default());
+        self.views.insert(name.to_string(), v.clone());
+        Some(v)
+    }
     fn texture(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, tex: &Tex, movies: &crate::selfmovie::Pics) -> Option<wgpu::BindGroup> {
-        let bg = |view: &wgpu::TextureView| device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("menu gloss texture"), layout: &self.t_layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(view) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) }] });
-        match tex {
-            Tex::Movie(key) => movies.view(key).map(|v| bg(&v)),
-            Tex::Mesh(name, [w, h], rgba) => {
+        let view = match tex {
+            Tex::Movie(key) => movies.view(key)?,
+            Tex::Mesh(name, size, rgba) => {
                 if let Some(b) = self.textures.get(name) {
                     return Some(b.clone());
                 }
-                if *w == 0 || *h == 0 || rgba.len() < (*w * *h * 4) as usize {
-                    return None;
-                }
-                use wgpu::util::DeviceExt;
-                let t = device.create_texture_with_data(queue, &wgpu::TextureDescriptor { label: Some("menu gloss mesh texture"), size: wgpu::Extent3d { width: *w, height: *h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba8Unorm, usage: wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] }, wgpu::util::TextureDataOrder::LayerMajor, rgba);
-                let b = bg(&t.create_view(&Default::default()));
-                self.textures.insert(name.clone(), b.clone());
-                Some(b)
+                self.view(device, queue, name, *size, rgba)?
             }
+        };
+        let b = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("menu gloss texture"), layout: &self.t_layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) }] });
+        if let Tex::Mesh(name, ..) = tex {
+            self.textures.insert(name.clone(), b.clone());
         }
+        Some(b)
+    }
+    /// Group 2: GlossRuntimeAlpha's Gloss, Spec and Bump maps, or white texels for the other programs (which do not read them).
+    fn maps(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, maps: Option<&[Tex; 3]>) -> Option<wgpu::BindGroup> {
+        let key = maps.map_or(String::new(), |m| m.iter().map(|t| match t { Tex::Mesh(n, ..) | Tex::Movie(n) => n.as_str() }).collect::<Vec<_>>().join("|"));
+        if let Some(b) = self.maps.get(&key) {
+            return Some(b.clone());
+        }
+        let mut views = Vec::with_capacity(3);
+        for k in 0..3 {
+            let v = match maps.map(|m| &m[k]) {
+                Some(Tex::Mesh(name, size, rgba)) => self.view(device, queue, name, *size, rgba)?,
+                Some(Tex::Movie(_)) => return None,
+                None => self.view(device, queue, "(white)", [1, 1], &[255; 4])?,
+            };
+            views.push(v);
+        }
+        let entries: Vec<wgpu::BindGroupEntry> = views.iter().enumerate().map(|(k, v)| wgpu::BindGroupEntry { binding: k as u32, resource: wgpu::BindingResource::TextureView(v) }).collect();
+        let b = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("menu gloss maps"), layout: &self.m_layout, entries: &entries });
+        self.maps.insert(key, b.clone());
+        Some(b)
     }
 }
 
@@ -311,6 +400,9 @@ struct Consts { c: array<vec4<f32>, 22>, flags: vec4<f32>, pad: array<vec4<f32>,
 @group(0) @binding(2) var s_env: sampler;
 @group(1) @binding(0) var t_diff: texture_2d<f32>;
 @group(1) @binding(1) var s_diff: sampler;
+@group(2) @binding(0) var t_gloss: texture_2d<f32>;
+@group(2) @binding(1) var t_spec: texture_2d<f32>;
+@group(2) @binding(2) var t_bump: texture_2d<f32>;
 var<private> g_refl: vec3<f32>;
 fn load_consts() {
     xs_c[0] = u.c[0]; xs_c[1] = u.c[1]; xs_c[2] = u.c[2]; xs_c[3] = u.c[3];
@@ -328,6 +420,21 @@ fn xs_gloss_s0(uv: vec2<f32>) -> vec4<f32> {
 fn xs_gloss_s1(uv: vec2<f32>) -> vec4<f32> {
     return textureSample(t_diff, s_diff, uv);
 }
+// DepthSampler (PS_TexturedGlossCustomDepth's): the scene's depth, which hides the pixels behind it. (approx.) Not in the UI
+// pass: 0, nothing in front (the garage's menu stands clear of its scene)
+fn xs_gloss_s2(uv: vec2<f32>) -> vec4<f32> {
+    return vec4<f32>(0.0);
+}
+// GlossRuntimeAlpha's GlossSampler, SpecSampler and BumpSampler: the mesh's maps (the diffuse's sampler, approx.)
+fn xs_gloss_rt_s2(uv: vec2<f32>) -> vec4<f32> {
+    return textureSample(t_gloss, s_diff, uv);
+}
+fn xs_gloss_rt_s3(uv: vec2<f32>) -> vec4<f32> {
+    return textureSample(t_spec, s_diff, uv);
+}
+fn xs_gloss_rt_s4(uv: vec2<f32>) -> vec4<f32> {
+    return textureSample(t_bump, s_diff, uv);
+}
 struct VOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) o0: vec4<f32>,
@@ -336,14 +443,17 @@ struct VOut {
     @location(3) o4: vec4<f32>,
     @location(4) o8: vec4<f32>,
     @location(5) o9: vec4<f32>,
+    @location(6) o7: vec4<f32>,
+    @location(7) o5: vec4<f32>,
+    @location(8) o6: vec4<f32>,
 };
-@vertex fn vs_main(@location(0) p: vec4<f32>, @location(1) n: vec3<f32>, @location(2) uv: vec2<f32>) -> VOut {
+@vertex fn vs_main(@location(0) p: vec4<f32>, @location(1) n: vec3<f32>, @location(2) uv: vec2<f32>, @location(3) tg: vec4<f32>) -> VOut {
     load_consts();
     var vin: array<vec4<f32>, 16>;
     vin[0] = p;
     vin[1] = vec4<f32>(1.0);
     vin[2] = vec4<f32>(n, 1.0);
-    vin[3] = vec4<f32>(1.0, 0.0, 0.0, 1.0);
+    vin[3] = tg;
     vin[4] = vec4<f32>(uv, 0.0, 1.0);
     let o = xs_gloss_vs(vin);
     var r: VOut;
@@ -354,6 +464,9 @@ struct VOut {
     r.o4 = o.o[4];
     r.o8 = o.o[8];
     r.o9 = o.o[9];
+    r.o7 = o.o[7];
+    r.o5 = o.o[5];
+    r.o6 = o.o[6];
     return r;
 }
 @fragment fn fs_main(i: VOut) -> @location(0) vec4<f32> {
@@ -365,7 +478,16 @@ struct VOut {
     rin[4] = i.o4;
     rin[8] = i.o8;
     rin[9] = i.o9;
+    rin[7] = i.o7;
+    rin[5] = i.o5;
+    rin[6] = i.o6;
     g_refl = reflect(-normalize(xs_c[15].xyz - i.o2.xyz), normalize(i.o4.xyz));
+    if u.flags.x > 1.5 {
+        return xs_gloss_rt_ps(rin);
+    }
+    if u.flags.x > 0.5 {
+        return xs_gloss_cd_ps(rin);
+    }
     return xs_gloss_ps(rin);
 }
 "#;
@@ -448,11 +570,12 @@ impl egui_wgpu::CallbackTrait for Paint {
         for (k, d) in self.draws.iter().enumerate() {
             queue.write_buffer(&sh.slots[k].0, 0, bytemuck::bytes_of(&d.consts()));
             let Some(tb) = sh.texture(device, queue, &d.tex, &movies) else { continue };
+            let Some(mb) = sh.maps(device, queue, d.maps.as_ref()) else { continue };
             if d.verts.is_empty() {
                 continue;
             }
             let vb = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("menu gloss mesh"), contents: bytemuck::cast_slice(&d.verts), usage: wgpu::BufferUsages::VERTEX });
-            jobs.push((k, tb, vb, d.verts.len() as u32));
+            jobs.push((k, tb, mb, vb, d.verts.len() as u32));
         }
         let t = sh.target.as_ref().unwrap();
         {
@@ -464,9 +587,10 @@ impl egui_wgpu::CallbackTrait for Paint {
                 occlusion_query_set: None,
             });
             pass.set_pipeline(sh.pipeline.as_ref().unwrap());
-            for (k, tb, vb, n) in &jobs {
+            for (k, tb, mb, vb, n) in &jobs {
                 pass.set_bind_group(0, &sh.slots[*k].1, &[]);
                 pass.set_bind_group(1, tb, &[]);
+                pass.set_bind_group(2, mb, &[]);
                 pass.set_vertex_buffer(0, vb.slice(..));
                 pass.draw(0..*n, 0..1);
             }
@@ -521,6 +645,9 @@ mod tests {
             ambient: Vec4::W,
             light: Vec4::new(1.0, 1.0, 1.0, -1.0),
             tex: Tex::Movie("pause".into()),
+            custom_depth: true,
+            maps: None,
+            reverse_z: false,
         };
         let c = d.consts();
         let at = |r: u32| c.c[REGS.iter().position(|x| *x == r).unwrap()];
@@ -530,6 +657,7 @@ mod tests {
         assert_eq!(at(106)[0], 60.0);
         assert_eq!(at(104), [1.0, 1.0, 1.0, 0.5]);
         assert_eq!(at(208), [1.0, 1.0, 1.0, 0.5]);
+        assert_eq!(c.flags[0], 1.0);
         assert_eq!(std::mem::size_of::<Consts>(), 512);
     }
 }
