@@ -266,6 +266,28 @@ impl ListenerHist {
 /// (fmadds(+15, 0.01, r x 0.01): the sound's +28), pitch (+19 + r, 16 bits: +32), pan (none when 0xFFFF and then no draw,
 /// else (s16(r) + s16(+23) + 360) % 360 truncating: +10), predelay (+27 + r: the word +88) and start offset (+31 + r: the
 /// word +104).
+/// A Randomized sound's choice at its Play (F-15148), on the payload's index (+4) and history (+6..): in step mode (tristate 5
+/// == 1) the child at the stored index, the index then (idx + 1) mod n (with a step variable below 0, (idx - 1) mod n: no
+/// sound of the disc has one, not ported); else the weighted pick F-39111, the pick written at history[idx] and the index
+/// (idx + 1) mod the history length (nothing with no history). `children` is not empty.
+fn randomized_choice(rng: &SharedMwc, step: bool, st: &mut (usize, Vec<u8>), children: &[(u32, f32)]) -> usize {
+    let n = children.len();
+    let (idx, hist) = st;
+    if step {
+        let i = *idx % n;
+        *idx = (i + 1) % n;
+        return i;
+    }
+    let chosen = weighted_pick(rng, hist, n, children);
+    let hlen = hist.len();
+    if hlen > 0 {
+        let at = *idx % hlen;
+        hist[at] = chosen as u8;
+        *idx = (at + 1) % hlen;
+    }
+    chosen
+}
+
 /// Tristate pair 1 (Positional) as a node has it: its own value, or with 2 (inherit) the parent's - what the getter F-55012
 /// finds walking up from the node while the value is 2 (the root's parent value is 2: a chain of 2s stays 2).
 fn inherit_positional(h: &SoundHeader, parent: u8) -> u8 {
@@ -1782,21 +1804,9 @@ impl SoundLib {
         if let Some(c) = children.iter().find(|c| self.force_pick.contains(&c.0)) {
             return Some(c.0);
         }
-        let (idx, hist) = self.history.entry(hash).or_insert_with(|| (0, vec![0xFF; hlen])).clone();
-        if h.tristate(5) == 1 {
-            // F-15148: the child at the stored index, then the index moves on ((idx - 1) mod n with a step variable
-            // below 0: no sound of the disc has one)
-            let i = idx % n;
-            self.history.insert(hash, ((i + 1) % n, hist));
-            return Some(children[i].0);
-        }
-        let chosen = weighted_pick(&self.rng, &hist, n, children);
-        if hlen > 0 {
-            let mut hist = hist;
-            let at = idx % hlen;
-            hist[at] = chosen as u8;
-            self.history.insert(hash, ((at + 1) % hlen, hist));
-        }
+        let mut st = self.history.entry(hash).or_insert_with(|| (0, vec![0xFF; hlen])).clone();
+        let chosen = randomized_choice(&self.rng, h.tristate(5) == 1, &mut st, children);
+        self.history.insert(hash, st);
         Some(children[chosen].0)
     }
 
@@ -3855,6 +3865,36 @@ mod tests {
             n += 1;
         }
         assert_eq!(n, 5559);
+    }
+
+    /// A Randomized sound's Play F-15148 against the original's code run offline (tools/randomized_play_reference.py): every
+    /// Randomized payload of the disc in weighted and in step mode, three plays in a row from the disc's start and from a random
+    /// index / history, the rand chained - the child, the index and history after and the rand state, bit for bit.
+    #[test]
+    fn randomized_plays_match_the_original() {
+        use super::*;
+        let (mut n, mut steps) = (0, 0);
+        for l in include_str!("testdata/randomized_play_ref.txt").lines() {
+            let (inp, out) = l.split_once(" -> ").unwrap();
+            let v = |t: &str| u32::from_str_radix(&t[1..], 16).unwrap();
+            let t: Vec<&str> = inp.split_whitespace().collect();
+            let step = t[1] == "1";
+            let hist: Vec<u8> = t.iter().filter(|x| x.starts_with('x')).map(|x| v(x) as u8).collect();
+            let kids: Vec<(u32, f32)> = t.iter().filter(|x| x.starts_with('w')).enumerate().map(|(k, x)| (k as u32, f32::from_bits(v(x)))).collect();
+            assert_eq!((hist.len() as u32, kids.len() as u32), (v(t[5]), v(t[6])));
+            let o: Vec<&str> = out.split_whitespace().collect();
+            assert_eq!(o[0], "r1", "{l}");
+            set_audio_rng_state((v(t[2]), v(t[3])));
+            let mut st = (v(t[4]) as usize, hist);
+            let c = randomized_choice(&SharedMwc, step, &mut st, &kids);
+            let want_hist: Vec<u8> = o.iter().filter(|x| x.starts_with('x')).map(|x| v(x) as u8).collect();
+            let rs = audio_rng_state();
+            let ss: Vec<u32> = o.iter().filter(|x| x.starts_with('S')).map(|x| v(x)).collect();
+            assert_eq!((c as u32, st.0 as u32, &st.1, rs.0, rs.1), (v(o[1]), v(o[2]), &want_hist, ss[0], ss[1]), "{l}");
+            n += 1;
+            steps += step as usize;
+        }
+        assert_eq!((n, steps), (10236, 5118));
     }
 
     /// The XMA start (F-86924): every play-from-ms of a recorded drive (ms, the voice's rate, the start sample handed to the
