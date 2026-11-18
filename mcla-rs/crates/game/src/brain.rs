@@ -1472,6 +1472,30 @@ pub fn run(v: &mut crate::vehicles::Vehicles, i: usize, brain: &mut Brain, to_go
                 brain.last.throttle, brain.last.brake, brain.last.steer, out.input.throttle, out.input.brake, out.input.steer, out.input.handbrake as u8, rb.map_or(1.0, |r| r.cap), rb.map_or(0.0, |r| r.gap), brain.stuck.state, out.nitro as u8);
         }
     }
+    // (diagnostics: MCLA_PASS_TRACE=<file.csv> - per racer tick its place and speed, then every other non-racer car up to
+    // 50 m ahead within 8 m to the side: uid, distance along the racer's forward, side offset, speed along that forward;
+    // with the aiv's obstacle count - for counting how a racer meets slower traffic, GitHub #58)
+    if let Ok(path) = std::env::var("MCLA_PASS_TRACE") {
+        use std::io::Write;
+        static FILE: std::sync::OnceLock<std::sync::Mutex<Option<std::fs::File>>> = std::sync::OnceLock::new();
+        let f = FILE.get_or_init(|| std::sync::Mutex::new(std::fs::File::create(&path).ok()));
+        if let Some(f) = f.lock().ok().as_mut().and_then(|g| g.as_mut()) {
+            let fw = Vec3::new(car.forward.x, 0.0, car.forward.z).normalize_or_zero();
+            let side = Vec3::new(-fw.z, 0.0, fw.x);
+            let mut line = format!("{i},{},{:.2},{:.2},{:.2},{:.2},{}", v.clock, car.pos.x, car.pos.y, car.pos.z, car.speed, obstacles.len());
+            for (j, o) in v.cars.iter().enumerate() {
+                if j == i || o.is_player || o.ai.as_ref().map_or(false, |a| a.brain.is_some()) {
+                    continue;
+                }
+                let r = o.state.pos - car.pos;
+                let (d, l) = (r.dot(fw), r.dot(side));
+                if d > -10.0 && d < 50.0 && l.abs() < 8.0 && r.y.abs() < 4.0 {
+                    line.push_str(&format!(",{}:{:.1}:{:.1}:{:.1}", o.uid, d, l, o.state.vel.dot(fw)));
+                }
+            }
+            let _ = writeln!(f, "{line}");
+        }
+    }
     // (diagnostics, work/ai-record: MCLA_AIV_DUMP=<file> - the aiv's sample ring of every racer every 5th frame, one line:
     // car, tick, x, z, first, end, J, T, progress, then the samples' 14 floats each)
     if let Ok(path) = std::env::var("MCLA_AIV_DUMP") {
