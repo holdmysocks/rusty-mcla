@@ -81,8 +81,9 @@ pub struct Req {
     pub fx_send: f32,
     pub chain: u32,
     pub pans_chain: bool,
-    /// the request's category (create params +28, the category record; StartSound F-33564 stores its index at the root's
-    /// init +82): the root sound's parent category, which a header category under it overrides; 0 = none (BASE). The
+    /// the request's category (create params +28, the category record; StartSound F-33564 puts its index in the init block
+    /// +2, which every node of the tree takes as its +62): the category of every voice of the tree, over any header category
+    /// (the voice Init F-66806 looks the header's up only when +62 is unset); 0 = none (the header's, else BASE). The
     /// engine loops are the only sounds that give one (their own headers have none)
     pub category: u32,
     /// the request's occluder (+32; F-30479 keeps it in the voice entry +180): its slot in [`SoundLib::set_occlusion`]
@@ -2527,7 +2528,11 @@ impl SoundLib {
     /// A playing wave to the mixer: the voice's gain chain (F-24161), the pan law (F-56973 / F-67363),
     /// pitch and Doppler.
     fn emit(&mut self, v: Leaf, inst: &Instance, listener: (Vec3, Vec3, Vec3)) -> Drive {
-        let cat = self.cats.get(&v.ctx.category).copied().unwrap_or(Category { volume: 0.0, pitch: 0, lpf: 23900, hpf: 0, rolloff_scale: 1.0, reverb_amount: 1.0, reverb_dist: 1.0 });
+        // the voice's category (the voice Init F-66806: +62, from the init block +2 = the request's category index (F-33564), which every node
+        // of the tree shares; unset -1: the inherited header category (context +0), 0: "BASE"): a request's category is over
+        // every header category of its tree
+        let cat_key = if inst.req.category != 0 { inst.req.category } else { v.ctx.category };
+        let cat = self.cats.get(&cat_key).copied().unwrap_or(Category { volume: 0.0, pitch: 0, lpf: 23900, hpf: 0, rolloff_scale: 1.0, reverb_amount: 1.0, reverb_dist: 1.0 });
         let (lp, lr, lf) = listener;
         let k = std::f32::consts::FRAC_1_SQRT_2;
         let mut rolloff = 0.0;
@@ -4230,6 +4235,38 @@ mod tests {
             assert!(!first.is_empty(), "{name}: plays the update it was started");
             assert!(second.is_empty(), "{name}: killed at the next update");
         }
+    }
+
+    /// A request's category is the category of every voice of its tree, over the headers' (the init block +2 that every
+    /// node takes as +62; the voice Init F-66806 looks the header's up only when it is unset): UI_MENUS_UI_MENU_BACK_L (its
+    /// header in UI_MENU) played with PLAYER_VEHICLES_ENGINES follows the player vehicle slider; with no request category
+    /// the slider leaves it as it is.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn a_request_category_is_over_the_headers() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let rms = |category: &str, sliders: [u8; 5]| {
+            let mut a = crate::audio::Audio::new_offline(&dir).expect("audio");
+            let mut lib = SoundLib::load(a.root(), &a.cfg.clone()).expect("sound objects");
+            lib.set_sliders(sliders);
+            let category = if category.is_empty() { 0 } else { joaat(category) };
+            lib.play("UI_MENUS_UI_MENU_BACK_L", Req { category, ..Default::default() }).expect("sound");
+            let dt = 1.0 / 60.0;
+            for _ in 0..60 {
+                lib.update(dt, &mut a);
+                a.end_frame();
+                a.render(dt);
+            }
+            let c = a.captured();
+            (c.iter().map(|x| x * x).sum::<f32>() / c.len().max(1) as f32).sqrt()
+        };
+        let on = rms("", [10; 5]);
+        assert!(on > 1e-4, "{on}");
+        assert_eq!(rms("", [10, 10, 10, 0, 10]), on);
+        let eng = rms("PLAYER_VEHICLES_ENGINES", [10; 5]);
+        assert!(eng > 1e-4, "{eng}");
+        let off = rms("PLAYER_VEHICLES_ENGINES", [10, 10, 10, 0, 10]);
+        assert!(off < eng * 1e-4, "{off} against {eng}");
     }
 
     /// A Randomized in step mode (tristate 5; 37 sounds of the disc) plays the child at the stored index, then moves the
