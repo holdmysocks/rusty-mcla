@@ -845,6 +845,12 @@ impl Roamers {
                 log::info!("slots: {} {} ({}{}) cruises {} in his {}, difficulty {}{}", m.key, m.name, m.config, if m.mission.is_empty() { String::new() } else { format!(", {}", m.mission) }, DISTRICTS[m.district.min(4)], m.car, m.difficulty, if m.hidden { ", hidden" } else { "" });
             }
         }
+        // (a man no longer run: his racer with no car, if any, out of the traffic)
+        for key in crate::cruisedrive::out_keys() {
+            if !men.iter().any(|m| m.key == key) {
+                crate::cruisedrive::forget(&key);
+            }
+        }
         self.men = men;
     }
 
@@ -910,10 +916,10 @@ impl Roamers {
 
     /// Where a man is shown (the maps, his 3D icon): at his car; with none, near the player on the road (`on_road`), else
     /// at his place on his loop. The original's man always has his racer, which streamed out is posed on its ghost
-    /// riding the ambient rail - on the road (brain_cruising.md 4, state 5). The port has no ghost for a man with no
-    /// car and carries him along his loop's straight chords, which run under the road on crests and through blocks up
-    /// to 30 m off a lane: his icon was seen driving under the map (GitHub #49). *Approx.:* the nearest rail with
-    /// ground to that point, not the ghost's own place on its route.
+    /// riding the ambient rail - on the road (brain_cruising.md 4, state 5). A man whose car the walk evicted keeps his
+    /// racer (cruisedrive OUT): `on_road` holds its matrix, posed on the ghost as the original's. A man never streamed
+    /// in has no racer yet and is carried along his loop's straight chords, which run under the road on crests and
+    /// through blocks up to 30 m off a lane (GitHub #49). *Approx. for him:* the nearest rail with ground to that point.
     pub fn shown(&self, m: &Man, vehicles: &Vehicles) -> (Vec3, Vec3) {
         if let Some(c) = vehicles.cars.iter().find(|c| m.owns(c)) {
             return (c.state.pos, c.state.forward());
@@ -1012,6 +1018,8 @@ impl Roamers {
                     (_, Some(p)) => loop_project(&m.pts, p),
                 };
                 m.reset = true;
+                // (reset to his reset position: a racer riding on with no car is out of the traffic)
+                crate::cruisedrive::forget(&m.key);
             }
             log::info!("roamers: opponents suspended, the hookmen reset to their reset positions");
         }
@@ -1069,7 +1077,8 @@ impl Roamers {
                 let r = match vehicles.cars.iter().find(|c| m.owns(c)) {
                     Some(c) => StreamRacer { load_state: LOADED, pin: 0, reset_on_eviction: false, not_counted: false, x: c.state.pos.x, z: c.state.pos.z },
                     None => {
-                        let p = if m.fresh || m.reset { m.start.or(m.pts.first().copied()).unwrap_or(Vec3::ZERO) } else { self.on_road.get(&m.key).map_or_else(|| loop_at(&m.pts, m.at).0, |x| x.0) };
+                        // (a racer riding on with no car: at its own matrix, racer +288 - cruisedrive::out_pose)
+                        let p = if let Some(f) = crate::cruisedrive::out_pose(&m.key) { f.pos } else if m.fresh || m.reset { m.start.or(m.pts.first().copied()).unwrap_or(Vec3::ZERO) } else { self.on_road.get(&m.key).map_or_else(|| loop_at(&m.pts, m.at).0, |x| x.0) };
                         // (a racer whose load was asked for and is not in the world yet: neither 0 nor 3)
                         let st = self.phase.get(&m.key).map_or(UNLOADED, |p| p.0.state);
                         StreamRacer { load_state: st, pin: 0, reset_on_eviction: false, not_counted: false, x: p.x, z: p.z }
@@ -1240,6 +1249,8 @@ impl Roamers {
                     }
                     if evict.contains(&vehicles.cars[ci].uid) {
                         log::info!("roamers: {} evicted ({:.0} m)", m.key, cp.distance(pp));
+                        // (the racer and its brains stay: F-55459 takes only the car - cruisedrive::evict)
+                        crate::cruisedrive::evict(vehicles, ci, &m.key);
                         vehicles.cars.remove(ci);
                     }
                 }
@@ -1273,8 +1284,13 @@ impl Roamers {
                     }
                     m.fresh = false;
                     m.reset = false;
-                    m.at += CRUISE * dt;
-                    let d = loop_at(&m.pts, m.at).0.distance(pp);
+                    // (his racer rides on its ghost with no car: where it is - cruisedrive::out_pose; with none the loop's
+                    // chords at the cruise speed, approx.)
+                    match crate::cruisedrive::out_pose(&m.key) {
+                        Some(f) => m.at = loop_project(&m.pts, f.pos),
+                        None => m.at += CRUISE * dt,
+                    }
+                    let d = crate::cruisedrive::out_pose(&m.key).map_or_else(|| loop_at(&m.pts, m.at).0, |f| f.pos).distance(pp);
                     // (his car's files read ahead on a worker thread while he is still out of reach, so
                     // building it as he comes in does not stop the game - docs/PERFORMANCE.md 2026-10-23 (4))
                     if d < 450.0 {
@@ -1297,6 +1313,11 @@ impl Roamers {
         self.on_road.clear();
         for m in self.men.iter().filter(|m| !m.hidden) {
             if vehicles.cars.iter().any(|c| m.owns(c)) {
+                continue;
+            }
+            if let Some(f) = crate::cruisedrive::out_pose(&m.key) {
+                // (his racer with no car: its own matrix, posed on its ghost on the road)
+                self.on_road.insert(m.key.clone(), (f.pos, Vec3::ZERO - f.c));
                 continue;
             }
             let (p, d, _) = loop_at(&m.pts, m.at);
@@ -1448,9 +1469,15 @@ impl Roamers {
                     // (set down on the nearest rail with ground under it, as the cruising brain's teleport - `rail_place`; the
                     // loop's point itself can be 30 m off the road, inside a block with no collision: the car fell through the
                     // map, AI.md NEW 6. No rail with ground within 80 m: not this time)
-                    let placed = rail_place(world, at);
+                    // (a racer that rode on with no car: its car is put on the racer's own pose, no probe - slot 30, F-99412;
+                    // cruisedrive::stream_in)
+                    let streamed = crate::cruisedrive::out_pose(&m.key);
+                    let placed = match streamed {
+                        Some(f) => Some((f.pos, f.b, Vec3::ZERO - f.c, 0.0)),
+                        None => rail_place(world, at),
+                    };
                     if let (Some((li, t, d)), Some((at, _, rail_fwd, rail_v))) = (nav.nearest_link(at), placed) {
-                        if d < 30.0 && (at_reset || !vehicles.cars.iter().any(|c| c.state.pos.distance(at) < 25.0)) {
+                        if streamed.is_some() || (d < 30.0 && (at_reset || !vehicles.cars.iter().any(|c| c.state.pos.distance(at) < 25.0))) {
                             let dir = if at_reset { dir } else { rail_fwd };
                             let rgb = game.rivals.paint_of(&m.config);
                             let color = rgb.map(|c| [c[0], c[1], c[2], 1.0]).unwrap_or(PALETTE[(self.rand() * PALETTE.len() as f32) as usize % PALETTE.len()]);
@@ -1483,7 +1510,7 @@ impl Roamers {
                             if let (Some(ai), Some(t)) = (c.ai.as_mut(), c.model.aitunes.clone()) {
                                 ai.tune = Some(std::sync::Arc::new(mcla_formats::rage::aitune::AiTune::lerp(&t.base, &t.mods, c.perf)));
                             }
-                            let cruising = crate::cruisedrive::setup(vehicles, &world.collider, idx, &m.pts, next, at_reset, at);
+                            let cruising = if streamed.is_some() { crate::cruisedrive::stream_in(vehicles, &world.collider, idx, &m.key) } else { crate::cruisedrive::setup(vehicles, &world.collider, idx, &m.pts, next, at_reset, at) };
                             let c = &mut vehicles.cars[idx];
                             if let (Some(ai), false) = (c.ai.as_mut(), cruising) {
                                 ai.link = Some(li);

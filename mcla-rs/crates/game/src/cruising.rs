@@ -346,9 +346,78 @@ pub fn follow(st: &mut Follow, car: &FollowCar, p: Vec3, fwd: Vec3, s: f32, k: f
     near.then_some(())
 }
 
+/// The racer's own pose (mcRacer +288 .. +336 matrix rows a, b, c, place; +432 velocity; +448 angular velocity; +464 set):
+/// what a racer without its car holds and what its car is put on when it streams in again (slot 30, F-99412: the pose
+/// setter with no probe). Four lanes each, as the vector stores write them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RacerPose {
+    pub m: [[f32; 4]; 4],
+    pub vel: [f32; 4],
+    pub ang: [f32; 4],
+}
+
+/// vmulfp: a NaN operand comes out quieted (the first one), the rest flushed to zero and rounded once.
+fn vmulfp(a: f32, b: f32) -> f32 {
+    let ftz = |x: f32| if x.is_subnormal() { 0.0f32.copysign(x) } else { x };
+    if a.is_nan() {
+        return f32::from_bits(a.to_bits() | 0x0040_0000);
+    }
+    if b.is_nan() {
+        return f32::from_bits(b.to_bits() | 0x0040_0000);
+    }
+    ftz(ftz(a) * ftz(b))
+}
+
+/// F-64718 in state 5 with no physical car (racer +48 == 0; docs/reference/ai/cruise_streamed_out.md 2): racer +464 = 1,
+/// +288 .. +336 = the ghost's matrix (F-33765 - its own: a proxy ghost takes its racer's vehicle's only while there is
+/// one), +432 = its row c x -s (vmulfp, four lanes), +448 = 0; then +1672 = s and +1616 = the flat way of `fwd` as in
+/// [`follow`]. The demands +1680 / +1676 and the curvature +1688 are left as they are.
+pub fn pose_on_ghost(st: &mut Follow, ghost: [[f32; 4]; 4], fwd: Vec3, s: f32) -> RacerPose {
+    let t = norm_or(Vec3::new(fwd.x, 0.0, fwd.z), 1e-5, Vec3::X);
+    let ns = -s;
+    let vel = std::array::from_fn(|i| vmulfp(ghost[2][i], ns));
+    st.speed = s;
+    st.way = t;
+    RacerPose { m: ghost, vel, ang: [0.0; 4] }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// F-64718's state 5 with no physical car run offline (work/racerai/cfollow main2.cpp, F-64718 with F-33765 run
+    /// whole): 6,000 ghosts (proxy bit with the racer's +48 empty, odd w lanes, an upright ghost; speeds 0, -0, denormal,
+    /// negative, NaN, 0 .. 45). The racer's matrix, velocity, angular velocity, +464 and the brain's speed / way bit for
+    /// bit; the demands and the curvature untouched. Kept: the first 1,000 cases (`testdata/cruise_nocar_ref.txt`);
+    /// `MCLA_CRUISE_NOCAR_REF=<nocar.bin>` checks the whole run.
+    #[test]
+    fn pose_on_ghost_is_the_originals() {
+        let rows: Vec<Vec<u32>> = match std::env::var("MCLA_CRUISE_NOCAR_REF") {
+            Ok(p) => std::fs::read(p).unwrap().chunks_exact(240).map(|r| r.chunks_exact(4).map(|w| u32::from_le_bytes(w.try_into().unwrap())).collect()).collect(),
+            Err(_) => include_str!("testdata/cruise_nocar_ref.txt").lines().map(|l| l.split_whitespace().map(|w| u32::from_str_radix(w, 16).unwrap()).collect()).collect(),
+        };
+        let f = |w: u32| f32::from_bits(w);
+        let mut bad = 0;
+        for r in &rows {
+            let (i, o) = (&r[..24], &r[24..]);
+            let ghost: [[f32; 4]; 4] = std::array::from_fn(|k| std::array::from_fn(|j| f(i[4 * k + j])));
+            let mut st = Follow { way: Vec3::new(f(i[17]), f(i[18]), f(i[19])), speed: f(i[20]), curvature: f(i[21]), steer: f(i[22]), demand: f(i[23]) };
+            // (no rail: the way is the ghost's -c)
+            let fwd = Vec3::ZERO - Vec3::new(ghost[2][0], ghost[2][1], ghost[2][2]);
+            let p = pose_on_ghost(&mut st, ghost, fwd, f(i[16]));
+            let mut got: Vec<u32> = p.m.iter().flatten().chain(p.vel.iter()).chain(p.ang.iter()).map(|x| x.to_bits()).collect();
+            got.push(1);
+            got.extend([st.speed, st.way.x, st.way.y, st.way.z, st.steer, st.demand, st.curvature].map(f32::to_bits));
+            got.push(5);
+            if got[..] != o[..33] {
+                if bad < 5 {
+                    println!("port {got:08x?}\noriginal {:08x?}", &o[..33]);
+                }
+                bad += 1;
+            }
+        }
+        assert!(rows.len() >= 1000 && bad == 0, "{bad} of {} differ", rows.len());
+    }
 
     /// F-64718's state 5 run offline (work/racerai/cfollow): 20,000 cars and ghosts within 10 m (ghost without a rail:
     /// its matrix's place and -c), ghost speeds under and over the car's least, frame times 1/60, 1/30 and others,

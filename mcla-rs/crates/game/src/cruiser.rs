@@ -97,6 +97,8 @@ pub struct Cruiser {
     pub k: f32,
     /// the car's engage rpm saved by the enable (+1692; 1000 from the constructor)
     pub saved_engage: f32,
+    /// the racer has its car (racer +48); false while the walk has it streamed out (`World::physical`)
+    pub physical: bool,
 }
 
 /// The world for one update of one cruiser.
@@ -108,6 +110,9 @@ pub struct World<'a, 'r, T: GhostTraffic, C: CruiseCar> {
     pub owner: u32,
     pub k: f32,
     pub racer_ran: bool,
+    /// the racer has its car (racer +48): false for a man whose car the racer manager's walk streamed out - his racer
+    /// rides on, posed on its ghost (docs/reference/ai/cruise_streamed_out.md)
+    pub physical: bool,
     /// the racing brain's update (F-13552) on the car, run where the cruising update calls it (None: not run here)
     pub racer: Option<&'a mut (dyn FnMut(&mut T, &mut Brain) + 'r)>,
 }
@@ -271,10 +276,23 @@ impl<T: GhostTraffic, C: CruiseCar> CruiseEnv for World<'_, '_, T, C> {
         crate::railroute::nearest(c, self.car.matrix().pos, n, 10).0
     }
 
-    /// State 5: the ghost followed (cruising::follow); more than 10 m off it, DriveToNearestRail. (The streamed-out
-    /// pose on the ghost is not used: the port's cruising cars are always physical.)
+    /// State 5: the ghost followed (cruising::follow); more than 10 m off it, DriveToNearestRail. With no car the racer
+    /// is posed on the ghost (cruising::pose_on_ghost: its matrix, its forward x speed, no spin).
     fn follow_ghost(&mut self, b: &mut Cruising) {
         let Some(g) = self.traffic.ghost(b.ghost) else { return };
+        if !self.physical {
+            let fwd = match (g.rail, g.run_rail) {
+                (Some((lane, t)), _) => self.rails.pose(&RailPos { lane: Some(lane), t }, b.offset).map_or(Vec3::ZERO - g.matrix[2], |(_, c)| Vec3::ZERO - c),
+                (None, Some((p, d))) => Vec3::ZERO - crate::cruiserail::pose_at(p, d, b.offset).1,
+                (None, None) => Vec3::ZERO - g.matrix[2],
+            };
+            let m = g.matrix;
+            let rows = [[m[0].x, m[0].y, m[0].z, 0.0], [m[1].x, m[1].y, m[1].z, 0.0], [m[2].x, m[2].y, m[2].z, 0.0], [m[3].x, m[3].y, m[3].z, 1.0]];
+            let pose = crate::cruising::pose_on_ghost(&mut b.follow, rows, fwd, g.speed);
+            let v = pose.vel;
+            self.car.set_pose(&Frame { a: m[0], b: m[1], c: m[2], pos: m[3] }, Vec3::new(v[0], v[1], v[2]));
+            return;
+        }
         let (p, fwd) = match g.rail {
             // (the rail's point and its tangent: `pose` gives the c row, minus the tangent)
             Some((lane, t)) => self.rails.pose(&RailPos { lane: Some(lane), t }, b.offset).map_or((g.matrix[3], Vec3::ZERO - g.matrix[2]), |(p, c)| (p, Vec3::ZERO - c)),
@@ -295,7 +313,7 @@ impl<T: GhostTraffic, C: CruiseCar> CruiseEnv for World<'_, '_, T, C> {
     }
 
     fn physical(&self) -> bool {
-        true
+        self.physical
     }
 
     fn car_pos(&self) -> Vec3 {
@@ -334,18 +352,18 @@ pub fn disable_car<C: CruiseCar>(saved: f32, car: &mut C) {
 
 impl Cruiser {
     pub fn new(owner: u32, reset_pos: Vec3) -> Cruiser {
-        Cruiser { owner, brain: Cruising::default(), reset_pos, frame_acc: 0.0, held: None, k: crate::brain::FRAME, saved_engage: 1000.0 }
+        Cruiser { owner, brain: Cruising::default(), reset_pos, frame_acc: 0.0, held: None, k: crate::brain::FRAME, saved_engage: 1000.0, physical: true }
     }
 
     /// One update (F-64718) and what drives the car after it (slot 11: the racing brain in states 1 / 2, else the
     /// demands).
     pub fn update<T: GhostTraffic, C: CruiseCar>(&mut self, rails: &Rails, traffic: &mut T, car: &mut C, racing: &mut Brain, racer: Option<&mut (dyn FnMut(&mut T, &mut Brain) + '_)>) -> Pedals {
-        let mut w = World { rails, traffic, car, racing, owner: self.owner, k: self.k, racer_ran: false, racer };
+        let mut w = World { rails, traffic, car, racing, owner: self.owner, k: self.k, racer_ran: false, physical: self.physical, racer };
         self.brain.update(&mut w);
         match self.brain.state {
             1 | 2 => Pedals::Racing,
             _ => {
-                slot11_engine(self.brain.state, true, car);
+                slot11_engine(self.brain.state, self.physical, car);
                 Pedals::Demand { steer: self.brain.follow.steer, speed: self.brain.follow.demand }
             }
         }
@@ -375,14 +393,14 @@ impl Cruiser {
                 return;
             }
         }
-        let mut w = World { rails, traffic, car, racing, owner: self.owner, k: self.k, racer_ran: false, racer: None };
+        let mut w = World { rails, traffic, car, racing, owner: self.owner, k: self.k, racer_ran: false, physical: self.physical, racer: None };
         self.brain.attach(&mut w, status, ghost.as_ref());
     }
 
     /// The ghost's release: `reason` 1 at its route's end, `rail` the last lane it rode (None: none).
     pub fn released<T: GhostTraffic, C: CruiseCar>(&mut self, rails: &Rails, traffic: &mut T, car: &mut C, racing: &mut Brain, reason: i32, rail: Option<u32>, ghost: u32) {
         let rail = rail.map_or(0, |l| l + 1);
-        let mut w = World { rails, traffic, car, racing, owner: self.owner, k: self.k, racer_ran: false, racer: None };
+        let mut w = World { rails, traffic, car, racing, owner: self.owner, k: self.k, racer_ran: false, physical: self.physical, racer: None };
         self.brain.event(&mut w, reason, rail, ghost);
     }
 }

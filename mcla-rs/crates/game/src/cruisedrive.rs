@@ -22,6 +22,115 @@ thread_local! {
     static RAILS: Option<&'static Rails<'static>> = make_rails();
     /// each cruiser's hold on the traffic as its last update left it: owner -> (state, request, ghost)
     static HELD: std::cell::RefCell<std::collections::HashMap<u32, (u32, i32, u32)>> = Default::default();
+    /// the racers whose car the walk streamed out, by owner: their brains ride on with no car
+    static OUT: std::cell::RefCell<std::collections::HashMap<u32, Out>> = Default::default();
+}
+
+/// A cruising man's racer with no car (racer +48 == 0; docs/reference/ai/cruise_streamed_out.md): the original keeps the
+/// racer and its brain when the racer manager's walk evicts the car (F-55459 saves no pose: +288 is the last good
+/// matrix), runs the brain's update every frame without slot 11, and puts a car that streams in again on the racer's
+/// pose (slot 30, F-99412: the pose setter with no probe).
+struct Out {
+    key: String,
+    cruiser: Box<Cruiser>,
+    brain: Box<crate::brain::Brain>,
+    /// racer +288 .. +336, +432, +448
+    m: Frame,
+    vel: Vec3,
+    ang: Vec3,
+    tune48: f32,
+}
+
+impl Out {
+    fn snap<'w>(&self, col: &'w WorldCollider) -> CarSnap<'w> {
+        CarSnap { m: self.m, vel: self.vel, yaw_rate: 0.0, tune48: self.tune48, idle: 0.0, engage: 0.0, reset: self.cruiser.reset_pos, col, mesh: crate::offroad::mesh(), pose: None }
+    }
+    /// a pose the brain gave the racer (the ghost's in state 5, a teleport's): racer +288 / +432; +448 = 0
+    fn take_pose(&mut self, car: &mut CarSnap) {
+        if let Some((m, vel)) = car.pose.take() {
+            self.m = m;
+            self.vel = vel;
+            self.ang = Vec3::ZERO;
+        }
+    }
+}
+
+/// The walk evicts man `key`'s car `i` (F-55459): his brains and the racer's pose are kept, the ghost stays his.
+/// False: the car has no cruising brain (nothing kept).
+pub fn evict(v: &mut Vehicles, i: usize, key: &str) -> bool {
+    let tune48 = v.cars[i].ai.as_ref().and_then(|a| a.tune.as_ref()).map_or(0.0, |t| t.idle_speed[0]);
+    let st = &v.cars[i].state;
+    let r = st.rot;
+    let (m, vel, ang) = (Frame { a: r * Vec3::X, b: r * Vec3::Y, c: r * Vec3::Z, pos: st.pos }, st.vel, st.ang_vel);
+    let Some((mut cruiser, brain)) = take(v, i) else { return false };
+    cruiser.physical = false;
+    cruiser.held = None;
+    log::debug!("cruiser {}: car streamed out in state {} at {:?}", cruiser.owner, cruiser.brain.state, m.pos);
+    let owner = cruiser.owner;
+    OUT.with(|o| o.borrow_mut().insert(owner, Out { key: key.to_string(), cruiser, brain, m, vel, ang, tune48 }));
+    true
+}
+
+/// Man `key`'s racer with no car: its matrix (racer +288 .. +336).
+pub fn out_pose(key: &str) -> Option<Frame> {
+    OUT.with(|o| o.borrow().values().find(|r| r.key == key).map(|r| r.m))
+}
+
+/// Man `key`'s car streams in again as car `i` (F-99412): the car takes the racer's owner id, its pose (matrix, velocity,
+/// angular velocity, no probe) and the brains, which go on where they were. False: no racer kept for him.
+pub fn stream_in(v: &mut Vehicles, col: &WorldCollider, i: usize, key: &str) -> bool {
+    let Some(r) = OUT.with(|o| {
+        let mut o = o.borrow_mut();
+        let owner = o.iter().find(|(_, r)| r.key == key).map(|(k, _)| *k)?;
+        o.remove(&owner)
+    }) else {
+        return false;
+    };
+    let Out { mut cruiser, brain, m, vel, ang, .. } = r;
+    cruiser.physical = true;
+    cruiser.held = None;
+    let c = &mut v.cars[i];
+    c.uid = cruiser.owner;
+    if let Some(vt) = c.params().veh.clone() {
+        crate::physics::vehsim::set_pose(&mut c.state, &vt, col, [m.a, m.b, m.c, m.pos], vel, ang);
+        c.pose_history.reset();
+    }
+    log::debug!("cruiser {}: car streamed in, state {}, at {:?}", cruiser.owner, cruiser.brain.state, m.pos);
+    if c.ai.is_none() {
+        c.ai = Some(crate::ai::AiDriver::new(cruiser.owner));
+    }
+    put(v, i, cruiser, brain);
+    true
+}
+
+/// The men whose racers ride on with no car.
+pub fn out_keys() -> Vec<String> {
+    OUT.with(|o| o.borrow().values().map(|r| r.key.clone()).collect())
+}
+
+/// Man `key` is gone (deleted, suspended, the walk off): his racer with no car leaves the traffic.
+pub fn forget(key: &str) {
+    OUT.with(|o| o.borrow_mut().retain(|_, r| r.key != key));
+}
+
+/// Every racer with no car, once a game frame: the cruising update (F-64718) with no slot 11.
+pub fn tick_out(v: &mut Vehicles, col: &WorldCollider, dt: f32) {
+    let Some(rails) = rails() else { return };
+    let owners: Vec<u32> = OUT.with(|o| o.borrow().keys().copied().collect());
+    for owner in owners {
+        let Some(mut r) = OUT.with(|o| o.borrow_mut().remove(&owner)) else { continue };
+        if dt <= 0.0 || crate::brain::frame_due(&mut r.cruiser.frame_acc, dt) {
+            let mut car = r.snap(col);
+            let was = r.cruiser.brain.state;
+            r.cruiser.update(rails, v, &mut car, &mut r.brain, None);
+            if r.cruiser.brain.state != was {
+                log::debug!("cruiser {} (no car): state {} -> {} at {:?}", owner, was, r.cruiser.brain.state, r.m.pos);
+            }
+            r.take_pose(&mut car);
+            note(&r.cruiser);
+        }
+        OUT.with(|o| o.borrow_mut().insert(owner, r));
+    }
 }
 
 fn note(cr: &Cruiser) {
@@ -34,7 +143,7 @@ fn note(cr: &Cruiser) {
 fn removed(v: &mut Vehicles) {
     let gone: Vec<(u32, (u32, i32, u32))> = HELD.with(|h| {
         let mut h = h.borrow_mut();
-        let gone: Vec<u32> = h.keys().copied().filter(|&o| !v.cars.iter().any(|c| c.uid == o && is_cruiser(c))).collect();
+        let gone: Vec<u32> = h.keys().copied().filter(|&o| !v.cars.iter().any(|c| c.uid == o && is_cruiser(c)) && !OUT.with(|x| x.borrow().contains_key(&o))).collect();
         gone.into_iter().filter_map(|o| h.remove(&o).map(|x| (o, x))).collect()
     });
     for (owner, (state, request, ghost)) in gone {
@@ -204,7 +313,20 @@ pub fn events(v: &mut Vehicles, col: &WorldCollider) {
         let owner = match e {
             crate::vehicles::traffic::GhostEvent::Attached { owner, .. } | crate::vehicles::traffic::GhostEvent::Released { owner, .. } => owner,
         };
-        let Some(i) = v.cars.iter().position(|c| c.uid == owner) else { continue };
+        let Some(i) = v.cars.iter().position(|c| c.uid == owner) else {
+            // (a racer with no car: its brain answers the same, its pose kept)
+            let Some(mut r) = OUT.with(|o| o.borrow_mut().remove(&owner)) else { continue };
+            let mut car = r.snap(col);
+            match e {
+                crate::vehicles::traffic::GhostEvent::Attached { status, ghost, .. } => r.cruiser.attached(rails, v, &mut car, &mut r.brain, status, ghost),
+                crate::vehicles::traffic::GhostEvent::Released { ghost, reason, rail, .. } => r.cruiser.released(rails, v, &mut car, &mut r.brain, reason, rail, ghost),
+            }
+            log::debug!("cruiser {} (no car): event -> state {}, ghost {}", owner, r.cruiser.brain.state, r.cruiser.brain.ghost);
+            r.take_pose(&mut car);
+            note(&r.cruiser);
+            OUT.with(|o| o.borrow_mut().insert(owner, r));
+            continue;
+        };
         let Some((mut cr, mut br)) = take(v, i) else { continue };
         log::debug!("cruiser {}: {:?}", owner, e);
         let mut car = CarSnap::of(&v.cars[i], col, cr.reset_pos);
@@ -328,7 +450,7 @@ pub fn setup(v: &mut Vehicles, col: &WorldCollider, i: usize, pts: &[Vec3], firs
     let mut car = CarSnap::of(&v.cars[i], col, reset_pos);
     {
         let k = cr.k;
-        let mut w = World { rails, traffic: v, car: &mut car, racing: &mut br, owner, k, racer_ran: false, racer: None };
+        let mut w = World { rails, traffic: v, car: &mut car, racing: &mut br, owner, k, racer_ran: false, physical: true, racer: None };
         if at_reset {
             cr.brain.teleport_to_nearest_rail(&mut w);
         } else {
