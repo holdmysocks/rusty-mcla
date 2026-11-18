@@ -6565,7 +6565,7 @@ mod tests {
         let root = std::path::PathBuf::from(std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into()));
         let Ok(res) = crate::assets::load_resource_file(&root.join("resources/city/sc/0x9960fcd8.r66")) else { return };
         let nav = NavSys::parse(&res).unwrap();
-        let h = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let h = |s: &str| u32::from_str_radix(s.trim_start_matches('x'), 16).unwrap();
         let f = |s: &str| f32::from_bits(h(s));
         let mut dl = super::DriverLanes::default();
         let mut mwc = super::super::parked::Mwc { lo: 0, carry: 0 };
