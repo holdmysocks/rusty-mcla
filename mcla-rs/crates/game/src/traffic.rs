@@ -6038,6 +6038,9 @@ impl Vehicles {
         if let Some((cab_id, rot)) = q.cab {
             return self.make_trailer(gpu, world, nav, q, cab_id, rot, seed);
         }
+        if let Some(si) = q.park {
+            return self.make_parked(gpu, world, q, si, seed);
+        }
         let Some((ground, normal)) = probe_ground(&world.collider, pos) else {
             if std::env::var("MCLA_TRAFFIC_TRACE").is_ok() {
                 log::info!("traffic request {}: no ground", self.models[q.model].name);
@@ -6139,7 +6142,7 @@ impl Vehicles {
         let tty = *self.amb_types.entry(mname.clone()).or_insert_with(|| AmbType::load(root, &mname));
         let color = tty.color(shade).unwrap_or(super::TRAFFIC_PALETTE[shade % super::TRAFFIC_PALETTE.len()]);
         let f = cr * Vec3::NEG_Z;
-        let req = AmbReq { model: mi, ty: tty, link: r.link, s: r.s, pos, dir: f, color, road: 0, focus: pos, view: f, cab: Some((r.rng_id(), cr)) };
+        let req = AmbReq { model: mi, ty: tty, link: r.link, s: r.s, pos, dir: f, color, road: 0, focus: pos, view: f, cab: Some((r.rng_id(), cr)), park: None };
         self.pool_pending.push(GhostPool::trailer_rec(req));
     }
 
@@ -9262,7 +9265,7 @@ impl Vehicles {
             // the request (F-86587, F-45833, queued F-13129): the car is made by the pool's next step (F-52865 runs
             // before the spawner in the manager's update, F-96156): its type budget, seed, ground probe and init there
             // (`amb_make`); the try counts as made here (F-92144's +128)
-            self.ghosts.pool.submit_amb(AmbReq { model: mi, ty, link, s, pos, dir, color, road: ri, focus, view, cab: None });
+            self.ghosts.pool.submit_amb(AmbReq { model: mi, ty, link, s, pos, dir, color, road: ri, focus, view, cab: None, park: None });
             sp.current += 1;
             n -= 1;
         }
@@ -9983,6 +9986,18 @@ pub fn angle_diff(a: f32, b: f32) -> f32 {
 /// The trailer's place in F-45988: the cab's place (F-58860) + its hitch - the trailer's (the types' hitch vectors,
 /// F-45572), both turned about y by the cab's heading against +z (F-10286 of the cab's z row and of (0, 0, 1), F-15197,
 /// F-57591) - the heading only, not the cab's pitch or roll; the trailer takes the cab's rotation rows as they are.
+/// The parked spot's request row +32 (F-23864): 0 - (sin h, 0, cos h) of the spot's heading, the sine and cosine in
+/// double and rounded (the guest's CRT calls), negated by a vector subtract from zero (so zeros stay +0).
+pub fn park_row(h: f32) -> Vec3 {
+    let (s, c) = ((h as f64).sin() as f32, (h as f64).cos() as f32);
+    Vec3::new(0.0 - s, 0.0 - 0.0, 0.0 - c)
+}
+
+/// The parked spot's request steps +242 (F-23864): the defaults' bits 0x5B kept, the pose and the car (0x84).
+pub fn park_steps(old: u8) -> u8 {
+    (old & 0x5B) | 0x84
+}
+
 pub fn trailer_place(cab_pos: Vec3, cab_z: Vec3, cab_hitch: Vec3, trailer_hitch: Vec3) -> Vec3 {
     let a = angle_diff(heading_of(0.0, 1.0), heading_of(cab_z.x, cab_z.z));
     cab_pos + crate::aiv::rot_y(cab_hitch, a) - crate::aiv::rot_y(trailer_hitch, a)
@@ -11424,6 +11439,28 @@ mod original_curve_tests {
         assert_eq!(n, 4000);
     }
 
+    /// The parked spot's request F-23864 against the original's code run offline (tools/park_request_reference.py ->
+    /// testdata/park_request_ref.txt: 4,000 headings and old bytes): the timeout 1.0, the row, the place handed through,
+    /// +68 = +72 = 0, +80 |= 0xC0, the steps, the kind 0x80.
+    #[test]
+    fn a_parked_spots_request_matches_the_original() {
+        let mut n = 0;
+        for line in include_str!("testdata/park_request_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let hx = |x: &str| u32::from_str_radix(x, 16).unwrap();
+            let i: Vec<u32> = i.split(' ').map(hx).collect();
+            let o: Vec<u32> = o.split(' ').map(hx).collect();
+            let r = park_row(f32::from_bits(i[0]));
+            assert_eq!(o[0], 1.0f32.to_bits(), "{line}");
+            assert_eq!([o[4], o[5], o[6], o[7]], [r.x.to_bits(), r.y.to_bits(), r.z.to_bits(), 0], "{line}");
+            assert_eq!([o[8], o[9], o[10], o[11]], [0x44FA1234, 0x42C80000, 0xC4A10000, i[0]], "{line}");
+            assert_eq!([o[12], o[13]], [0, 0], "{line}");
+            assert_eq!([o[14], o[16], o[17]], [i[1] | 0xC0, park_steps(i[2] as u8) as u32, i[3] | 0x80], "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 4000);
+    }
+
     /// F-10286: the spawn matrix heading (guest atan2 wrapped to (0, 2 pi]) against the original's code run offline
     /// (tools/people_small_reference.py -> testdata/people_small_ref.txt).
     #[test]
@@ -11866,6 +11903,8 @@ pub struct AmbReq {
     pub view: Vec3,
     /// a trailer's request (F-45988 -> F-81524): its cab's id (+276) and the cab's rotation at the request
     pub cab: Option<(u32, Quat)>,
+    /// a parked spot's request (F-74446 -> F-23864): the spot (req +12), which holds the request's id until it is made
+    pub park: Option<usize>,
 }
 
 impl PoolRec {
@@ -11996,6 +12035,23 @@ impl GhostPool {
         r.timeout = 1.0;
         r.amb = Some(Box::new(req));
         self.queue(r)
+    }
+
+    /// A parked spot's car (F-74446: F-86587, the colour, F-23864, then F-13129 through F-59429): kind 0x80, steps
+    /// (old & 0x5B) | 0x84 - the pose from the spot's place and heading, the car, no behaviour -, timeout 1.0 s (f1, a
+    /// word of the image); the spot keeps the id it returns (+12); -1 when the pool is full.
+    pub fn submit_park(&mut self, req: AmbReq) -> i32 {
+        let mut r = PoolRec::free();
+        r.kind = 0x80;
+        r.wanted = park_steps(0);
+        r.timeout = 1.0;
+        r.amb = Some(Box::new(req));
+        self.queue(r)
+    }
+
+    /// The spots of the parked requests still pending (state 2).
+    pub fn parked_pending(&self) -> impl Iterator<Item = usize> + '_ {
+        self.recs.iter().filter(|r| r.state == 2).filter_map(|r| r.amb.as_ref().and_then(|q| q.park))
     }
 
     /// A cab's trailer (F-45988 -> F-86587, F-81524 -> F-13129): kind 0x80, steps (old & 0x5B) | 0x84 - the pose from
@@ -13150,7 +13206,7 @@ mod ghost_tests {
                 self.trailer.take().into_iter().collect()
             }
         }
-        let req = |road: u32| AmbReq { model: 0, ty: AmbType::default(), link: 0, s: 0.0, pos: Vec3::ZERO, dir: Vec3::X, color: [1.0; 4], road, focus: Vec3::ZERO, view: Vec3::Z, cab: None };
+        let req = |road: u32| AmbReq { model: 0, ty: AmbType::default(), link: 0, s: 0.0, pos: Vec3::ZERO, dir: Vec3::X, color: [1.0; 4], road, focus: Vec3::ZERO, view: Vec3::Z, cab: None, park: None };
         let trailer = || {
             let r = GhostPool::trailer_rec(AmbReq { cab: Some((5, Quat::IDENTITY)), ..req(9) });
             assert_eq!((r.kind, r.wanted, r.timeout.to_bits(), r.state), (0x80, 0x84, 0x3F80_0000, 1));
@@ -13178,6 +13234,62 @@ mod ghost_tests {
         assert_eq!((w.order.clone(), pool.count, pool.recs[2].state), (vec![1, 9], 1, 2));
         pool.step(dt, &mut w);
         assert_eq!((w.order, pool.count), (vec![1, 9, 3], 0));
+    }
+
+    /// A parked spot's request (F-74446 -> F-23864 -> F-13129): kind 0x80, steps 0x84 (pose and car, no behaviour), timeout
+    /// 1.0 s; its spot counts as taken while the record is pending (the spot's +12 holds the id), and the next step makes
+    /// the car from the record's seed.
+    #[test]
+    fn a_parked_spot_is_a_pool_request() {
+        let req = AmbReq { model: 0, ty: AmbType::default(), link: 0, s: 0.0, pos: Vec3::ZERO, dir: Vec3::NEG_Z, color: [1.0; 4], road: 4, focus: Vec3::ZERO, view: Vec3::Z, cab: None, park: Some(17) };
+        let mut pool = GhostPool::new(0);
+        let id = pool.submit_park(req);
+        let r = &pool.recs[id as usize];
+        assert_eq!((id, r.kind, r.wanted, r.timeout.to_bits(), r.state), (0, 0x80, 0x84, 0x3F80_0000, 2));
+        assert_eq!(pool.parked_pending().collect::<Vec<_>>(), vec![17]);
+        struct W {
+            mwc: GMwc,
+            made: Vec<(u32, u32)>,
+        }
+        impl PoolWorld for W {
+            fn shared(&mut self) -> &mut GMwc {
+                &mut self.mwc
+            }
+            fn lane_point(&mut self, _l: u32, _t: f32) -> (Vec3, Vec3) {
+                (Vec3::ZERO, Vec3::Z)
+            }
+            fn car_get(&mut self) -> u32 {
+                0
+            }
+            fn car_back(&mut self, _c: u32) {}
+            fn beh_get(&mut self) -> u32 {
+                0
+            }
+            fn beh_back(&mut self, _b: u32) {}
+            fn car_beh(&mut self, _c: u32) -> u32 {
+                0
+            }
+            fn beh_drop(&mut self, _b: u32) {}
+            fn probe(&mut self, _c: u32, _s: u32, _m: &[Vec3; 4]) -> bool {
+                true
+            }
+            fn car_init(&mut self, _i: usize, _r: &PoolRec) {}
+            fn car_release(&mut self, _c: u32, _r: u32) {}
+            fn notify(&mut self, _i: usize, _o: u32, _v: u8, _s: u32, _c: u32) {}
+            fn amb_take(&mut self, _r: &PoolRec) -> bool {
+                true
+            }
+            fn amb_spawn(&mut self, r: &PoolRec) -> bool {
+                self.made.push((r.amb.as_ref().unwrap().park.unwrap() as u32, r.seed));
+                true
+            }
+        }
+        let mut w = W { mwc: GMwc { lo: 3, carry: 1 }, made: vec![] };
+        pool.step(1.0 / 30.0, &mut w);
+        // (the seed: the shared MWC's next lo & 0x7FFFFFFF, F-42724)
+        let mut m = GMwc { lo: 3, carry: 1 };
+        let seed = m.next() & 0x7FFF_FFFF;
+        assert_eq!((w.made, pool.count, pool.parked_pending().count()), (vec![(17, seed)], 0, 0));
     }
 
     #[test]
@@ -13223,7 +13335,7 @@ mod ghost_tests {
                 self.ground
             }
         }
-        let req = || AmbReq { model: 0, ty: AmbType::default(), link: 0, s: 0.0, pos: Vec3::new(1.0, 2.0, 3.0), dir: Vec3::X, color: [1.0; 4], road: 0, focus: Vec3::ZERO, view: Vec3::Z, cab: None };
+        let req = || AmbReq { model: 0, ty: AmbType::default(), link: 0, s: 0.0, pos: Vec3::new(1.0, 2.0, 3.0), dir: Vec3::X, color: [1.0; 4], road: 0, focus: Vec3::ZERO, view: Vec3::Z, cab: None, park: None };
         let dt = 1.0f32 / 30.0;
         // the record as F-45833 fills it
         let mut pool = GhostPool::new(0);

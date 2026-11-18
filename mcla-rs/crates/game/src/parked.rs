@@ -665,12 +665,13 @@ impl Vehicles {
         self.ambient.set_use(&|n| live.get(n).copied().unwrap_or(0), &trailer);
     }
 
-    /// The spots' occupants: spot i is taken while a car stands on it.
+    /// The spots' occupants: spot i is taken while a car stands on it (+8) or its request is pending in the pool (+12,
+    /// the request's id; who sets it back to -1 is not traced - here once the request is made or has failed).
     fn spots_taken(&self) -> Vec<bool> {
         let mut occ = vec![false; self.parking.spots.len()];
-        for c in &self.cars {
-            if let Some(s) = c.parked.filter(|&s| s < occ.len()) {
-                occ[s] = true;
+        for s in self.cars.iter().filter_map(|c| c.parked).chain(self.ghosts.pool.parked_pending()) {
+            if let Some(o) = occ.get_mut(s) {
+                *o = true;
             }
         }
         occ
@@ -883,26 +884,41 @@ impl Vehicles {
                 // its colour: one of the type's twenty
                 let shade = colour as usize;
                 let color = ty.color(shade).unwrap_or(TRAFFIC_PALETTE[shade % TRAFFIC_PALETTE.len()]);
-                let model = self.models[mi].clone();
-                // (F-23864 / F-18708: z row (sin h, 0, cos h), the car facing -z = (-sin h, 0, -cos h) - our yaw's
-                // forward is (-sin, 0, -cos); put on the ground by the spawn probe in the step, `PARK_PROBE`)
-                let idx = self.spawn(gpu, model, spot.pos, spot.heading, color, false);
-                self.cars[idx].ai = None;
-                self.cars[idx].parked = Some(si);
-                // the request's seed and the init draws (`amb_init`, F-77422 with a spot): its life, the lights'
-                // offsets and its front wheels' random turn (the car MWC's Gaussian)
-                let steer = self.amb_init(idx, &ty, true).steer;
-                self.cars[idx].park_steer = steer;
-                for wh in self.cars[idx].state.wheels.iter_mut().take(2) {
-                    wh.steer = steer;
-                }
-                self.cars[idx].settle = PARK_PROBE;
+                // (F-23864 / F-18708: z row (sin h, 0, cos h), the car facing -z = 0 - (sin h, 0, cos h), park_row - our yaw's
+                // forward is (-sin, 0, -cos)); a request of the pool, made by its next step (`make_parked`)
+                let dir = super::traffic::park_row(spot.heading);
+                let req = super::traffic::AmbReq { model: mi, ty, link: 0, s: 0.0, pos: spot.pos, dir, color, road: 0, focus, view, cab: None, park: Some(si) };
+                let id = self.ghosts.pool.submit_park(req);
                 if std::env::var("MCLA_PARK_DUMP").is_ok() {
                     let (o, t) = node_count(&self.parking, ni, &self.spots_taken(), cruise);
-                    log::info!("parked spawn {} spot {} node {} occupied {}/{} limit {} cruise-only {}", self.cars[idx].model.name, si, ni, o, t, node_limit(t, sp.tune.parked_density), spot.cruise_only);
+                    log::info!("parked request {} spot {} node {} occupied {}/{} limit {} cruise-only {} id {}", name, si, ni, o, t, node_limit(t, sp.tune.parked_density), spot.cruise_only, id);
                 }
             }
         }
+    }
+
+    /// A parked spot's request made (F-42724's probe F-46111 - no ground: state 5 -, F-77422 with a spot): the car at the
+    /// spot's place and heading, put on the ground by the spawn probe in the step (`PARK_PROBE`), the record's seed and
+    /// the init draws (its life, the lights' offsets and its front wheels' random turn, the car MWC's Gaussian).
+    pub(super) fn make_parked(&mut self, gpu: &Gpu, world: &crate::world::World, q: &super::traffic::AmbReq, si: usize, seed: u32) -> bool {
+        if super::traffic::probe_ground(&world.collider, q.pos).is_none() {
+            return false;
+        }
+        let Some(spot) = self.parking.spots.get(si).copied() else { return false };
+        let model = self.models[q.model].clone();
+        let idx = self.spawn(gpu, model, spot.pos, spot.heading, q.color, false);
+        self.cars[idx].ai = None;
+        self.cars[idx].parked = Some(si);
+        let steer = self.amb_init_seeded(idx, &q.ty, true, seed).steer;
+        self.cars[idx].park_steer = steer;
+        for wh in self.cars[idx].state.wheels.iter_mut().take(2) {
+            wh.steer = steer;
+        }
+        self.cars[idx].settle = PARK_PROBE;
+        if std::env::var("MCLA_PARK_DUMP").is_ok() {
+            log::info!("parked spawn {} spot {}", self.cars[idx].model.name, si);
+        }
+        true
     }
 
     /// F-74446's item branch (F-94309): the type by its name (F-54839, the car and
