@@ -186,12 +186,24 @@ struct CarAnim {
 }
 
 /// The composer's view of a rig (drvanim `Poser`): a frame is two DOFs per bone, the rotation (a Quaternion) and the
-/// translation (a Vector3).
-struct RigPoser<'a>(&'a Rig);
+/// translation (a Vector3). The rig's pieces only (no GPU part), so a test can pose a character set read from the disc.
+struct RigPoser<'a> {
+    bones: &'a [crate::skin::Bone],
+    dofs: &'a [(bool, bool)],
+    layout: u32,
+    clips: &'a [Clip],
+    dofw: &'a [Vec<f32>; 3],
+}
+
+impl<'a> RigPoser<'a> {
+    fn of(rig: &'a Rig) -> RigPoser<'a> {
+        RigPoser { bones: &rig.model.bones, dofs: &rig.model.dofs, layout: rig.model.layout, clips: &rig.clips, dofw: &rig.dofw }
+    }
+}
 
 impl da::Poser for RigPoser<'_> {
     fn len(&self) -> usize {
-        2 * self.0.model.bones.len()
+        2 * self.bones.len()
     }
 
     fn blank(&self) -> Vec<FrameDof> {
@@ -199,16 +211,16 @@ impl da::Poser for RigPoser<'_> {
     }
 
     fn sample(&self, clip: da::ClipId, t: f32, filtered: bool, out: &mut [FrameDof]) {
-        let Some(c) = self.0.clips.get(clip as usize) else { return };
+        let Some(c) = self.clips.get(clip as usize) else { return };
         let a = &c.anim;
         // (the block of the time, F-10710, and its own tracks: a clip of several blocks keeps each block's channels)
         let (blk, i, fr) = da::sample_block(a, t);
         let tracks = da::block_tracks(a, blk);
         // (F-12216's same-layout loop when the rig's frame layout is the clip's, else its mapped loop; filtered: F-80057)
-        let mapped = filtered || a.layout != self.0.model.layout;
-        for b in 0..self.0.model.bones.len() {
+        let mapped = filtered || a.layout != self.layout;
+        for b in 0..self.bones.len() {
             // (only the DOFs the original's frame has: the bone's record +27 a rotation, +26 a translation)
-            let (has_pos, has_rot) = self.0.model.dofs.get(b).copied().unwrap_or((true, true));
+            let (has_pos, has_rot) = self.dofs.get(b).copied().unwrap_or((true, true));
             for (slot, k) in [(2 * b, c.rot[b].filter(|_| has_rot)), (2 * b + 1, c.pos[b].filter(|_| has_pos))] {
                 let Some(k) = k else { continue };
                 let key = (a.tracks[k].kind, a.tracks[k].bone_id);
@@ -222,11 +234,11 @@ impl da::Poser for RigPoser<'_> {
     }
 
     fn rest(&self, out: &mut [FrameDof]) {
-        rest_into(&self.0.model.bones, &self.0.model.dofs, out);
+        rest_into(self.bones, self.dofs, out);
     }
 
     fn weights(&self, f: da::Filter) -> &[f32] {
-        &self.0.dofw[match f {
+        &self.dofw[match f {
             da::Filter::Spine => 0,
             da::Filter::Neck => 1,
             da::Filter::NoFace => 2,
@@ -2414,7 +2426,7 @@ impl Drivers {
                 // hand-built pose)
                 let fr = rider_machine.then(|| {
                     ride_step(ride, &rig.dict, &rig.clips, b, &i, self.time, dt, None);
-                    ride.seq.compose(&RigPoser(rig))
+                    ride.seq.compose(&RigPoser::of(rig))
                 });
                 if std::mem::take(&mut ride.gest_done) {
                     if let Some(a) = self.acting.get_mut(&s.id) {
@@ -2423,10 +2435,10 @@ impl Drivers {
                 }
                 match fr {
                     Some(Some(fr)) => finish(&fr, &rig.model.bones, &mut local),
-                    Some(None) => finish(&da::Poser::blank(&RigPoser(rig)), &rig.model.bones, &mut local),
+                    Some(None) => finish(&da::Poser::blank(&RigPoser::of(rig)), &rig.model.bones, &mut local),
                     None => ride_pose(ride, b, &rig.model.bones, &rig.model.neck_bones, &i, self.time, dt, &mut local, &mut other),
                 }
-            } else if let Some(fr) = self.cars.get(&s.uid).filter(|_| machines && !s.bike).and_then(|a| a.seq.compose(&RigPoser(rig))) {
+            } else if let Some(fr) = self.cars.get(&s.uid).filter(|_| machines && !s.bike).and_then(|a| a.seq.compose(&RigPoser::of(rig))) {
                 finish(&fr, &rig.model.bones, &mut local);
                 by_machine = true;
             } else {
@@ -4119,9 +4131,120 @@ mod ride_recorded_tests {
                 continue;
             };
             runs += 1;
-            ride_run(run, &fix, &b, &dict, &clips);
+            ride_run(run, &fix, &b, &dict, &clips, &mut |_, _| {});
         }
         eprintln!("{runs} rides compared");
+    }
+
+    /// The composed pose against the original's skeleton (cutscenes2, 2026-11-18): the player rider's set
+    /// (drv_mp_01_mot_set_h) posed by the composer from the ride's own motion tree, `finish` into the skeleton's locals, against
+    /// the locals the original's finish (F-59653) left in its skeleton (composer +28; recorded at the next driver update, DSKL),
+    /// rides k1 (chase view), k2 (cockpit view) and k3 (chase view, the burnouts) and k5 (cockpit view, the burnouts) of work/cutscenes2/skel.
+    #[test]
+    #[ignore]
+    fn ride_poses_match_the_recorded_bones() {
+        let root = Path::new("D:/MCLA/extracted/cache");
+        let dir = root.join("resources/character/drv_mp_01_mot_set_h");
+        let Ok(rd_dir) = std::fs::read_dir(&dir) else {
+            eprintln!("no disc data, skipped");
+            return;
+        };
+        let mut files: Vec<PathBuf> = rd_dir.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "r6")).collect();
+        files.sort();
+        let c = crate::skin::SkinModel::read(&files[0]).unwrap();
+        // (the rig's pieces as `SkinModel::from_character` and `Drivers::rig` make them)
+        let ids: Vec<u16> = c.bones.iter().map(|b| b.id).collect();
+        let bones: Vec<crate::skin::Bone> = c.bones.iter().map(|b| crate::skin::Bone { parent: b.parent, pos: b.local_pos, rot: b.local_rot, bind: b.world_pos, rest: b.rest_raw }).collect();
+        let dofs: Vec<(bool, bool)> = c.bones.iter().map(|b| (b.dof_trans, b.dof_rot)).collect();
+        let [face, neck, spine] = crate::skin::bone_masks(&c);
+        let nf: Vec<bool> = face.iter().map(|f| !f).collect();
+        let dofw = [dof_weights(&spine), dof_weights(&neck), dof_weights(&nf)];
+        let res = load_resource_file(&pack_path(root, true, false, "kaw_ninja_zx14_06")).unwrap();
+        let rd = Rd::new(&res);
+        let entries = pack_entries(&res);
+        let clip = |suffixes: &[&str]| -> Option<Clip> {
+            for s in suffixes {
+                let mut hit = entries.iter().filter(|(_, n)| n.to_ascii_lowercase().ends_with(s)).collect::<Vec<_>>();
+                hit.sort_by_key(|(_, n)| !n.to_ascii_lowercase().starts_with("kaw_ninja_zx14_06"));
+                if let Some((o, _)) = hit.first() {
+                    return animation_named(&rd, *o).map(|a| Clip::bind(&Arc::new(a), &ids, false, false));
+                }
+            }
+            None
+        };
+        let b = BikeClips::load(&clip).unwrap();
+        let (mut dict, mut clips) = (HashMap::new(), Vec::new());
+        for (k, o) in holder_keys(&rd) {
+            if let Some(a) = animation_named(&rd, o) {
+                dict.insert(k, clips.len() as u32);
+                clips.push(Clip::bind(&Arc::new(a), &ids, false, false));
+            }
+        }
+        let poser = RigPoser { bones: &bones, dofs: &dofs, layout: c.frame_layout, clips: &clips, dofw: &dofw };
+        let names: Vec<String> = c.bones.iter().map(|b| b.name.clone()).collect();
+        for run in ["k1", "k2", "k3", "k5"] {
+            let Ok(fix) = std::fs::read_to_string(format!("D:/MCLA/work/cutscenes2/skel/{run}.fix")) else {
+                eprintln!("no {run}.fix, skipped");
+                continue;
+            };
+            // (k2 ends in several view changes a frame apart from frame 2088 on: compared up to there)
+            let cut = if run == "k2" { 2088 } else { usize::MAX };
+            let fix: String = {
+                let mut n = 0;
+                fix.lines().take_while(|l| { n += l.starts_with("F ") as usize; n <= cut }).map(|l| format!("{l}
+")).collect()
+            };
+            let mut prev: Option<Vec<(Quat, Vec3)>> = None;
+            let (mut frames, mut worst_r, mut worst_t, mut worst_at) = (0, [0.0f32; 2], 0.0f32, String::new());
+            let mut per_bone = vec![(0.0f32, 0.0f32); bones.len()];
+            let mut local = Vec::new();
+            let mut seen = 0;
+            ride_run(run, &fix, &b, &dict, &clips, &mut |r, k| {
+                seen += 1;
+                // (the replay starts from the stopped idle enter's crossfade out of an empty tree, while the original's tree was
+                // already built: the first 30 frames are left out)
+                if let (Some(k), Some(p), true) = (k, prev.as_ref(), seen > 30) {
+                    let w: Vec<f32> = k.split_whitespace().skip(2).map(|x| f32::from_bits(u32::from_str_radix(x, 16).unwrap())).collect();
+                    assert_eq!(w.len(), 12 * p.len(), "{run}: bone count");
+                    frames += 1;
+                    for (bi, (q, t)) in p.iter().enumerate() {
+                        let m = glam::Mat3::from_quat(*q);
+                        let o = &w[12 * bi..12 * bi + 12];
+                        // (both conventions: the original's rows as the port's columns, or as its rows)
+                        let mut e = [0.0f32; 2];
+                        for r in 0..3 {
+                            for cc in 0..3 {
+                                e[0] = e[0].max((o[3 * r + cc] - m.col(r)[cc]).abs());
+                                e[1] = e[1].max((o[3 * r + cc] - m.col(cc)[r]).abs());
+                            }
+                        }
+                        let et = (Vec3::new(o[9], o[10], o[11]) - *t).length();
+                        worst_r = [worst_r[0].max(e[0]), worst_r[1].max(e[1])];
+                        per_bone[bi] = (per_bone[bi].0.max(e[0]), per_bone[bi].1.max(et));
+                        if et > worst_t {
+                            worst_t = et;
+                            worst_at = format!("frame {frames} bone {} ({}) {:?} want {:?}", bi, names[bi], t, (o[9], o[10], o[11]));
+                        }
+                    }
+                }
+                prev = match r.seq.compose(&poser) {
+                    Some(fr) => {
+                        finish(&fr, &bones, &mut local);
+                        Some(local.clone())
+                    }
+                    None => None,
+                };
+            });
+            eprintln!("{run}: {frames} frames; rotation max diff {:?} (rows as columns, as rows), translation max {worst_t} m at {worst_at}", worst_r);
+            let mut bad: Vec<(usize, (f32, f32))> = per_bone.iter().copied().enumerate().filter(|(_, e)| e.0 > 1e-4 || e.1 > 1e-4).collect();
+            bad.sort_by(|a, z| z.1 .0.total_cmp(&a.1 .0));
+            for (bi, e) in bad.iter().take(40) {
+                eprintln!("  bone {bi} {}: rotation {} translation {}", names[*bi], e.0, e.1);
+            }
+            // (the original's rows are the port's columns; the port's rotation matrix from its quaternion, not the original's
+            // conversion: float rounding only)
+            assert!(frames > 1000 && worst_r[0] < 2e-6 && worst_t < 2e-6, "{run}: poses differ");
+        }
     }
 
     /// A command as the recorder writes it (the overlay builders, the overlay's end and its rate are not hooked).
@@ -4141,7 +4264,9 @@ mod ride_recorded_tests {
         }
     }
 
-    fn ride_run(run: &str, fix: &str, b: &BikeClips, dict: &HashMap<String, u32>, clips: &[Clip]) {
+    /// One recorded ride through `ride_step`, every frame compared; `pose` sees the ride after each frame's step with the
+    /// frame's `K` line (the original's skeleton at the frame's driver update: last frame's pose; fix2.py of cutscenes2).
+    fn ride_run(run: &str, fix: &str, b: &BikeClips, dict: &HashMap<String, u32>, clips: &[Clip], pose: &mut dyn FnMut(&Ride, Option<&str>)) {
         let hex = |s: &str| u32::from_str_radix(s, 16).unwrap();
         let lines: Vec<&str> = fix.lines().collect();
         let mut r = Ride::default();
@@ -4175,6 +4300,10 @@ mod ride_recorded_tests {
             let mut calls: Vec<String> = Vec::new();
             while i < lines.len() && lines[i].starts_with("C ") {
                 calls.push(lines[i][2..].to_ascii_lowercase());
+                i += 1;
+            }
+            let k_line = lines.get(i).filter(|l| l.starts_with("K ")).copied();
+            if k_line.is_some() {
                 i += 1;
             }
             let f = |v: &[u32], o: usize| f32::from_bits(v[o / 4]);
@@ -4232,6 +4361,7 @@ mod ride_recorded_tests {
                 }
             }
             ride_step(&mut r, dict, clips, b, &inp, time, dt, Some(&mut got));
+            pose(&r, k_line);
             // (the context words the riding states write: +12, +52, +56, +60, +64)
             let c = r.ctx;
             if [c.flags2, c.ease_to.to_bits(), c.smooth_k[0].to_bits(), c.smooth_k[1].to_bits(), c.scale.to_bits()] != [w[3], w[13], w[14], w[15], w[16]] {
