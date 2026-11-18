@@ -1758,6 +1758,19 @@ pub fn flat_forward(back: Vec3) -> (f32, f32) {
     (-(back.x * k), -(back.z * k))
 }
 
+/// F-83397's speed of the focus (the tracker +968): the player's velocity with y = 0 (+208), its length as the vector
+/// unit takes it (z^2 + (y^2 + x^2), the reciprocal square root with one Newton step, times the squared length; 0 for a
+/// zero length) times 2.2369363 (the image's mph word).
+pub fn focus_mph(vel: Vec3) -> f32 {
+    let dd = vel.z * vel.z + (0.0 + vel.x * vel.x);
+    if dd == 0.0 {
+        return 0.0;
+    }
+    let y = 1.0 / dd.sqrt();
+    let k = -(dd * (y * y) - 1.0) * (0.5 * y) + y;
+    (dd * k) * f32::from_bits(0x400F_29F7)
+}
+
 /// F-74567, the follower's pose (behaviour slot 4 F-74063 writes it into the target matrix, then that matrix's y = car
 /// +2324): no rail - rows (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 0, 0) and the pose flag (+160 0x80) cleared;
 /// else from the rail's slot 9 point `p` and derivative `t`: row 2 = 0 - t, row 0 = row 2 x (0, 1, 0, 0) and row 1 = row 0
@@ -8907,8 +8920,10 @@ impl Vehicles {
         // while its lane belongs to no road)
         let (view, mph, player_link) = match self.cars.iter().find(|c| c.is_player) {
             Some(c) => {
-                let f = Vec3::new(c.state.forward().x, 0.0, c.state.forward().z).normalize_or(Vec3::NEG_Z);
-                (f, c.state.speed() / MPH, Self::player_lane(nav, c))
+                // (F-83397: the view 0 - the matrix's z row made flat and unit, `flat_forward`; the speed that of the
+                // velocity made flat, `focus_mph`)
+                let (fx, fz) = flat_forward(c.state.rot * Vec3::Z);
+                (Vec3::new(fx, 0.0, fz), focus_mph(c.state.vel), Self::player_lane(nav, c))
             }
             None => (Vec3::NEG_Z, 0.0, None),
         };
@@ -13354,6 +13369,15 @@ mod ghost_tests {
         let mut m = GMwc { lo: 3, carry: 1 };
         let seed = m.next() & 0x7FFF_FFFF;
         assert_eq!((w.made, pool.count, pool.parked_pending().count()), (vec![(17, seed)], 0, 0));
+    }
+
+    /// F-83397's focus speed: a flat velocity's length in mph, a climb not counted, zero for none.
+    #[test]
+    fn focus_speed_is_flat() {
+        assert_eq!(focus_mph(Vec3::ZERO), 0.0);
+        let v = focus_mph(Vec3::new(3.0, 50.0, 4.0));
+        assert!((v - 5.0 * 2.236_936_3).abs() < 1e-5, "{v}");
+        assert_eq!(focus_mph(Vec3::new(0.0, 9.0, 0.0)), 0.0);
     }
 
     /// A layout item's parked car (F-90920 -> F-13129) is a pool request too: the item is held while it is pending (no
