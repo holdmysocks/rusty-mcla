@@ -6555,6 +6555,50 @@ mod tests {
         assert!(bad.is_empty(), "{} of {n} differ, first: {:?}", bad.len(), &bad[..bad.len().min(4)]);
     }
 
+    /// F-58331 (a car's lane update and report) run offline whole on the placed city navsys (harness
+    /// work/traffic-detail/laneupd: a faked obstacle - its matrix, radius and MWC -, the real AddLane / RemoveLane, lane class
+    /// and quadtree query): 300 cars of radius 0.5 - 30 m moved over 40 frames near a lane, 70 % with their own MWC; per frame
+    /// `lane_update` gives the same entries (lane and phase, in order), the same report (lane, d2, phase, tangent) and the same
+    /// MWC state bit for bit.
+    #[test]
+    fn lane_update_matches_the_original() {
+        let root = std::path::PathBuf::from(std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into()));
+        let Ok(res) = crate::assets::load_resource_file(&root.join("resources/city/sc/0x9960fcd8.r66")) else { return };
+        let nav = NavSys::parse(&res).unwrap();
+        let h = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let f = |s: &str| f32::from_bits(h(s));
+        let mut dl = super::DriverLanes::default();
+        let mut mwc = super::super::parked::Mwc { lo: 0, carry: 0 };
+        let (mut frames, mut bad) = (0, Vec::new());
+        for line in include_str!("testdata/lane_update_ref.txt").lines().filter(|l| !l.starts_with('#')) {
+            let w: Vec<&str> = line.split_whitespace().collect();
+            if w[0] == "C" {
+                dl = super::DriverLanes::default();
+                mwc = super::super::parked::Mwc { lo: h(w[3]), carry: h(w[4]) };
+                continue;
+            }
+            let p = glam::Vec3::new(f(w[2]), f(w[3]), f(w[4]));
+            super::lane_update(&nav, &mut dl, p, 4.5f32.mul_add(0.5, f(w[5])), &mut mwc, 0);
+            let n: usize = w[7].parse().unwrap();
+            let want: Vec<(i64, u32)> = (0..n).map(|e| (w[8 + 2 * e].parse().unwrap(), h(w[9 + 2 * e]))).collect();
+            let got: Vec<(i64, u32)> = dl.list.iter().map(|e| (e.0 as i64, e.1.to_bits())).collect();
+            let r = &w[9 + 2 * n..];
+            let rep = match dl.best {
+                Some((l, d2)) => r[0].parse::<i64>().ok() == Some(l as i64) && h(r[1]) == d2.to_bits(),
+                None => r[0] == "-1" && h(r[1]) == f32::MAX.to_bits(),
+            } && h(r[2]) == dl.best_t.to_bits()
+                && [h(r[4]), h(r[5]), h(r[6])] == dl.best_tan.to_array().map(f32::to_bits);
+            if got != want || !rep || h(r[8]) != mwc.lo || h(r[9]) != mwc.carry {
+                bad.push(format!("{line} -> {got:?} {:?} {} {:?} {:08x} {:08x}", dl.best, dl.best_t, dl.best_tan, mwc.lo, mwc.carry));
+                // (the next frames start from the original's state only with the same list: stop at a case's first difference)
+                dl = super::DriverLanes::default();
+            }
+            frames += 1;
+        }
+        assert_eq!(frames, 12000);
+        assert!(bad.is_empty(), "{} of {frames} differ, first: {:?}", bad.len(), &bad[..bad.len().min(3)]);
+    }
+
     /// F-55442 (with F-32663) run offline for every lane of the city as the next lane, on the placed navsys (harness and
     /// recipe: docs reference/map/signal_rule.md "Which lane, checked"): the junction lane chosen (or none) and the lane's
     /// flags equal `light_lane`'s.
@@ -9825,6 +9869,75 @@ pub fn lane_answer(nav: &NavSys, lane: usize, p: Vec3, r: f32) -> Option<LaneHit
     Some(LaneHit { lane, t, d2, point, dir: crate::railroute::deriv(c, t) })
 }
 
+/// F-58331's update of one car's lane entries and its report (see `update_driver_lanes`): the lane quadtree's lanes within
+/// `w` of `p` (flags & 1, 48 at most: F-53328 -> F-58446); one entry drawn and checked by its lane's answer (slot 3, F-15621
+/// `lane_answer` with the radius w); one query lane drawn and kept, dropped or added; the report the nearest entry at its
+/// phase. Run offline whole against the port (work/traffic-detail/laneupd, test `lane_update_matches_the_original`).
+fn lane_update(nav: &NavSys, dl: &mut DriverLanes, p: Vec3, w: f32, mwc: &mut super::parked::Mwc, uid: u32) {
+    let found = nav.lanes_near(p, w, 1, 48);
+    let near = |lane: usize| lane_answer(nav, lane, p, w).map(|h| h.t);
+    let mut checked: Option<usize> = None;
+    if !dl.list.is_empty() {
+        let k = mwc.index(dl.list.len() as u32) as usize;
+        let lane = dl.list[k].0;
+        match found.iter().position(|&l| l == lane) {
+            Some(fi) => {
+                checked = Some(fi);
+                if let Some(t) = near(lane) {
+                    dl.list[k].1 = t;
+                } else {
+                    dl.remove(k);
+                }
+            }
+            None => {
+                dl.remove(k);
+            }
+        }
+    }
+    if !found.is_empty() {
+        let fi = mwc.index(found.len() as u32) as usize;
+        if checked != Some(fi) {
+            let lane = found[fi];
+            let ans = near(lane);
+            match dl.list.iter().position(|e| e.0 == lane) {
+                Some(k) => {
+                    if let Some(t) = ans {
+                        dl.list[k].1 = t;
+                    } else {
+                        dl.remove(k);
+                    }
+                }
+                None => {
+                    if let Some(t) = ans {
+                        dl.add(lane, t);
+                    }
+                }
+            }
+        }
+    }
+    // (F-58331's report: each listed lane's slot 8 at its phase - F-71868, the point and dP/du -, d^2 to the car
+    // as dy^2, dz fused, dx fused, the first strictly nearest from 3.4e38 in the list's order; its tangent the
+    // vector unit's normalisation of dP/du)
+    let mut best: Option<(usize, f32)> = None;
+    let mut best_tan = Vec3::ZERO;
+    for &(lane, t, _) in &dl.list {
+        let (q, d) = nav.curves[lane].eval_pair(t);
+        let (dy, dz, dx) = (q.y - p.y, q.z - p.z, q.x - p.x);
+        let d2 = crate::physics::exact::fma(dx, dx, crate::physics::exact::fma(dz, dz, dy * dy));
+        if d2 < best.map_or(f32::MAX, |b| b.1) {
+            best = Some((lane, d2));
+            best_tan = crate::tcp_rail::vnorm(d);
+        }
+    }
+    dl.best_tan = best_tan;
+    static LANE_LOG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *LANE_LOG.get_or_init(|| std::env::var_os("MCLA_DRIVER_LANE_LOG").is_some()) && best.map(|b| b.0) != dl.best.map(|b| b.0) {
+        log::info!("driver car {uid}: lane {:?} ({} listed, {} near, w {w:.2})", best.map(|b| (b.0, b.1.sqrt())), dl.list.len(), found.len());
+    }
+    dl.best_t = best.and_then(|b| dl.list.iter().find(|e| e.0 == b.0)).map_or(0.0, |e| e.1);
+    dl.best = best;
+}
+
 /// The curve rail of a path (F-86418 -> F-80887 -> F-42351; class F-33069,
 /// flags 0x801): a clamped B-spline over `cps`, degree min(3, k - 1) (at least 1), the knots
 /// handed over p zeros, 1 .. k - p - 1, then k - p repeated p times, with one more knot put
@@ -10858,76 +10971,8 @@ impl Vehicles {
             let uid = c.uid;
             // (the draws: the car's own MWC when the obstacle has a car, else the shared one)
             let mut mwc = own.unwrap_or(self.park_rng);
-            let found = nav.lanes_near(p, w, 1, 48);
-            let near = |lane: usize| -> (f32, f32) {
-                let cv = &nav.curves[lane];
-                let n = if lane_boxes(nav)[lane].len >= 450.0 { 8 } else { 4 };
-                let (t, d2, _) = curve_nearest(cv, p, n, 10);
-                (t, d2)
-            };
             let mut dl = self.driver_lanes.remove(&uid).unwrap_or_default();
-            let mut checked: Option<usize> = None;
-            if !dl.list.is_empty() {
-                let k = mwc.index(dl.list.len() as u32) as usize;
-                let lane = dl.list[k].0;
-                match found.iter().position(|&l| l == lane) {
-                    Some(fi) => {
-                        checked = Some(fi);
-                        let (t, d2) = near(lane);
-                        if d2 < w * w {
-                            dl.list[k].1 = t;
-                        } else {
-                            dl.remove(k);
-                        }
-                    }
-                    None => {
-                        dl.remove(k);
-                    }
-                }
-            }
-            if !found.is_empty() {
-                let fi = mwc.index(found.len() as u32) as usize;
-                if checked != Some(fi) {
-                    let lane = found[fi];
-                    let (t, d2) = near(lane);
-                    let valid = d2 < w * w;
-                    match dl.list.iter().position(|e| e.0 == lane) {
-                        Some(k) => {
-                            if valid {
-                                dl.list[k].1 = t;
-                            } else {
-                                dl.remove(k);
-                            }
-                        }
-                        None => {
-                            if valid {
-                                dl.add(lane, t);
-                            }
-                        }
-                    }
-                }
-            }
-            // (F-58331's report: each listed lane's slot 8 at its phase - F-71868, the point and dP/du -, d^2 to the car
-            // as dy^2, dz fused, dx fused, the first strictly nearest from 3.4e38 in the list's order; its tangent the
-            // vector unit's normalisation of dP/du)
-            let mut best: Option<(usize, f32)> = None;
-            let mut best_tan = Vec3::ZERO;
-            for &(lane, t, _) in &dl.list {
-                let (q, d) = nav.curves[lane].eval_pair(t);
-                let (dy, dz, dx) = (q.y - p.y, q.z - p.z, q.x - p.x);
-                let d2 = crate::physics::exact::fma(dx, dx, crate::physics::exact::fma(dz, dz, dy * dy));
-                if d2 < best.map_or(f32::MAX, |b| b.1) {
-                    best = Some((lane, d2));
-                    best_tan = crate::tcp_rail::vnorm(d);
-                }
-            }
-            dl.best_tan = best_tan;
-            static LANE_LOG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            if *LANE_LOG.get_or_init(|| std::env::var_os("MCLA_DRIVER_LANE_LOG").is_some()) && best.map(|b| b.0) != dl.best.map(|b| b.0) {
-                log::info!("driver car {uid}: lane {:?} ({} listed, {} near, w {w:.2})", best.map(|b| (b.0, b.1.sqrt())), dl.list.len(), found.len());
-            }
-            dl.best_t = best.and_then(|b| dl.list.iter().find(|e| e.0 == b.0)).map_or(0.0, |e| e.1);
-            dl.best = best;
+            lane_update(nav, &mut dl, p, w, &mut mwc, uid);
             self.driver_lanes.insert(uid, dl);
             let c = &mut self.cars[i];
             match (own.is_some(), c.rail.as_mut()) {
