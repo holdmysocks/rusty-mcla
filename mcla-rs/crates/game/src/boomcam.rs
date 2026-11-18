@@ -3637,8 +3637,10 @@ impl TrackCam {
     /// MinAppXZPos m/s (G+88) when that is longer, else 30 % a call; the camera stands on the line from T at that
     /// distance (+128, byte +156). Clear after a touch (+668 not 0): back out to L the same way while it is not there
     /// (as coded: with MinAppXZPos 0 shown only once within 1e-4 of L); else +672 = L, +668 = 0. The side bits
-    /// 0x2 / 0x4 / 0x8 / 0x10 of the touch's normal. (approx.: type 3's four class sweeps, which only add state bits, are
-    /// left out - no shipped file has CollideType 3)
+    /// 0x2 / 0x4 / 0x8 / 0x10 of the touch's normal. Checked word for word against the original run offline
+    /// (`track_pull_matches_the_original`). Not ported: TYPE2 and type 3's four class sweeps (which only add state bits) -
+    /// no camera file the game reads has CollideType 2 or 3 (the 8 camTrackCS files with type 3 have no name in the
+    /// executable or the data; track_collision_rule.md)
     fn pull_in(&mut self, t: &TrackTune, dt: f32, frames: f32, test: SphereTest, fov: f32, aspect: f32) -> Vec3 {
         let p = self.pull_in_at(t, self.at, dt, frames, test, pull_radius(t.near, fov, aspect));
         if self.corrected {
@@ -3740,7 +3742,11 @@ impl TrackCam {
 /// (+468): sqrt((tan_y near)^2 + (tan_x near)^2) + 0.1, the scalar unit's chain.
 fn pull_radius(near: f32, fov: f32, aspect: f32) -> f32 {
     let ty = (fov.to_radians() * 0.5).tan();
-    let tx = ty * aspect;
+    pull_radius_tan(near, ty, ty * aspect)
+}
+
+/// The same ball from the viewport's words: near +704, tan up +712, tan across +716.
+fn pull_radius_tan(near: f32, ty: f32, tx: f32) -> f32 {
     let (a, b) = (tx * near, ty * near);
     crate::physics::exact::fma(b, b, a * a).sqrt() + 0.1
 }
@@ -6125,6 +6131,93 @@ SSFovMin 60
     }
 
     /// F-32916's choice on top: short way when clear, else the long way, else B as it is.
+    /// F-91096 (TYPE13, CollideType 1) against the original's code run offline over sequences of frames
+    /// (tools/track_pull_reference.py -> testdata/track_pull_ref.txt: 1,500 cameras x 12 frames; the ball F-87651 and the
+    /// sweep F-58512 stubbed to answer the frame's words, the approach F-90102 run): the place +128, the shown byte +156,
+    /// the state bits +668 and the kept distance +672 equal word for word frame after frame, and the probes asked with the
+    /// same centre, ends, radius, include and states - the ball at T touching, the sweep's touches, normals that do not
+    /// face T -> C, touches outside 0..1, CollideMinDist, the release at MinAppXZPos m/s and at 30 % a call, sticky bits.
+    #[test]
+    fn track_pull_matches_the_original() {
+        use std::cell::RefCell;
+        struct Frame {
+            ball: Option<Vec3>,
+            sweep: Option<(Vec3, f32)>,
+            log: RefCell<(Vec<(Vec3, f32, CamQuery)>, Vec<(Vec3, Vec3, f32, bool)>)>,
+        }
+        impl CamWorld for Frame {
+            fn contacts(&self, c: Vec3, r: f32, q: CamQuery, _max: usize) -> Vec<(f32, Vec3)> {
+                self.log.borrow_mut().0.push((c, r, q));
+                self.ball.map(|n| (0.0, n)).into_iter().collect()
+            }
+            fn sweep(&self, _a: Vec3, _b: Vec3, _r: f32, _cars: bool) -> Option<(f32, Vec3)> {
+                unreachable!()
+            }
+            fn sweep_rec(&self, a: Vec3, b: Vec3, r: f32, cars: bool) -> Option<(f32, f32, Vec3)> {
+                self.log.borrow_mut().1.push((a, b, r, cars));
+                self.sweep.map(|(n, d)| (0.0, d, n))
+            }
+        }
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let f = |w: u32| f32::from_bits(w);
+        let v = |w: &[u32]| Vec3::new(f(w[0]), f(w[1]), f(w[2]));
+        let same = |a: f32, b: u32| a.to_bits() == b || (a.is_nan() && f(b).is_nan());
+        let same3 = |a: Vec3, b: &[u32]| same(a.x, b[0]) && same(a.y, b[1]) && same(a.z, b[2]);
+        let (mut cam, mut t, mut r) = (TrackCam::default(), TrackTune::wipeout(Vec3::ZERO), 0.0f32);
+        let mut dt = 0.0;
+        let (mut frames, mut shown, mut ball_hits, mut sweep_hits, mut release, mut slow, mut min_hits, mut nan) = (0, 0, 0, 0, 0, 0, 0, 0);
+        for line in include_str!("testdata/track_pull_ref.txt").lines() {
+            let (tag, rest) = line.split_at(2);
+            if tag == "PC" {
+                let w: Vec<u32> = rest.split_whitespace().map(h).collect();
+                cam = TrackCam::default();
+                t = TrackTune::wipeout(Vec3::ZERO);
+                t.collide_type = w[0] as i32;
+                t.collide_min = f(w[5]);
+                t.app_xz.0 = f(w[6]);
+                assert_eq!(w[4], 0.1f32.to_bits());
+                r = pull_radius_tan(f(w[1]), f(w[2]), f(w[3]));
+                dt = f(w[7]);
+                cam.bits = w[8];
+                cam.dist = f(w[9]);
+                continue;
+            }
+            let (a, b) = rest.split_once(" -> ").unwrap();
+            let i: Vec<u32> = a.split_whitespace().map(h).collect();
+            let o: Vec<u32> = b.split_whitespace().map(h).collect();
+            let fr = Frame { ball: (i[6] != 0).then(|| v(&i[7..])), sweep: (i[10] != 0).then(|| (v(&i[11..]), f(i[14]))), log: RefCell::new((vec![], vec![])) };
+            let (c, at) = (v(&i[0..]), v(&i[3..]));
+            cam.out[3] = c;
+            let was = cam.bits;
+            let p = cam.pull_in_at(&t, at, dt, 1.0, &fr, r);
+            let ctx = format!("{line}: port {p} {} {:x} {}", cam.corrected, cam.bits, cam.dist);
+            assert!(same3(p, &o[0..3]), "{ctx}");
+            assert_eq!(cam.corrected as u32, o[3], "{ctx}");
+            assert_eq!(cam.bits, o[4], "{ctx}");
+            assert!(same(cam.dist, o[5]), "{ctx}");
+            let (balls, sweeps) = fr.log.into_inner();
+            assert_eq!(balls.len() as u32, o[6], "{ctx}");
+            for (c0, r0, q) in &balls {
+                assert!(same3(*c0, &o[7..10]) && same(*r0, o[10]) && q.include == o[11] && q.states == o[12], "{ctx}");
+            }
+            assert_eq!(sweeps.len() as u32, o[13], "{ctx}");
+            for (a0, b0, r0, cars) in &sweeps {
+                // (cars: the camera's include 0x100 with the states 7, CamQuery::CARS)
+                assert!(same3(*a0, &o[14..17]) && same3(*b0, &o[17..20]) && same(*r0, o[20]) && *cars && o[21] == 0x100 && o[22] == 7, "{ctx}");
+            }
+            frames += 1;
+            shown += o[3] as usize;
+            ball_hits += (o[4] & 1 != 0 && sweeps.is_empty()) as usize;
+            sweep_hits += (o[4] & 1 != 0 && !sweeps.is_empty()) as usize;
+            release += (was != 0 && o[4] & 1 == 0 && o[3] == 1) as usize;
+            slow += (o[4] & 1 != 0 && t.app_xz.0 > 0.0) as usize;
+            min_hits += (o[4] & 0x20 != 0) as usize;
+            nan += f(o[0]).is_nan() as usize;
+        }
+        eprintln!("frames {frames} shown {shown} ball {ball_hits} sweep {sweep_hits} release {release} rate {slow} min {min_hits} nan {nan}");
+        assert!(frames >= 18_000 && ball_hits >= 500 && sweep_hits >= 1_500 && release >= 500 && slow >= 300 && min_hits >= 300, "{frames}");
+    }
+
     #[test]
     fn polar_cam_takes_the_short_way_then_the_long_way_then_cuts() {
         let a = (Vec3::new(5.0, 2.0, 0.0), Vec3::ZERO);
