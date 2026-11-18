@@ -15772,6 +15772,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     let p = self.vehicles.player().map_or(Vec3::ZERO, |c| c.state.pos);
                     world.load_room(garagein::nearest(p));
                 }
+                // (every entry opens at the top menu's first row, `Game::garage_enter_top`)
+                self.game.garage_enter_top();
                 // (back from a test drive: the showroom again, as `garage.WarpToGarage` leaves it)
                 if self.game.test_drive.take().is_some() {
                     self.game.showroom_again = true;

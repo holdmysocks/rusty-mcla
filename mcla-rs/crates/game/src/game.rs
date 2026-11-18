@@ -2456,6 +2456,20 @@ impl Game {
         if have == 0 { i } else { self.car_index(&crate::catalog::copy_key(&model, have + 1)).unwrap_or(i) }
     }
 
+    /// The garage is entered at its top menu's first row: `game.garageTransition` goes to GARAGE_TOP_MENU.s0
+    /// (UserInterface.sc.xml), whose onenter pushes GARAGE_TOP_MENU on an empty stack; leaving left the state chart
+    /// (EXIT_GARAGE_YES: LeaveGarage, goto(HudPlayerList)), so nothing of the last visit's menus - the exit
+    /// confirmation it was left from among them - is there again.
+    pub fn garage_enter_top(&mut self) {
+        self.garage_menu = 0;
+        self.garage_cur = 0;
+        self.garage_stack.clear();
+        self.garage_part = None;
+        self.garage_xpart = None;
+        self.plate_edit = None;
+        self.garage_list = None;
+    }
+
     /// Buy car `i` if it is unlocked and affordable. Returns false (with a message) otherwise.
     pub fn try_buy(&mut self, i: usize) -> bool {
         if self.is_owned(i) {
@@ -17160,6 +17174,18 @@ mod ui_original_tests;
 #[cfg(test)]
 mod tests {
     use super::Game;
+
+    /// Left by EXIT GARAGE > YES (menu 2, the confirmation, over the top menu), the garage opens again at the
+    /// top menu's first row (GitHub #59).
+    #[test]
+    fn the_garage_opens_at_the_top_menu_again() {
+        let mut g = Game::new(vec![std::path::PathBuf::from("v").join("vp_nsn_240sx_98")], 0);
+        g.garage_stack.push((0, 5));
+        g.garage_menu = 2;
+        g.garage_cur = 0;
+        g.garage_enter_top();
+        assert_eq!((g.garage_menu, g.garage_cur, g.garage_stack.len()), (0, 0, 0));
+    }
 
     /// The CHALLENGE / FLASH box (forms 82 / 83) names the key the flash is bound to on the
     /// keyboard: F on the default table, the player's own key when they moved it (a new career
