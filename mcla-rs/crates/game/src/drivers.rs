@@ -1487,8 +1487,9 @@ fn ride_sets(r: &Ride, i: &RideIn) -> (Option<f32>, Option<f32>) {
         St::Start | St::Fidget | St::Gesture => (None, None),
         St::Cruise | St::BurnC | St::BurnL | St::BurnR | St::Tuck => (Some(ph), Some(ride_speed_weight(i.speed))),
         St::Wheelie => {
+            // (not clamped above: a wheelie held past 2 s weights over 1, as recorded in bike4)
             let k = r.timer_a - 1.0;
-            (Some(ph), Some(if k > 0.0 { k.min(1.0) } else { 0.0 }))
+            (Some(ph), Some(if -k >= 0.0 { 0.0 } else { k }))
         }
         St::Stopped => (Some(i.x.clamp(-0.5, 0.5) + 0.5), None),
         St::Reverse => (Some((i.x + 1.0) * 0.5), None),
@@ -4056,8 +4057,19 @@ mod ride_recorded_tests {
         }
     }
 
-    /// The clip (or the pair's first clip) a state's enter asks for, outside the cockpit.
+    /// The clip (or the pair's first clip) a state's enter asks for; in the cockpit the `_ckpt` clips (the burnouts the
+    /// stopped idle's, the tuck the cruise's).
     fn clip_of(r: &Ride) -> Option<&'static str> {
+        if r.ck {
+            return Some(match r.state {
+                St::Stopped | St::BurnC | St::BurnL | St::BurnR => "drv_idle_stp_sweep_ckpt",
+                St::Cruise | St::Shift | St::Tuck => "drv_low_lean_sweep_ckpt",
+                St::Wheelie => "drv_wheelie_ckpt",
+                St::Endo => "drv_endo_ckpt",
+                St::Reverse => "drv_rev_sweep_ckpt",
+                _ => return None,
+            });
+        }
         Some(match r.state {
             St::Stopped | St::BurnC => "drv_idle_stp_sweep",
             St::Cruise | St::Shift => "drv_low_lean_sweep",
@@ -4101,7 +4113,7 @@ mod ride_recorded_tests {
             }
         }
         let mut runs = 0;
-        for run in ["bike1", "bike2", "bike3"] {
+        for run in ["bike1", "bike2", "bike3", "bike4"] {
             let Ok(fix) = std::fs::read_to_string(format!("D:/MCLA/work/driverlight/cmp/{run}.fix")) else {
                 eprintln!("no {run}.fix, skipped");
                 continue;
@@ -4171,6 +4183,9 @@ mod ride_recorded_tests {
             if first {
                 r.state = riding.into_iter().find(|s| name(*s) == state).unwrap();
                 r.ck = fl & 0x20_0000 != 0;
+                // (in the cockpit the stopped idle's enter takes the pan out: bike4, recorded in the cockpit view)
+                r.pan = !r.ck;
+                rec_pan = r.pan;
                 (r.timer_a, r.timer_b) = (f(&a, 148), f(&a, 152));
                 r.ctx = RideCtx { flags2: a[3], steer: f(&a, 24), smooth: f(&a, 28), ease_to: f(&a, 52), smooth_k: [f(&a, 56), f(&a, 60)], scale: f(&a, 64) };
                 r.drv408 = d408.first().map(|x| f32::from_bits(x.0));
