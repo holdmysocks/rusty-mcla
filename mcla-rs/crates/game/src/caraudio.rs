@@ -2561,7 +2561,8 @@ impl Fleet {
             }
         }
         self.idle.retain(|i, _| v.cars.get(*i).is_some_and(|c| c.is_player || Self::opponent(c)));
-        opp.sort_by(|a, b| a.0.total_cmp(&b.0));
+        // F-25575 sorts its entries with the C runtime's qsort F-79639 and the compare F-34621
+        crate::racemark::crt_qsort(&mut opp, |a, b| pool_cmp(a.0, b.0));
         amb.sort_by(|a, b| a.0.total_cmp(&b.0));
         // the player's car
         if let Some((pi, p)) = v.cars.iter().enumerate().find(|(_, c)| c.is_player) {
@@ -3217,8 +3218,34 @@ impl<H: Copy> AnimSound<H> {
     }
 }
 
+/// The engine pool's sort compare F-34621: 1 when a's squared distance is greater, -1 when it is less, else 0 (equal,
+/// +0 against -0, a NaN on either side).
+pub fn pool_cmp(a: f32, b: f32) -> i32 {
+    if a > b {
+        1
+    } else if a < b {
+        -1
+    } else {
+        0
+    }
+}
+
 #[cfg(test)]
 mod tests {
+
+    /// tools/pool_compare_reference.py ran the original's compare F-34621 offline on 30,400 pairs (every pair of 20
+    /// special floats, random pairs, a third equal): the port's pool_cmp gives the same answer on each
+    #[test]
+    fn the_pool_compare_is_the_originals() {
+        let mut n = 0;
+        for l in include_str!("testdata/pool_compare_ref.txt").lines().filter(|l| !l.is_empty()) {
+            let t: Vec<&str> = l.split_whitespace().collect();
+            let f = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+            assert_eq!(super::pool_cmp(f(t[1]), f(t[2])), t[4].parse::<i32>().unwrap(), "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 30400);
+    }
 
     /// tools/speed_sound_reference.py ran the original's handler F-77205 offline on 4,000 cases (the four WHOOSHES
     /// records of game.dat and random ones; no player, no vehicle, random speeds and throttles): whether a sound is made,
