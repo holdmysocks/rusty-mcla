@@ -4012,7 +4012,7 @@ mod recorded_tests {
                 durs.push(a.duration);
             }
         }
-        for run in ["chase", "pov", "idle", "lookback", "drive", "crash", "drive2"] {
+        for run in ["chase", "pov", "idle", "lookback", "drive", "crash", "drive2", "hard"] {
             let Ok(fix) = std::fs::read_to_string(dir.join(format!("{run}.fix"))) else {
                 eprintln!("no {run}.fix, skipped");
                 continue;
