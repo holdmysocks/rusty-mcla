@@ -638,6 +638,10 @@ pub fn paint_scene(ctx: &egui::Context, painter: &egui::Painter, meshes: &mut Me
                     if std::env::var("MCLA_MENU3D_LOG").is_ok() {
                         log::info!("menu3d: {} drawn with the Gloss programs: {:?}, hue {:?} {:.2}, ambient {:.3} light {:.3}, eye {:?}, world {:?}", n.file, mat, n.color, n.alpha, scene.ambient, scene.diffuse, vi.col(3), (view.frame * if skinned { n.rt } else { n.srt }).to_cols_array_2d());
                     }
+                    // (test hook MCLA_GLOSS_SKIP=<mesh>: that mesh not drawn, as a draw skipped in the original)
+                    if std::env::var("MCLA_GLOSS_SKIP").is_ok_and(|v| v == n.file) {
+                        continue;
+                    }
                     gloss.push(crate::menugloss::Draw {
                         verts,
                         world: view.frame * if skinned { n.rt } else { n.srt },
