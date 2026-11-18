@@ -468,7 +468,8 @@ enum Kind {
     /// `ahead`: the children made at Init (all of them unless on demand, F-75822), in order; on demand (more than 8, or
     /// tristate 5) each is made when it is reached from `list[at]`. `cur_off`: the parent offset of the current child
     Sequential { list: Vec<u32>, at: usize, cur: Option<Box<Node>>, ahead: std::collections::VecDeque<Node>, on_demand: bool, cur_off: u32 },
-    Retrig { child_hash: u32, count: i16, delay_ms: f32, next_ms: f32, made: i32, live: Vec<Node> },
+    /// `ord`: each live child's number (0 = the first); child k sits in slot k mod 2 (+72 / +73)
+    Retrig { child_hash: u32, count: i16, delay_ms: f32, next_ms: f32, made: i32, live: Vec<Node>, ord: Vec<i32> },
     Envelope { a: f32, d: f32, s: f32, hold: f32, r: f32, curves: [u32; 3], child: Box<Node>, rel_from: Option<f32> },
     OnStop { child: Box<Node>, on_stop: u32, stopped: Option<Box<Node>> },
     /// TwinLoop: its two children cross-faded by `fade`; `clock` the ms it has been stepped (the update's time)
@@ -1743,7 +1744,7 @@ impl SoundLib {
                     }
                 }
             }
-            Payload::Retriggered { count, delay_ms, child } => Kind::Retrig { child_hash: child, count, delay_ms: delay_ms as f32, next_ms: 0.0, made: 0, live: Vec::new() },
+            Payload::Retriggered { count, delay_ms, child } => Kind::Retrig { child_hash: child, count, delay_ms: delay_ms as f32, next_ms: 0.0, made: 0, live: Vec::new(), ord: Vec::new() },
             Payload::Envelope { attack, decay, sustain, hold, release, curves, child } => match self.make(child, depth + 1) {
                 Some(c) => Kind::Envelope { a: attack as f32, d: decay as f32, s: sustain as f32 * 0.01, hold: hold as f32, r: release as f32, curves, child: Box::new(c), rel_from: None },
                 None => Kind::Empty,
@@ -2284,6 +2285,7 @@ impl SoundLib {
         // what the node's children are played with: its start offset (+84, F-90115)
         let child_po = (n.tot.1, false);
         let releasing = n.clock.stopped;
+        let tri5 = n.h.tristate(5);
         let done = match &mut n.kind {
             Kind::Wave { clip, wave, voice, pos_ms, dur_ms, looping, run } => {
                 let Some(c) = clip.clone() else { n.st = St::Done; return };
@@ -2461,18 +2463,42 @@ impl SoundLib {
                 }
                 cur.is_none() && ahead.is_empty() && *at >= list.len()
             }
-            Kind::Retrig { child_hash, count, delay_ms, next_ms, made, live } => {
-                while offset >= *next_ms && (*count == -1 || *made < *count as i32) {
+            Kind::Retrig { child_hash, count, delay_ms, next_ms, made, live, ord } => {
+                // the Update F-26698: at most one retrigger an update, once the time since the last (+188; 0 at the Play,
+                // which plays the first child, made by the Init F-90323) reaches the delay (+192), while the count is -1 or
+                // above 1 (the count goes down; a stopped sound makes none). The new child takes the slot after the last
+                // one's (+213 toggles): its old child, the one before last, is killed there (F-50165, F-97268); with
+                // tristate 5 == 1 (+212) the other slot's child, the last one, gets the release stop (F-61585) first.
+                if offset >= *next_ms && (*count == -1 || *made < *count as i32) {
+                    let k = *made;
+                    if k > 0 && tri5 == 1 {
+                        if let Some(i) = ord.iter().position(|&o| o == k - 1) {
+                            stop_node(&mut live[i], -1, now);
+                        }
+                    }
+                    if let Some(i) = ord.iter().position(|&o| o == k - 2) {
+                        live.remove(i);
+                        ord.remove(i);
+                    }
                     if let Some(c) = self.make(*child_hash, 1) {
                         live.push(c);
+                        ord.push(k);
                     }
                     *made += 1;
-                    *next_ms += delay_ms.max(1.0);
+                    *next_ms = if k == 0 { 0.0 } else { offset } + *delay_ms;
                 }
                 for c in live.iter_mut() {
                     self.step(c, ms, now, ctx, Rt::NONE, (0, false), out);
                 }
-                live.retain(|c| c.st != St::Done);
+                let mut i = 0;
+                while i < live.len() {
+                    if live[i].st == St::Done {
+                        live.remove(i);
+                        ord.remove(i);
+                    } else {
+                        i += 1;
+                    }
+                }
                 live.is_empty() && *count != -1 && *made >= *count as i32
             }
             Kind::Envelope { a, d, s, hold, r, curves, child, rel_from } => {
@@ -3472,10 +3498,11 @@ fn reset_node(n: &mut Node) {
             *cur = None;
             ahead.clear();
         }
-        Kind::Retrig { next_ms, made, live, .. } => {
+        Kind::Retrig { next_ms, made, live, ord, .. } => {
             *next_ms = 0.0;
             *made = 0;
             live.clear();
+            ord.clear();
         }
         Kind::OnStop { child, stopped, .. } => {
             *stopped = None;
@@ -4088,7 +4115,10 @@ mod tests {
                     ty_ms = stream_ms(p[0] as u32, (p[2] != 0 && p[3] & 1 != 0).then_some(lw as i32));
                     Kind::Group { children: Vec::new() }
                 }
-                9 => Kind::Retrig { child_hash: 0, count: p[0] as i16, delay_ms: p[1] as f32, next_ms: 0.0, made: 0, live: ch.drain(..).collect() },
+                9 => {
+                    let live: Vec<Node> = ch.drain(..).collect();
+                    Kind::Retrig { child_hash: 0, count: p[0] as i16, delay_ms: p[1] as f32, next_ms: 0.0, made: 0, ord: (0..live.len() as i32).collect(), live }
+                }
                 _ => Kind::Group { children: ch.drain(..).collect() },
             };
             Node { h, vol: 0.0, pitch: 0, pan: -1, predelay_ms: 0.0, start_ms: 0.0, st: St::Waiting, t: 0.0, play_t: 0.0, clock: Clock::default(), env0: 0.0, tot: (f[1] as u32, f[2] as u32), ty_ms, kind }
@@ -4507,7 +4537,7 @@ mod tests {
         };
         // (the group's own update, F-29161, ends it in the update its last child ends)
         // a child that plays until stopped: a Retriggered with no child to make and no end
-        let alive = |release: i16| node(release, Kind::Retrig { child_hash: 0, count: -1, delay_ms: 1e9, next_ms: 1e9, made: 0, live: Vec::new() });
+        let alive = |release: i16| node(release, Kind::Retrig { child_hash: 0, count: -1, delay_ms: 1e9, next_ms: 1e9, made: 0, live: Vec::new(), ord: Vec::new() });
         let mut g = node(-1, Kind::Group { children: vec![alive(100), alive(-1)] });
         let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
         let a = crate::audio::Audio::new_offline(&dir).expect("audio");
@@ -4526,6 +4556,49 @@ mod tests {
                 // the release-less child ends at the stop's update, the other releases until 150
                 50..=140 => assert!(g.st == St::Playing && st == [St::Playing, St::Done], "{now} {:?} {st:?}", g.st),
                 _ => assert_eq!(g.st, St::Done, "{now}"),
+            }
+        }
+    }
+
+    /// The Retriggered update F-26698 (the disc's 22 are all endless): at most one retrigger an update, once the time since
+    /// the last reaches the delay; two slots, the new child killing the one before last; with tristate 5 == 1
+    /// (SKIDS_METAL_PING_RT_OVERLAP, 280 ms) the last child gets its release stop when the next starts, with 2
+    /// (TERRAINS_INTERIOR_PING_RETRIGG, 350 ms) it plays on.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn retriggered_keeps_two_slots() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let mut lib = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
+        let (ctx, rt) = root_ctx(&Req::default());
+        for (name, delay, tri5) in [("SKIDS_METAL_PING_RT_OVERLAP", 280.0, 1), ("TERRAINS_INTERIOR_PING_RETRIGG", 350.0, 2)] {
+            let mut n = lib.make(joaat(name), 1).expect(name);
+            assert_eq!(n.h.tristate(5), tri5, "{name}");
+            let (mut now, mut out, mut last_made, mut times) = (0u32, Vec::new(), 0, Vec::new());
+            for u in 0..300 {
+                let ms = if u % 2 == 0 { 16 } else { 17 };
+                lib.step(&mut n, ms as f32, now, ctx, rt, (0, false), &mut out);
+                out.clear();
+                let Kind::Retrig { made, live, ord, .. } = &n.kind else { panic!("{name}") };
+                assert!(live.len() <= 2 && live.len() == ord.len(), "{name} at {now}: {ord:?}");
+                assert!(ord.iter().all(|&o| o >= *made - 2), "{name} at {now}: {ord:?} made {made}");
+                if *made != last_made {
+                    assert_eq!(*made, last_made + 1, "{name} at {now}: one retrigger an update");
+                    last_made = *made;
+                    times.push(n.play_t);
+                    if *made >= 2 {
+                        let prev = ord.iter().position(|&o| o == *made - 2).map(|i| live[i].clock.stopped);
+                        if let Some(stopped) = prev {
+                            assert_eq!(stopped, tri5 == 1, "{name} at {now}: the last child's stop");
+                        }
+                    }
+                }
+                now += ms;
+            }
+            assert!(times.len() > 10, "{name}: {times:?}");
+            for w in times.windows(2) {
+                let gap = w[1] - w[0];
+                assert!(gap >= delay && gap < delay + 17.0, "{name}: {times:?}");
             }
         }
     }
