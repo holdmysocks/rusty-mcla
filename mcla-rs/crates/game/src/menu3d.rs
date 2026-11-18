@@ -374,6 +374,15 @@ impl UiMesh {
                     m.texture = d.shader_group.shaders.get(*si as usize).and_then(|s| s.diffuse()).unwrap_or("").to_ascii_lowercase();
                     m.gloss = d.shader_group.shaders.get(*si as usize).and_then(crate::menugloss::GlossMat::of);
                     m.maps = d.shader_group.shaders.get(*si as usize).and_then(crate::menugloss::rt_maps);
+                    if std::env::var("MCLA_MENU3D_LOG").is_ok() {
+                        let mut ws: Vec<i32> = mesh.tangents.iter().map(|t| (t.w * 100.0) as i32).collect();
+                        ws.sort();
+                        ws.dedup();
+                        let mut cs: Vec<[u8; 4]> = mesh.colors.clone();
+                        cs.sort();
+                        cs.dedup();
+                        log::info!("menu3d: mesh {name}: {} vertices, tangent w x100 {:?}, colours {:?}", mesh.positions.len(), &ws[..ws.len().min(8)], &cs[..cs.len().min(6)]);
+                    }
                 }
                 for i in 0..mesh.positions.len() {
                     let p = mesh.positions[i];
@@ -627,7 +636,7 @@ pub fn paint_scene(ctx: &egui::Context, painter: &egui::Painter, meshes: &mut Me
                         <[crate::menugloss::Tex; 3]>::try_from(t).ok()
                     });
                     if std::env::var("MCLA_MENU3D_LOG").is_ok() {
-                        log::info!("menu3d: {} drawn with the Gloss programs: {:?}, hue {:?} {:.2}", n.file, mat, n.color, n.alpha);
+                        log::info!("menu3d: {} drawn with the Gloss programs: {:?}, hue {:?} {:.2}, ambient {:.3} light {:.3}, eye {:?}, world {:?}", n.file, mat, n.color, n.alpha, scene.ambient, scene.diffuse, vi.col(3), (view.frame * if skinned { n.rt } else { n.srt }).to_cols_array_2d());
                     }
                     gloss.push(crate::menugloss::Draw {
                         verts,

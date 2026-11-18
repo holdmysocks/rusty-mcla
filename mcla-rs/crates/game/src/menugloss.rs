@@ -213,8 +213,14 @@ impl Draw {
         put(&mut c, 105, self.mat.specular);
         put(&mut c, 106, Vec4::new(self.mat.shininess, 0.0, 0.0, 0.0));
         put(&mut c, 208, self.hue);
-        Consts { c, flags: [if self.maps.is_some() { 2.0 } else { self.custom_depth as u32 as f32 }, 0.0, 0.0, 0.0], _pad: [[0.0; 4]; 9] }
+        Consts { c, flags: [if self.maps.is_some() { 2.0 } else { self.custom_depth as u32 as f32 }, env_scale(), 0.0, 0.0], _pad: [[0.0; 4]; 9] }
     }
+}
+
+/// (test hook MCLA_GLOSS_ENV=<scale>: the environment term scaled, 1 by default)
+fn env_scale() -> f32 {
+    static S: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *S.get_or_init(|| std::env::var("MCLA_GLOSS_ENV").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0))
 }
 
 const SAMPLES: u32 = 4;
@@ -414,7 +420,7 @@ fn load_consts() {
 }
 // dpFrontSampler: the port's environment cube along the mirror direction (approx., see menugloss.rs)
 fn xs_gloss_s0(uv: vec2<f32>) -> vec4<f32> {
-    return textureSampleLevel(t_env, s_env, g_refl, 0.0);
+    return textureSampleLevel(t_env, s_env, g_refl, 0.0) * u.flags.y;
 }
 // DiffuseSampler: the mesh's texture, or the menu's picture as it is (see menugloss.rs)
 fn xs_gloss_s1(uv: vec2<f32>) -> vec4<f32> {
