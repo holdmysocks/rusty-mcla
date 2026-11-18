@@ -1548,6 +1548,7 @@ impl CarSounds {
             let req = Req { player: self.player, occluder: self.occ, owner: self.owner, ..Req::at(pos + rot * at) };
             let mut v = Voices { lib: &mut *lib, req };
             w.follow(&mut v, c.state);
+            w.release(&mut v, c.prep);
             if let Some(h) = w.looping() {
                 lib.set(h, req);
             }
@@ -3103,6 +3104,25 @@ impl AnimObj {
         let f = |at: usize| f32::from_bits(be_u32(o, at));
         Some(AnimObj { ways: [way(10), way(23)], at: Vec3::new(f(49), f(53), f(57)) })
     }
+
+    /// Whether the way's start player (F-35283 forward / F-45082 back) returns 1, which sets the controller's +72 wait:
+    /// a flags bit 0 / 1 prepares the start / loop sound, bit 2 the end sound (docs/reference/carparts/door_sounds_rule.md).
+    pub fn prepares(&self, way: usize) -> bool {
+        self.ways[way].0 & 7 != 0
+    }
+}
+
+/// The convertible roof's two players' prepares (`AnimObj::prepares`, `[open, close]`): the hatch's object (ANIM_PACKAGE
+/// +34) and the top's (+38) of the car's VP_ object. On the disc only the tops' VEH_ANIM_CONVERTIBLE_* have flags (1, the
+/// start sound, both ways).
+pub fn roof_prep(lib: &SoundLib, car: &str, bike: bool, player: bool) -> ([bool; 2], [bool; 2]) {
+    let def = crate::engaudio::default_object(lib, car, bike, player).map(|d| d.to_vec()).unwrap_or_default();
+    if def.len() < 62 {
+        return Default::default();
+    }
+    let o = window_objects(lib, &def);
+    let w = |k: usize| o[k].map_or([false; 2], |x| [x.prepares(0), x.prepares(1)]);
+    (w(3), w(4))
 }
 
 /// The side windows', the auto spoiler's and the convertible roof's objects of a car: its VP_ object's +58 is its
@@ -3153,11 +3173,14 @@ pub struct AnimSound<H> {
     pub obj: Option<AnimObj>,
     lp: Option<H>,
     state: u8,
+    /// a prepared start sound / loop not played yet (flags bit 0 / 1 of the way): F-27851 plays them when the controller's
+    /// +72 wait ends (`WindowCtl::prep` 0)
+    held: (Option<u32>, Option<u32>),
 }
 
 impl<H: Copy> AnimSound<H> {
     pub fn new(obj: Option<AnimObj>) -> AnimSound<H> {
-        AnimSound { obj, lp: None, state: 1 }
+        AnimSound { obj, lp: None, state: 1, held: (None, None) }
     }
 
     pub fn looping(&self) -> Option<H> {
@@ -3169,13 +3192,37 @@ impl<H: Copy> AnimSound<H> {
         if let Some(h) = self.lp.take() {
             v.stop(h);
         }
-        let s = o.ways[way].1;
-        v.one_shot(s[0]);
-        self.lp = v.start_loop(s[1]);
+        let (f, s) = o.ways[way];
+        self.held = (None, None);
+        if f & 1 != 0 {
+            self.held.0 = Some(s[0]);
+        } else {
+            v.one_shot(s[0]);
+        }
+        if f & 2 != 0 {
+            self.held.1 = Some(s[1]);
+        } else {
+            self.lp = v.start_loop(s[1]);
+        }
+    }
+
+    /// The controller's +72 wait as it stands after its update (`WindowCtl::prep`): at 0 the prepared sounds play.
+    pub fn release<V: AnimVoices<H = H>>(&mut self, v: &mut V, prep: u8) {
+        if prep != 0 {
+            return;
+        }
+        if let Some(h) = self.held.0.take() {
+            v.one_shot(h);
+        }
+        if let Some(h) = self.held.1.take() {
+            self.lp = v.start_loop(h);
+        }
     }
 
     fn end<V: AnimVoices<H = H>>(&mut self, v: &mut V, way: usize) {
         let Some(o) = self.obj else { return };
+        // (a start still prepared is stopped with the loop, F-78633 / F-56861)
+        self.held = (None, None);
         if let Some(h) = self.lp.take() {
             v.stop(h);
         }
@@ -4015,7 +4062,7 @@ mod window_sound_tests {
             let m = Mat4::from_cols(r(0).extend(0.0), r(1).extend(0.0), r(2).extend(0.0), r(3).extend(1.0));
             let obj = objs[w[0] as usize];
             // (the recorded cases start with the controller already closed, state 1 time 0: the harness ran its first update)
-            let (mut ctl, mut snd, mut log) = (WindowCtl { state: 1, time: 0.0 }, AnimSound::new(Some(obj)), Log(Vec::new(), 0));
+            let (mut ctl, mut snd, mut log) = (WindowCtl { state: 1, time: 0.0, prep: 0 }, AnimSound::new(Some(obj)), Log(Vec::new(), 0));
             let mut updated = false;
             let toks: Vec<&str> = run.split_whitespace().collect();
             let mut i = 0;
@@ -4138,5 +4185,38 @@ mod whine_tests {
         assert_eq!(f32::from_be_bytes([o[56], o[57], o[58], o[59]]), 10.0);
         let o = g.get_name("VP_AUD_R8_08_O_ONESHOT_PARAMS").unwrap();
         assert!(is_null(be_u32(o, 40)) && is_null(be_u32(o, 48)));
+    }
+}
+
+#[cfg(test)]
+mod anim_flag_tests {
+    use super::*;
+
+    /// The animated parts' sound objects of the cars that have them (ANIM_PACKAGE +26 / +30 windows, +50 spoiler,
+    /// +34 / +38 the roof's hatch / top, +42 the pop-ups): their name and the forward / back flags bytes (+10 / +23),
+    /// whose bits make the controller wait for prepared sounds (F-27851's +72; docs/reference/carparts/door_sounds_rule.md).
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR"]
+    fn anim_object_flags() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let lib = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
+        for car in ["vp_nsn_350z_06", "vp_frd_mustang_06", "vp_pon_solstice_06", "vpd_mit_eclipse_09", "vp_am_vantage_07", "vp_lam_gallardo_06",
+            "vp_mbz_sl65_07", "vpd_cad_xlrv_08", "vp_lam_murcielago_06", "vp_aud_r8_08", "vp_frd_gt_06", "vp_mzd_rx7_95", "vp_chv_camaross_69"] {
+            let def = crate::engaudio::default_object(&lib, car, false, true).map(|d| d.to_vec()).unwrap_or_default();
+            if def.len() < 62 {
+                println!("{car}: no VP_ object");
+                continue;
+            }
+            let pkg = lib.game.get(be_u32(&def, 58));
+            let row: Vec<String> = [26, 30, 50, 34, 38, 42].iter().map(|&at| {
+                let h = pkg.map_or(0, |p| be_u32(p, at));
+                match lib.game.get(h) {
+                    Some(o) if o.len() > 23 => format!("+{at} {} f{}/{}", lib.game.name_of(h).unwrap_or("?"), o[10], o[23]),
+                    _ => format!("+{at} -"),
+                }
+            }).collect();
+            println!("{car} ({}): {}", lib.game.name_of(be_u32(&def, 58)).unwrap_or("?"), row.join(", "));
+        }
     }
 }

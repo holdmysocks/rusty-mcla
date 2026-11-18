@@ -1053,6 +1053,9 @@ pub struct RoofCtl {
     pub raise: bool,
     pub lower: bool,
     pub opt: Option<bool>,
+    /// whether the hatch's / the top's sound object prepares a sound opening / closing (`[open, close]`; the objects of
+    /// the car's ANIM_PACKAGE +34 / +38, `caraudio::roof_prep`), set once by the game from the sound data
+    pub prep: Option<([bool; 2], [bool; 2])>,
 }
 
 impl RoofCtl {
@@ -1065,11 +1068,11 @@ impl RoofCtl {
         match self.opt {
             None => {
                 if down && player {
-                    self.hatch = WindowCtl { state: 2, time: lens.0 };
-                    self.top = WindowCtl { state: 2, time: lens.1 };
+                    self.hatch = WindowCtl { state: 2, time: lens.0, prep: 0 };
+                    self.top = WindowCtl { state: 2, time: lens.1, prep: 0 };
                     for k in 0..2 {
                         if let Some(l) = win_lens[k] {
-                            windows[k] = WindowCtl { state: 2, time: l };
+                            windows[k] = WindowCtl { state: 2, time: l, prep: 0 };
                         }
                     }
                 }
@@ -1084,20 +1087,21 @@ impl RoofCtl {
             _ => {}
         }
         self.opt = Some(down);
+        let prep = self.prep.unwrap_or_default();
         if player {
             // (+2159: both at the open end -> close both, the windows up; +2160: both closed -> open both, the windows
             // down; the bytes are cleared once both players took it)
             let mut win: Option<bool> = None;
             if self.raise && self.hatch.state == 2 && self.top.state == 2 {
-                self.top.request(false, lens.1);
-                self.hatch.request(false, lens.0);
+                self.top.request_prep(false, lens.1, prep.1[1]);
+                self.hatch.request_prep(false, lens.0, prep.0[1]);
                 win = Some(false);
                 self.raise = false;
                 self.lower = false;
             }
             if self.lower && self.hatch.state == 1 && self.top.state == 1 {
-                self.top.request(true, lens.1);
-                self.hatch.request(true, lens.0);
+                self.top.request_prep(true, lens.1, prep.1[0]);
+                self.hatch.request_prep(true, lens.0, prep.0[0]);
                 win = Some(true);
                 self.raise = false;
                 self.lower = false;
@@ -1160,13 +1164,20 @@ pub fn take_window_requests(windows: &mut [WindowCtl; 2], req: &mut [[bool; 2]; 
 pub struct WindowCtl {
     pub state: u8,
     pub time: f32,
+    /// +72, the wait for prepared sounds: set when a request is taken whose start player prepared one (the part's sound
+    /// object has a flags bit for that way: only the convertible tops' VEH_ANIM_CONVERTIBLE_*, flags 1 both ways);
+    /// opening / closing then holds the time until the prepared handles are loaded (+16 == 1), plays them and clears it.
+    /// The port's prepare is done by the next update: 2 = taken this frame, held; 1 = loaded, the next update plays and
+    /// moves on (the recomp: the top held for the one frame its request was taken in, the hatch not -
+    /// docs/reference/carparts/roof_fold_rule.md "Checks").
+    pub prep: u8,
 }
 
 impl Default for WindowCtl {
     fn default() -> Self {
         // (F-42929's reset: state word 0, time 0; the first update takes the target, 1 = closed - `update_at`)
         let r = crate::vehicles::vehicles_words::window_reset(false);
-        WindowCtl { state: r.state as u8, time: r.time }
+        WindowCtl { state: r.state as u8, time: r.time, prep: 0 }
     }
 }
 
@@ -1194,6 +1205,31 @@ impl WindowCtl {
         }
     }
 
+    /// `request` for a part whose start player prepares a sound that way (F-35283 / F-45082 return 1: a flags bit of
+    /// the way, `AnimObj::prepares`): a taken request also sets +72.
+    pub fn request_prep(&mut self, open: bool, duration: f32, prepares: bool) -> bool {
+        let taken = self.request(open, duration);
+        if taken && prepares {
+            self.prep = 2;
+        }
+        taken
+    }
+
+    /// The +72 wait of states 3 / 4: true while the time is held.
+    fn held(&mut self) -> bool {
+        match self.prep {
+            0 => false,
+            2 => {
+                self.prep = 1;
+                true
+            }
+            _ => {
+                self.prep = 0;
+                false
+            }
+        }
+    }
+
     /// At rest the time is held at its end (0 closed, the clip's length open); moving, it runs by rate x dt in the
     /// original's fused operations and is set to the end it reaches. (The original holds the time while a motor
     /// sound flagged to be prepared is loading, +72; neither window's object has such a flag.)
@@ -1203,11 +1239,20 @@ impl WindowCtl {
 
     /// The same at the controller's own rate (+68).
     pub fn update_at(&mut self, rate: f32, dt: f32, duration: f32) {
+        let held = matches!(self.state, 3 | 4) && self.held();
         match self.state {
             // (the reset's state 0: the target taken, 1 = closed)
             0 => self.state = crate::vehicles::vehicles_words::window_reset(false).target as u8,
-            1 => self.time = 0.0,
-            2 => self.time = duration,
+            // (at rest the prepared handle is stopped and +72 cleared)
+            1 => {
+                self.time = 0.0;
+                self.prep = 0;
+            }
+            2 => {
+                self.time = duration;
+                self.prep = 0;
+            }
+            3 | 4 if held => {}
             3 => {
                 self.time = crate::sndobj::fmadds(rate, dt, self.time);
                 if self.time >= duration {
@@ -5073,8 +5118,8 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 c.roof.step(down, c.is_player, dt, (cl.duration, top.duration), &mut c.windows, win_lens, &mut c.win_req);
                 // (test hook: MCLA_ROOF_TEST=<s> holds every convertible's roof players at that time, moving)
                 if let Some(t) = roof_test {
-                    c.roof.hatch = WindowCtl { state: 3, time: t.min(cl.duration) };
-                    c.roof.top = WindowCtl { state: 3, time: t.min(top.duration) };
+                    c.roof.hatch = WindowCtl { state: 3, time: t.min(cl.duration), prep: 0 };
+                    c.roof.top = WindowCtl { state: 3, time: t.min(top.duration), prep: 0 };
                 }
             }
             // (then the window requests, F-35036 for every car - the player gate covers only the roof's +2159 / +2160)
@@ -9835,7 +9880,7 @@ mod roof_tests {
     use super::{RoofCtl, WindowCtl};
 
     /// a window after its first update (the reset's state 0 takes the target 1)
-    const CLOSED: WindowCtl = WindowCtl { state: 1, time: 0.0 };
+    const CLOSED: WindowCtl = WindowCtl { state: 1, time: 0.0, prep: 0 };
 
     /// F-35036's window requests (its part after the roof): close first, then open; a request is cleared (both bytes of
     /// its side) only when the slot takes it, so an up request made while the window is still going down waits and
@@ -9880,7 +9925,7 @@ mod roof_tests {
             let (a, b) = line.split_once('|').unwrap();
             let v: Vec<f32> = a.split_whitespace().map(f).collect();
             let want: Vec<bool> = b.split_whitespace().map(|x| x != "0").collect();
-            let r = RoofCtl { top: WindowCtl { state: 3, time: v[0] }, hatch: WindowCtl { state: 3, time: v[2] }, ..Default::default() };
+            let r = RoofCtl { top: WindowCtl { state: 3, time: v[0], prep: 0 }, hatch: WindowCtl { state: 3, time: v[2], prep: 0 }, ..Default::default() };
             assert_eq!(r.shown((v[3], v[1])).to_vec(), want, "{line}");
             n += 1;
         }
@@ -9926,6 +9971,43 @@ mod roof_tests {
         let mut r3 = RoofCtl { opt: Some(false), ..Default::default() };
         st(&mut r3, true, false, 0.1, lens, &mut w2, wl);
         assert_eq!((r3.top.state, r3.lower), (1, true));
+    }
+
+    /// The +72 wait (F-27851): the top's sound object prepares its start sound both ways (VEH_ANIM_CONVERTIBLE_*,
+    /// flags 1), so its player holds the frame its request is taken in, the hatch's (no flags) not. The recomp's 350Z
+    /// (work/carparts2/roof/roof.jsonl): hatch 0.0336 / 0.0671 while the top is 0 / 0.0335, the hatch at its end one frame
+    /// before the top, both closed the same way.
+    #[test]
+    fn the_top_waits_for_its_prepared_sound() {
+        let lens = (5.0, 5.0);
+        let wl = [Some(0.667), Some(0.667)];
+        let mut w = [CLOSED; 2];
+        let mut r = RoofCtl { opt: Some(false), prep: Some(([false; 2], [true; 2])), hatch: CLOSED, top: CLOSED, ..Default::default() };
+        let mut req = [[false; 2]; 2];
+        r.step(true, true, 0.0336, lens, &mut w, wl, &mut req);
+        assert_eq!((r.hatch.state, r.hatch.time, r.top.state, r.top.time, r.top.prep), (3, 0.0336, 3, 0.0, 1));
+        r.step(true, true, 0.0335, lens, &mut w, wl, &mut req);
+        assert_eq!((r.hatch.time, r.top.time, r.top.prep), (crate::sndobj::fmadds(1.0, 0.0335, 0.0336), 0.0335, 0));
+        let mut frames = (0, 0);
+        for k in 1..200 {
+            r.step(true, true, 1.0 / 30.0, lens, &mut w, wl, &mut req);
+            if r.hatch.state == 2 && frames.0 == 0 {
+                frames.0 = k;
+            }
+            if r.top.state == 2 && frames.1 == 0 {
+                frames.1 = k;
+            }
+        }
+        assert_eq!(frames.1, frames.0 + 1);
+        // (closing waits the same way)
+        r.step(false, true, 0.0336, lens, &mut w, wl, &mut req);
+        assert_eq!((r.hatch.state, r.top.state, r.top.time, r.hatch.time < 5.0), (4, 4, 5.0, true));
+        r.step(false, true, 0.0336, lens, &mut w, wl, &mut req);
+        assert!(r.top.time < 5.0 && r.top.prep == 0);
+        // (without the sound data, no wait)
+        let mut r = RoofCtl { opt: Some(false), hatch: CLOSED, top: CLOSED, ..Default::default() };
+        r.step(true, true, 0.0336, lens, &mut [CLOSED; 2], wl, &mut req);
+        assert_eq!(r.top.time, 0.0336);
     }
 }
 

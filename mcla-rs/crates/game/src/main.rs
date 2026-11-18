@@ -6799,6 +6799,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 player_input = physics::car::CarInput { throttle: 0.5, ..Default::default() };
             }
             self.vehicles.replaying = self.game.replay.is_some();
+            // (the roof players' +72 wait: whether the car's roof sound objects prepare a sound, read once a car)
+            for c in self.vehicles.cars.iter_mut().filter(|c| c.roof.prep.is_none()) {
+                c.roof.prep = self.sound.roof_prep(&c.model.name, c.model.bike, c.is_player);
+            }
             crate::ticktimes::mark(crate::ticktimes::S::Vehicles);
             self.vehicles.update(&world, player_input, sim_dt);
             // (MCLA_SCENE_WORLD: a story scene's car with no brain is posed after the physics step, with the move's velocity,

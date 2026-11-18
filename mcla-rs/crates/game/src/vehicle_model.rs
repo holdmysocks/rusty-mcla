@@ -1857,6 +1857,54 @@ mod tests {
         assert!(!normal.iter().any(|n| super::original_slot(n).is_some_and(|s| (38..44).contains(&s))), "{normal:?}");
     }
 
+    /// The skinned roof's skeleton in motion against the original (docs/reference/carparts/roof_fold_rule.md, "Checks"):
+    /// `MCLA_ROOF_REF` = lines `top_time bone x y z`, each bone's place in the root bone's space as the recomp's slot-0
+    /// crSkeleton held it while the roof folded (work/carparts2/roof/roof.py); `MCLA_ROOF_CAR` the car. Prints the largest
+    /// distance per bone and over all.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and MCLA_ROOF_REF"]
+    fn skinned_top_matches_a_recording() {
+        use glam::{Mat4, Vec3};
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let refp = std::env::var("MCLA_ROOF_REF").expect("MCLA_ROOF_REF");
+        let name = std::env::var("MCLA_ROOF_CAR").unwrap_or_else(|_| "vp_nsn_350z_06".into());
+        let assets = crate::assets::Assets::new(&dir);
+        let car = super::load_car(&assets, &std::path::Path::new(&dir).join("resources/vehicle").join(&name)).unwrap();
+        let top = car.skinned_top.as_ref().expect("skinned_top");
+        let part = car.parts.iter().filter(|p| super::roof_part(&p.primary) == Some(2)).max_by_key(|p| p.tris).unwrap();
+        let sk = part.skeleton.as_deref().unwrap();
+        let mut worst = vec![0.0f32; sk.bones.len()];
+        let (mut n, mut at) = (0, (0.0f32, 0usize));
+        let text = std::fs::read_to_string(&refp).unwrap();
+        let mut cache: Option<(f32, Vec<Mat4>)> = None;
+        for l in text.lines() {
+            let v: Vec<f32> = l.split_whitespace().map(|x| x.parse().unwrap()).collect();
+            let (t, k, want) = (v[0], v[1] as usize, Vec3::new(v[2], v[3], v[4]));
+            if cache.as_ref().map_or(true, |c| c.0 != t) {
+                let d = top.deltas(t);
+                let world: Vec<Mat4> = (0..sk.bones.len()).map(|b| top.bones.iter().position(|&x| x == b).map_or(sk.bones[b].world, |j| d[j] * sk.bones[b].world)).collect();
+                cache = Some((t, world));
+            }
+            let w = &cache.as_ref().unwrap().1;
+            let got = (w[0].inverse() * w[k]).w_axis.truncate();
+            let e = got.distance(want);
+            if std::env::var("MCLA_ROOF_BONE").ok().and_then(|b| b.parse::<usize>().ok()) == Some(k) {
+                println!("t {t:.4} frame {:.3} bone {k} port {got:?} original {want:?} off {e:.4}", t / top.duration * (top.anim.frames.max(1) - 1) as f32);
+            }
+            if e > worst[k] {
+                worst[k] = e;
+            }
+            if e > worst.iter().cloned().fold(0.0, f32::max) - 1e-9 && e >= at.0 {
+                at = (e, k);
+            }
+            n += 1;
+        }
+        for (k, e) in worst.iter().enumerate() {
+            println!("bone {k} ({}): worst {:.4} m", sk.bones[k].name, e);
+        }
+        println!("{name}: {n} bone places, worst {:.4} m on bone {}", at.0, at.1);
+    }
+
     /// The convertible roof's two clips (docs/reference/carparts/roof_fold_rule.md): on the eight convertibles both are
     /// there; at clip time 0 neither moves a bone; the skinned roof posed as the port poses it (`roof_vertex_bones`,
     /// `roof_bone_deltas`, `skin_vertex`) lies at 0 where the raised roof lies and at the end where the folded one does

@@ -804,6 +804,11 @@ impl Sound {
 }
 
 impl Sound {
+    /// The convertible roof's prepares (`caraudio::roof_prep`) of a car; None before the sound objects are loaded.
+    pub fn roof_prep(&self, car: &str, bike: bool, player: bool) -> Option<([bool; 2], [bool; 2])> {
+        self.lib.as_ref().map(|l| crate::caraudio::roof_prep(l, car, bike, player))
+    }
+
     /// The car's horn sounds (its audio's +1404 slot, `Fleet::horn_sounding`).
     pub fn horn_sounding(&self, uid: u32) -> bool {
         self.fleet.as_ref().is_some_and(|f| f.horn_sounding(uid))
