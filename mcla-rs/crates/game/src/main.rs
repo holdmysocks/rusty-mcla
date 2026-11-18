@@ -3454,9 +3454,24 @@ impl App {
         // (test hook MCLA_RACE_LEAVE=<seconds>: RETURN TO CRUISE that long after the race's end; the kept opponents logged
         // once a second after it)
         if let (Ok(v), Some(t)) = (std::env::var("MCLA_RACE_LEAVE"), self.game.race_end_t) {
-            if t > v.parse().unwrap_or(4.0) && self.game.race.is_some() && self.pending_action == MenuAction::None {
+            if t > v.parse().unwrap_or(4.0) && self.game.race.is_some() && self.pending_action == MenuAction::None
+                && !(std::env::var("MCLA_RACE_NEXT").is_ok() && self.game.next_event_race.is_some()) {
                 log::info!("test: RETURN TO CRUISE picked");
                 self.pending_action = MenuAction::StartFreeRoam;
+            }
+        }
+        // (test hook MCLA_RACE_NEXT=<seconds>: NEXT RACE IN SERIES / CONTINUE TOURNAMENT that long after the race's end
+        // when its results offer one, as the race-over menu's row does; before MCLA_RACE_LEAVE when both are set)
+        if let (Ok(v), Some(t)) = (std::env::var("MCLA_RACE_NEXT"), self.game.race_end_t) {
+            if t > v.parse().unwrap_or(6.0) && self.game.race.is_some() && self.pending_action == MenuAction::None {
+                if let Some(n) = self.game.next_event_race.take() {
+                    log::info!("test: NEXT RACE IN SERIES picked");
+                    self.game.next_greet = matches!(self.game.race_owner(), raceleave::Owner::Series | raceleave::Owner::Tournament);
+                    self.game.current_race = Some(n);
+                    self.game.warp_with_cut = true;
+                    self.game.police_eval = Some(self.game.next_event_police());
+                    self.pending_action = MenuAction::StartRace;
+                }
             }
         }
         if std::env::var("MCLA_RACE_LEAVE").is_ok() && self.tick_no % 60 == 0 {
@@ -7337,7 +7352,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     log::info!("career race test: GO TO GARAGE for {mis}");
                     self.pending_action = MenuAction::GoToGarage;
                 }
-                // (a parked or standing story man waits at his place: the player is put on his meeting point - `Roamers::hook_meet_point`)
+                // (a story man waits at his place or his core's story point: the player is put on his meeting point - `Roamers::hook_meet_point`)
                 if self.tick_no % 600 == 450 && self.game.mode == Mode::FreeRoam && self.game.race.is_none() && self.roam.challenge.is_none() && self.cuts.idle() && self.cine.playing.is_none() && self.pending_action == MenuAction::None {
                     if let Some(p) = self.roam.hook_meet_point(&self.game.career) {
                         if let Some(c) = self.vehicles.player_mut().filter(|c| c.state.pos.distance(p) > 15.0) {
@@ -8051,7 +8066,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 let mut flash = std::mem::take(&mut self.flash) || (std::env::var("MCLA_ROAM_TEST").map_or(false, |v| v != "once" || self.game.career.completed() == 0) && self.tick_no % 30 < 2 && self.roam.challenge.is_none());
                 // (test hook MCLA_CAREER_RACE=<mission>: its man flashed in the cruise until the mission is complete -
                 // `roamers::career_race_hook`; not while a scene or an arrest runs - a player's flash is deactivated then -, not while a story
-                // warp or a queued scene waits, not before a parked man's meeting (`Roamers::hook_meet_point`), nor in the 10 s
+                // warp or a queued scene waits, not before a story man's meeting (`Roamers::hook_meet_point`), nor in the 10 s
                 // after a race, while its leave runs: the hook reaches 2 km, a player 30)
                 let cruise_ticks;
                 {

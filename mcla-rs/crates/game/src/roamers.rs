@@ -513,8 +513,9 @@ impl Roamers {
     /// (a FIND core's place, `mc4::FIND_POINTS`, until he is met; a story core's, `career::STORY_POINTS`, while it waits)
     pub fn hook_meet_point(&self, career: &crate::career::Career) -> Option<Vec3> {
         let mis = career_race_hook()?;
-        let m = self.men.iter().find(|m| m.parked && (m.mission.eq_ignore_ascii_case(&mis) || m.key.starts_with(&mis)))?;
-        if let Some(f) = crate::mc4::FIND_POINTS.iter().find(|f| f.0 == m.mission) {
+        // (a parked or standing man, or a cruising one whose core meets him at a story point first - CITY_CHAMP's slot man)
+        let m = self.men.iter().find(|m| m.mission.eq_ignore_ascii_case(&mis) || m.key.starts_with(&mis))?;
+        if let Some(f) = crate::mc4::FIND_POINTS.iter().find(|f| f.0 == m.mission).filter(|_| m.parked) {
             return (!m.met).then(|| Vec3::from(f.1));
         }
         career.story_point_waiting(&m.mission).map(Vec3::from)
