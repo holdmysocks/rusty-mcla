@@ -190,7 +190,7 @@ impl CamState {
     pub fn of(view: &View, pos: Vec3, rot: Quat, turn: f32) -> CamState {
         let back = rot * Vec3::Z;
         let off = if std::env::var("MCLA_GARAGE_OFFYAW").map_or(false, |v| v == "car") { rot * view.offset } else { view.offset };
-        CamState { target: pos + off, height: view.height, dist: if view.dist < 0.5 { 0.5 } else { view.dist }, azimuth: view.azimuth + turn, incline: view.incline, roll: view.roll, fov: view.fov, heading: garage_yaw() + back.x.atan2(back.z) }
+        CamState { target: pos + off, height: view.height, dist: if view.dist < 0.5 { 0.5 } else { view.dist }, azimuth: view.azimuth + turn, incline: view.incline, roll: view.roll, fov: view.fov, heading: garage_yaw() + crate::physics::exact::guest_atan2(back.x as f64, back.z as f64) as f32 }
     }
 
     /// The figures the interior free look turns.
@@ -216,14 +216,23 @@ impl CamState {
     }
 
     /// Eye, the point looked at, the up vector and the field of view (radians).
+    /// The camera as F-74130 (mode 1) places it: eye, the point it looks at (dist along its view: the target lifted by the height), its up, the FOV
+    /// in radians (`polar_rows`).
     pub fn place(&self) -> (Vec3, Vec3, Vec3, f32) {
-        let az = self.azimuth + self.heading;
-        let dir = Vec3::new(az.sin() * self.incline.cos(), self.incline.sin(), az.cos() * self.incline.cos());
-        let look = self.target + Vec3::Y * self.height;
-        let up0 = (Vec3::Y - dir * dir.y).normalize_or(Vec3::Y);
-        let right = up0.cross(dir);
-        (look + dir * self.dist, look, up0 * self.roll.cos() - right * self.roll.sin(), self.fov.to_radians())
+        let (rows, eye) = polar_rows(self.heading, self.target, self.height, self.dist, self.azimuth, self.incline, self.roll);
+        (eye, eye - rows[2] * self.dist, rows[1], self.fov.to_radians())
     }
+}
+
+/// F-74130 in the garage's mode 1: `heading` = the C library's atan2 of the target matrix's z axis (x, z) (the port
+/// takes it once per view in `CamState::of`), az = azimuth + heading (fadds), the rows of the zxy angles (-incline, az,
+/// roll) (F-62659, `boomcam::rows_of_zxy`), the eye = row 2 x dist + the target (vmulfp, vaddfp), then its y += height.
+/// Returns (rows right, up, back; the eye).
+pub fn polar_rows(heading: f32, target: Vec3, height: f32, dist: f32, azimuth: f32, incline: f32, roll: f32) -> ([Vec3; 3], Vec3) {
+    let rows = crate::boomcam::rows_of_zxy([-incline, azimuth + heading, roll]);
+    let mut eye = rows[2] * dist + target;
+    eye.y += height;
+    (rows, eye)
 }
 
 /// The garage camera's view numbers (the argument of F-34768 and the global view index; the garage file's order).
@@ -479,6 +488,33 @@ impl View {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// F-74130 (mode 1) run offline (`tools/garage_place_reference.py`, 6,000 target matrices and figures): the rows and
+    /// the eye word for word.
+    #[test]
+    fn polar_place_matches_the_original() {
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let f = |w: u32| f32::from_bits(w);
+        let v = |w: &[u32]| Vec3::new(f(w[0]), f(w[1]), f(w[2]));
+        let mut n = 0;
+        for line in include_str!("testdata/garage_place_ref.txt").lines() {
+            let (a, b) = line.split_once(" -> ").unwrap();
+            let i: Vec<u32> = a.split_whitespace().skip(1).map(h).collect();
+            let o: Vec<u32> = b.split_whitespace().map(h).collect();
+            assert_eq!((i.len(), o.len()), (21, 16));
+            let z = v(&i[8..]);
+            let heading = crate::physics::exact::guest_atan2(z.x as f64, z.z as f64) as f32;
+            let (rows, eye) = polar_rows(heading, v(&i[12..]), f(i[16]), f(i[17]), f(i[18]), f(i[19]), f(i[20]));
+            let got = [rows[0], rows[1], rows[2], eye];
+            for (k, g) in got.iter().enumerate() {
+                let want = v(&o[4 * k..]);
+                assert!(g.x.to_bits() == want.x.to_bits() && g.y.to_bits() == want.y.to_bits() && g.z.to_bits() == want.z.to_bits(),
+                    "case {n} row {k}: {g} vs {want}: {line}");
+            }
+            n += 1;
+        }
+        assert_eq!(n, 6000);
+    }
 
     /// F-28551 (with the flip F-57991 and the dead zone F-93983) against the original's code run offline
     /// (tools/garage_look_reference.py -> testdata/garage_look_ref.txt, 20,000 game frames in views 3, 4, 10..13 with
