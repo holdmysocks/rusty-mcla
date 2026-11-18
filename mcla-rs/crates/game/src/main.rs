@@ -153,13 +153,14 @@ const CARSELECT_MUSIC: &str = "MUSIC_CARSELECT_MASTER";
 /// two ending together - the film's time of the scene's first frame (the close-up's cut: film 66.30 s, scene 8.1 s;
 /// CUTSCENES.md "The opening scenes' audio (session `cut-audio`, 2026-10-23)")
 const FILM_CUT_INTRO_AT: f32 = 58.2;
-/// MCLA_SCENE_WORLD=1 (default off, under test): a story scene does not stop the world, as in the original
+/// A story scene does not stop the world, as in the original (on by default since 2026-11-17; MCLA_SCENE_WORLD=0 turns
+/// it off for tests)
 /// (docs/reference/people/scene_world_rule.md: the frame tick F-75502 freezes only for the pause object, which no
 /// scene sets; the cine core script stops the pad, the police's normal update, the day clock and the automatic weather).
-/// Off: the port's old rule, the simulation stands while a story scene plays.
+/// Off (MCLA_SCENE_WORLD=0): the port's old rule, the simulation stands while a story scene plays.
 fn scene_world() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("MCLA_SCENE_WORLD").is_ok_and(|v| v == "1"))
+    *ON.get_or_init(|| std::env::var("MCLA_SCENE_WORLD").map_or(true, |v| v != "0"))
 }
 
 /// The player's input in a story scene with the world running (MCLA_SCENE_WORLD): no pad - the car deactivated.
