@@ -5134,6 +5134,8 @@ if keep || c.state.pos.distance(center) < 450.0 {
         }
         // (the ambient system's answers to the cruising brains, before they run)
         crate::cruisedrive::events(self, &world.collider);
+        // (the racers whose car the walk streamed out: their brains ride on without one - cruisedrive::tick_out)
+        crate::cruisedrive::tick_out(self, &world.collider, dt);
         let n = self.cars.len();
         // AI inputs (with simple car-ahead avoidance)
         let positions: Vec<(Vec3, Vec3, f32)> = self.cars.iter().map(|c| (c.state.pos, c.state.forward(), c.state.speed())).collect();
@@ -9024,6 +9026,15 @@ mod traffic_light_set_tests {
             heads += 1;
         }
         assert_eq!(heads, 4);
+        // the opening's path at the controller's rate 1.0: head glow 0's distance from its rest place over the clip
+        let (n0, w0) = prep.glow_bones.iter().enumerate().find(|g| g.1 .0 == 3).map(|(n, g)| (n, g.1)).unwrap();
+        let j0 = prep.glow_flip[n0].unwrap() as usize;
+        println!("light_flip duration {} s", cl.duration);
+        for i in 0..=((cl.duration * 60.0).ceil() as i32) {
+            let t = (i as f32 / 60.0).min(cl.duration);
+            let m = *place * cl.deltas(t)[j0] * place.inverse();
+            println!("t {t:.4} dist {:.4}", m.transform_point3(w0).distance(w0));
+        }
     }
 
     /// A traffic car's light set (the traffic object's reset F-14696 sets the set's +0 to 0 and +4 to its
