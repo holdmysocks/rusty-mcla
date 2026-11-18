@@ -32,6 +32,14 @@ fn fma(a: f32, b: f32, c: f32) -> f32 {
     (a as f64 * b as f64 + c as f64) as f32
 }
 
+/// The distance of a point to a node position as the search measures it (F-28521): y, z, x differences, dy^2, then
+/// fused z and x terms, single sqrt
+#[inline]
+fn point_dist(p: Vec3, q: Vec3) -> f32 {
+    let (dy, dz, dx) = (p.y - q.y, p.z - q.z, p.x - q.x);
+    fma(dx, dx, fma(dz, dz, dy * dy)).sqrt()
+}
+
 /// i16 units per metre (the game sets its quantisation scale to 20 before loading the mesh).
 pub const SCALE: f32 = 20.0;
 /// Material flag bits, named as the game registers them.
@@ -70,6 +78,8 @@ pub struct SpanRec {
     /// the edge's two vertices (record +8 / +10), world
     pub a: Vec3,
     pub b: Vec3,
+    /// the original's node id: 0x0800_0000 | span << 10 | record
+    pub id: u32,
 }
 
 impl SpanRec {
@@ -296,7 +306,6 @@ fn stored_centre(rows: &[Vec3; 4], l: Vec3) -> Vec3 {
 impl NavMesh {
     pub fn parse(res: &Resource) -> Option<NavMesh> {
         let rd = Rd::new(res);
-        let i16at = |o: usize| rd.u16(o) as i16 as f32 / SCALE;
         let v3 = |o: usize| Vec3::new(rd.f32(o), rd.f32(o + 4), rd.f32(o + 8));
         let mut mesh = NavMesh::default();
         if let Some(mm) = rd.ptr(0x08) {
@@ -311,6 +320,8 @@ impl NavMesh {
         let (chunks, n_chunks) = (rd.ptr(lvl + 0x30)?, rd.u16(lvl + 0x34) as usize);
         // per chunk: world vertices (kept for the spans)
         let mut chunk_verts: Vec<Vec<Vec3>> = Vec::with_capacity(n_chunks);
+        // per chunk: its polygon records (for the has-spans byte +7)
+        let mut chunk_po: Vec<Option<(usize, usize)>> = vec![None; n_chunks];
         for ci in 0..n_chunks {
             mesh.chunk_first.push(mesh.polys.len() as u32);
             chunk_verts.push(Vec::new());
@@ -324,7 +335,6 @@ impl NavMesh {
             }
             mesh.chunk_rows[ci] = rows;
             mesh.quads[ci] = rd.ptr(d + 0x04).and_then(|q| parse_quad(&rd, q, rows));
-            let world = |v: Vec3| rows[0] * v.x + rows[1] * v.y + rows[2] * v.z + rows[3];
             let (n_links, n_normals, n_polys, n_verts) = (rd.u16(d + 0x20) as usize, rd.u16(d + 0x22) as usize, rd.u16(d + 0x24) as usize, rd.u16(d + 0x26) as usize);
             let (Some(lk), Some(po), Some(ve)) = (rd.ptr(d + 0x08).or((n_links == 0).then_some(0)), rd.ptr(d + 0x10), rd.ptr(d + 0x14)) else { continue };
             let no = rd.ptr(d + 0x0c);
@@ -334,7 +344,8 @@ impl NavMesh {
             // chunk-local vertices as the polygon tests read them: i16 x the mesh scale 0.05 (F-22664, F-93067)
             let q16 = |o: usize| rd.u16(o) as i16 as f32 * 0.05;
             let lverts: Vec<Vec3> = (0..n_verts).map(|k| Vec3::new(q16(ve + 6 * k), q16(ve + 6 * k + 2), q16(ve + 6 * k + 4))).collect();
-            let verts: Vec<Vec3> = (0..n_verts).map(|k| world(Vec3::new(i16at(ve + 6 * k), i16at(ve + 6 * k + 2), i16at(ve + 6 * k + 4)))).collect();
+            // world vertices as the vertex fetch F-86961 forms them: the same i16 x 0.05 and four-lane dot as the centre
+            let verts: Vec<Vec3> = lverts.iter().map(|&l| stored_centre(&rows, l)).collect();
             let base = mesh.polys.len() as u32;
             for k in 0..n_polys {
                 let o = po + 28 * k;
@@ -363,7 +374,8 @@ impl NavMesh {
                         let other = if p1 == k { p2 } else if p2 == k { p1 } else { continue };
                         let (Some(&a), Some(&b)) = (verts.get(rd.u16(l + 8) as usize), verts.get(rd.u16(l + 10) as usize)) else { continue };
                         if other < n_polys {
-                            let len = rd.u16(l + 2) as i16 as f32 / SCALE;
+                            // i16 x the mesh scale 0.05, a multiply (the neighbour iterator F-20935)
+                            let len = rd.u16(l + 2) as i16 as f32 * 0.05;
                             let (c0, c1) = (rd.u8(l) as i8 as f32 * 0.2, rd.u8(l + 1) as i8 as f32 * 0.2);
                             // (byte +0 is the clearance beyond vertex +8, +1 beyond vertex +10: sub_827635B0,
                             // each end kept with its own through sub_82765820 / sub_82765740 / sub_8276C0E0)
@@ -388,10 +400,13 @@ impl NavMesh {
                 });
             }
             chunk_verts[ci] = verts;
+            chunk_po[ci] = Some((po, n_polys));
         }
         // links between chunks: appended behind the local ones, so the polygons' link ranges
         // are rebuilt at the end
         let mut extra: Vec<(u32, NavLink)> = Vec::new();
+        // (span, record) -> span record index
+        let mut rec_of: HashMap<(usize, usize), u32> = HashMap::new();
         if let (Some(sp), Some(sds)) = (rd.ptr(lvl + 0x38), rd.ptr(lvl + 0x2c).and_then(|t| rd.ptr(t + 4))) {
             let count = |ci: usize| -> u32 { mesh.chunk_first.get(ci + 1).copied().unwrap_or(mesh.polys.len() as u32) - mesh.chunk_first[ci] };
             for k in 0..rd.u16(lvl + 0x3c) as usize {
@@ -410,15 +425,40 @@ impl NavMesh {
                     }
                     let (pa, pb) = (mesh.chunk_first[ca] + pa, mesh.chunk_first[cb] + pb);
                     let (Some(&a), Some(&b)) = (chunk_verts[ca].get(rd.u16(r + 8) as usize), chunk_verts[ca].get(rd.u16(r + 10) as usize)) else { continue };
-                    // clearances record +0 (beyond vertex +8) / +1 (beyond vertex +10), i8 x 0.2,
-                    // negative = unlimited (1e8): sub_82764150, the fsel in sub_82765820
-                    let cl = |o: usize| { let v = rd.u8(o) as i8 as f32 * 0.2; if v < 0.0 { 1e8 } else { v } };
-                    let (c0, c1) = (cl(r), cl(r + 1));
-                    let sid = mesh.span_recs.len() as u32;
-                    mesh.span_recs.push(SpanRec { pa, pb, a, b });
-                    extra.push((pa, NavLink { poly: pb, a, b, len: 0.0, pa: a, pb: b, ca: c0, cb: c1, span: sid }));
-                    extra.push((pb, NavLink { poly: pa, a, b, len: 0.0, pa: b, pb: a, ca: c1, cb: c0, span: sid }));
+                    rec_of.insert((k, j), mesh.span_recs.len() as u32);
+                    mesh.span_recs.push(SpanRec { pa, pb, a, b, id: 0x0800_0000 | (k as u32) << 10 | j as u32 });
                     mesh.spans += 1;
+                }
+            }
+            // a polygon's span links as F-25417 collects them: only when the polygon's byte +7 is set; the spans of the
+            // polygon's own chunk's list (chunk +8, count +0x54) in list order, then the records in order; a span whose
+            // chunk A is this chunk matches record +4, any other its +6 (chunk B is not checked)
+            for ci in 0..n_chunks {
+                let (Some(c), Some((po, np))) = (rd.ptr(chunks + 4 * ci), chunk_po[ci]) else { continue };
+                let Some(list) = rd.ptr(c + 8) else { continue };
+                for t in 0..rd.u16(c + 0x54) as usize {
+                    let k = rd.u16(list + 2 * t) as usize;
+                    let o = sp + 12 * k;
+                    let side_a = rd.u16(o) as usize == ci;
+                    let Some(recs) = rd.ptr(sds + 4 * rd.u16(o + 4) as usize).and_then(|sd| Some((rd.ptr(sd + 4)?, rd.u16(sd + 8) as usize))) else { continue };
+                    for j in 0..recs.1 {
+                        let local = rd.u16(recs.0 + 14 * j + if side_a { 4 } else { 6 }) as usize;
+                        if local >= np || rd.u8(po + 28 * local + 7) == 0 {
+                            continue;
+                        }
+                        let Some(&sid) = rec_of.get(&(k, j)) else { continue };
+                        let sr = mesh.span_recs[sid as usize];
+                        // clearances record +0 (beyond vertex +8) / +1 (beyond vertex +10), i8 x 0.2,
+                        // negative = unlimited (1e8): F-34823, the fsel in F-56129
+                        let cl = |o: usize| { let v = rd.u8(o) as i8 as f32 * 0.2; if v < 0.0 { 1e8 } else { v } };
+                        let (c0, c1) = (cl(recs.0 + 14 * j), cl(recs.0 + 14 * j + 1));
+                        let poly = mesh.chunk_first[ci] + local as u32;
+                        extra.push(if side_a {
+                            (poly, NavLink { poly: sr.pb, a: sr.a, b: sr.b, len: 0.0, pa: sr.a, pb: sr.b, ca: c0, cb: c1, span: sid })
+                        } else {
+                            (poly, NavLink { poly: sr.pa, a: sr.a, b: sr.b, len: 0.0, pa: sr.b, pb: sr.a, ca: c1, cb: c0, span: sid })
+                        });
+                    }
                 }
             }
         }
@@ -621,10 +661,10 @@ pub struct Portal56 {
     pub clear_b: f32,
     /// the polygon left
     pub left: u32,
-    /// the node entered (+44): a polygon index, or `polys.len() + span record` for a span node
+    /// the polygon entered (+44, F-60982): the polygon across the edge, also when the step enters a span record (the
+    /// record's polygon on the other chunk's side)
     pub entered: u32,
-    /// material flags and normal of the entered polygon (of the polygon left when a span
-    /// node is entered - approx.: the original's choice for a span node is not decoded)
+    /// material flags and normal of the entered polygon
     pub flags: u32,
     pub normal: Vec3,
 }
@@ -638,7 +678,15 @@ pub struct QuickestPath {
     pub goal: Vec3,
     /// false: the goal was not reachable, the path leads to the closed node nearest it
     pub reached: bool,
+    /// the point element's node (+20): the goal polygon reached (or the start polygon that is a goal), the closest node
+    /// when not reached; `None` when the point is not in the path (the 128-element cap dropped it, see `PATH_CAP`)
+    pub goal_node: Option<u32>,
 }
+
+/// Elements a path holds (the path group's +28, the element allocation F-46314: a full path refuses the element;
+/// the builder then drops the head, F-41778, and appends). The walk runs goal -> start, so a longer path keeps the
+/// 128 elements nearest the start and loses the goal point first.
+pub const PATH_CAP: usize = 128;
 
 /// The racers' cost object (brain rule): 1.0 for the flags of the start or goal polygon and
 /// for anything with road, jump or jump-up bits (0x32), else 5.0.
@@ -740,6 +788,14 @@ impl Search {
 }
 
 impl NavMesh {
+    /// The original's id of a node: chunk << 12 | polygon, or the span record's id.
+    pub fn node_id(&self, node: u32) -> u32 {
+        match self.polys.get(node as usize) {
+            Some(p) => (p.chunk as u32) << 12 | (node - self.chunk_first[p.chunk as usize]),
+            None => self.span_recs[node as usize - self.polys.len()].id,
+        }
+    }
+
     fn node_pos(&self, node: u32) -> Vec3 {
         match self.polys.get(node as usize) {
             Some(p) => p.center,
@@ -760,14 +816,14 @@ impl NavMesh {
                     out.push((l.poly, l.len, Edge::Link(li)));
                 } else {
                     let nb = n + l.span;
-                    out.push((nb, self.node_pos(nb).distance(p.center), Edge::Link(li)));
+                    out.push((nb, point_dist(self.node_pos(nb), p.center), Edge::Link(li)));
                 }
             }
         } else {
             let s = &self.span_recs[(node - n) as usize];
             let m = s.mid();
-            out.push((s.pa, self.polys[s.pa as usize].center.distance(m), Edge::FromSpan));
-            out.push((s.pb, self.polys[s.pb as usize].center.distance(m), Edge::FromSpan));
+            out.push((s.pa, point_dist(self.polys[s.pa as usize].center, m), Edge::FromSpan));
+            out.push((s.pb, point_dist(self.polys[s.pb as usize].center, m), Edge::FromSpan));
         }
     }
 
@@ -824,20 +880,46 @@ impl NavMesh {
         self.nearest_poly_by(p, max, &|_| true)
     }
 
+    /// The nearest polygon (F-83298 -> F-51809 -> F-47232): the chunks in order, each searched with the
+    /// running best as its radius; inside a chunk the candidates come in its quadtree's order (all polygons ascending
+    /// without one), each tested against the chunk's running best (`dist <= best` takes it); a chunk's result replaces
+    /// the overall best only when strictly nearer. The order matters: the plane check in `poly_dist` rejects against the
+    /// best so far.
     fn nearest_poly_by(&self, p: Vec3, max: f32, keep: &dyn Fn(&NavPoly) -> bool) -> Option<u32> {
-        let mut cand = Vec::new();
-        self.near(p, max, |i, _| cand.push(i));
-        cand.sort_unstable();
         let mut best = (max, None);
-        for i in cand {
-            let pl = &self.polys[i as usize];
-            if (pl.area <= 0.0 && pl.n_links == 0) || !keep(pl) {
+        let mut seq: Vec<u32> = Vec::new();
+        for ci in 0..self.chunk_first.len() {
+            let range = self.chunk_polys(ci);
+            let n = (range.end - range.start) as usize;
+            if n == 0 {
                 continue;
             }
-            let lp = self.chunk_local(i, p);
-            let Some(dist) = self.poly_dist(i, lp, best.0) else { continue };
-            if dist < best.0 {
-                best = (dist, Some(i));
+            let mut cb = best.0;
+            seq.clear();
+            match self.quads.get(ci).and_then(|q| q.as_ref()) {
+                Some(q) => {
+                    let d = p - q.rows[3];
+                    let (lx, lz) = (q.rows[0].dot(d), q.rows[2].dot(d));
+                    q.walk([lx - cb, lz - cb], [lx + cb, lz + cb], n, &mut seq);
+                }
+                None => seq.extend(0..n as u32),
+            }
+            let mut found = None;
+            for &k in &seq {
+                let i = range.start + k;
+                let pl = &self.polys[i as usize];
+                if !keep(pl) {
+                    continue;
+                }
+                let lp = self.chunk_local(i, p);
+                let Some(dist) = self.poly_dist(i, lp, cb) else { continue };
+                if dist <= cb && (pl.area > 0.0 || pl.n_links > 0) {
+                    cb = dist;
+                    found = Some(i);
+                }
+            }
+            if found.is_some() && cb < best.0 {
+                best = (cb, found);
             }
         }
         best.1
@@ -963,7 +1045,10 @@ impl NavMesh {
     /// for non-zero flags). `None` when the start point has no polygon.
     pub fn quickest_path(&self, from: Vec3, to: Vec3, cost: &dyn Fn(u32) -> f32) -> Option<QuickestPath> {
         let n = self.polys.len() as u32;
-        let starts = self.point_polys(from);
+        // the start list sorted, duplicates out (F-15132 in F-75022)
+        let mut starts = self.point_polys(from);
+        starts.sort_unstable();
+        starts.dedup();
         if starts.is_empty() {
             return None;
         }
@@ -974,7 +1059,7 @@ impl NavMesh {
                 _ => 1.0,
             }
         };
-        let heur = |nb: u32| -> f32 { if goals.contains(&nb) { 0.0 } else { 1.5 * to.distance(self.node_pos(nb)) } };
+        let heur = |nb: u32| -> f32 { if goals.contains(&nb) { 0.0 } else { 1.5 * point_dist(to, self.node_pos(nb)) } };
         let mut s = Search { recs: Vec::new(), map: HashMap::new(), heap: vec![(0.0, 0, 0)] };
         // relax (sub_82772BD8)
         let relax = |s: &mut Search, parent: u32, nb: u32, g: f32, edge: Edge| {
@@ -1004,9 +1089,24 @@ impl NavMesh {
                 s.push(h + g, nb, r);
             }
         };
-        // initialisation (G slot 11): a start polygon that is a goal ends the search at once
-        if starts.iter().any(|p| goals.contains(p)) {
-            return Some(QuickestPath { portals: Vec::new(), goal: to, reached: true });
+        // initialisation (G slot 11, F-75022): first the goal marking F-73997 on the goal list (sorted, duplicates out:
+        // F-15132) makes the records of every goal polygon's neighbours (flags 0x40, 0x20) in iterator order, then of the
+        // goals (0x80): flags only, no parent, but they count against the record pool
+        let mut goal_list: Vec<u32> = goals.iter().copied().collect();
+        goal_list.sort_unstable();
+        let mut nbs = Vec::new();
+        for &gp in &goal_list {
+            self.node_neighbours(gp, &mut nbs);
+            for &(nb, _, _) in &nbs {
+                s.rec(nb);
+            }
+        }
+        for &gp in &goal_list {
+            s.rec(gp);
+        }
+        // a start polygon that is a goal ends the search at once
+        if let Some(&sp) = starts.iter().find(|&&p| goals.contains(&p)) {
+            return Some(QuickestPath { portals: Vec::new(), goal: to, reached: true, goal_node: Some(sp) });
         }
         for &sp in &starts {
             let r = s.rec(sp)?;
@@ -1016,11 +1116,10 @@ impl NavMesh {
             rc.h = 0.0;
             rc.edge = Edge::None;
         }
-        let mut nbs = Vec::new();
         for &sp in &starts {
             self.node_neighbours(sp, &mut nbs);
             for &(nb, _len, edge) in &nbs {
-                let c = if goals.contains(&nb) { from.distance(to) } else { from.distance(self.node_pos(nb)) } * mult(nb);
+                let c = if goals.contains(&nb) { point_dist(from, to) } else { point_dist(from, self.node_pos(nb)) } * mult(nb);
                 relax(&mut s, sp, nb, c, edge);
             }
         }
@@ -1035,7 +1134,7 @@ impl NavMesh {
             let pos = self.node_pos(node);
             self.node_neighbours(node, &mut nbs);
             for &(nb, len, edge) in &nbs {
-                let c = if goals.contains(&nb) { to.distance(pos) } else { len } * mult(nb);
+                let c = if goals.contains(&nb) { point_dist(to, pos) } else { len } * mult(nb);
                 if c < 0.0 {
                     continue;
                 }
@@ -1073,14 +1172,24 @@ impl NavMesh {
             let parent = rc.parent;
             if let (true, Edge::Link(li)) = (parent < n, rc.edge) {
                 let l = &self.links[li];
-                let ep = if cur < n { cur } else { parent };
+                // the polygon across the edge (F-60982): the link's other polygon, for a span record the record's polygon on
+                // the side the parent is not on (parent's chunk = chunk B -> the polygon in A, else the one in B)
+                let ep = if cur < n {
+                    cur
+                } else {
+                    let sr = &self.span_recs[(cur - n) as usize];
+                    if self.polys[parent as usize].chunk == self.polys[sr.pb as usize].chunk { sr.pa } else { sr.pb }
+                };
                 let q = &self.polys[ep as usize];
-                portals.push(Portal56 { a: l.pa, b: l.pb, clear_a: l.ca, clear_b: l.cb, left: parent, entered: cur, flags: q.flags, normal: q.normal });
+                portals.push(Portal56 { a: l.pa, b: l.pb, clear_a: l.ca, clear_b: l.cb, left: parent, entered: ep, flags: q.flags, normal: q.normal });
             }
             cur = parent;
         }
         portals.reverse();
-        Some(QuickestPath { portals, goal, reached })
+        // the 128-element cap: the point went in first, so it is the first dropped, then the portals nearest the goal
+        let goal_node = (portals.len() < PATH_CAP).then_some(end);
+        portals.truncate(PATH_CAP);
+        Some(QuickestPath { portals, goal, reached, goal_node })
     }
 }
 
@@ -1257,7 +1366,7 @@ mod tests {
         assert!(lo.x > -3470.0 && hi.x < 2830.0 && lo.z > -2335.0 && hi.z < 1970.0, "{lo:?} {hi:?}");
         // the pavements are islands (city blocks) between the roads
         let (id, n) = m.sidewalk_islands();
-        assert_eq!(n, 351);
+        assert_eq!(n, 352);
         assert_eq!(id.iter().filter(|&&x| x != u32::MAX).count(), 15_112);
         // point query: a sidewalk polygon is found at its own centre
         let k = m.polys.iter().position(|p| p.sidewalk()).unwrap();
@@ -1321,13 +1430,10 @@ mod tests {
         assert!(q.portals.len() > 5);
         let first = &q.portals[0];
         assert!(m.point_polys(from).contains(&first.left));
+        // (entered is always a polygon, also across a span record)
         for w in q.portals.windows(2) {
-            if w[0].entered < n {
-                assert_eq!(w[0].entered, w[1].left);
-            } else {
-                let s = &m.span_recs[(w[0].entered - n) as usize];
-                assert!(w[1].left == s.pa || w[1].left == s.pb);
-            }
+            assert!(w[0].entered < n);
+            assert_eq!(w[0].entered, w[1].left);
         }
         assert!(m.point_polys(to).contains(&q.portals.last().unwrap().entered));
         // each portal is an edge of the polygon it leaves
@@ -1349,5 +1455,55 @@ mod tests {
         let off = from + Vec3::new(0.0, 5.0, 0.0);
         assert!(m.on_mesh(off));
         assert_eq!(m.teleport_target(off).unwrap(), m.polys[m.nearest_poly(off, 10.0).unwrap() as usize].center);
+    }
+
+    /// The racers' whole query against the original run offline on the placed city mesh (tools/nav_search_reference.py:
+    /// the level made by the original's creation routine, the brain's own query and submit, the job body running the
+    /// queue): start and goal points, the racing filter's start / goal flags -> the path elements. Every portal (ends A / B
+    /// bits, clearances bits, polygon left and node entered as the original's ids) and the final point equal.
+    #[test]
+    fn quickest_path_matches_the_original() {
+        let Some(res) = file() else { return };
+        let m = NavMesh::parse(&res).unwrap();
+        let hx = |t: &str| u32::from_str_radix(t, 16).unwrap();
+        let (mut cases, mut bad) = (0, Vec::new());
+        // MCLA_NAV_SEARCH_REF: another run of tools/nav_search_reference.py (other seed / count) instead of the kept one
+        let extra = std::env::var("MCLA_NAV_SEARCH_REF").ok().map(|f| std::fs::read_to_string(f).unwrap());
+        let text = extra.as_deref().unwrap_or(include_str!("testdata/nav_search_ref.txt"));
+        for l in text.lines().filter(|l| l.starts_with("case")) {
+            let (head, rest) = l.split_once(" -> ").unwrap();
+            let h: Vec<&str> = head.split_whitespace().collect();
+            let v = |i: usize| Vec3::new(f32::from_bits(hx(h[i])), f32::from_bits(hx(h[i + 1])), f32::from_bits(hx(h[i + 2])));
+            let (from, to, sf, gf) = (v(2), v(5), hx(h[8]), hx(h[9]));
+            let (_status, els) = rest.split_once(" |").unwrap();
+            let els: Vec<Vec<u32>> = els.split(';').map(|e| e.split_whitespace().map(hx).collect::<Vec<u32>>()).filter(|e| !e.is_empty()).collect();
+            cases += 1;
+            let q = m.quickest_path(from, to, &racer_cost(sf, gf));
+            let mut got: Vec<Vec<u32>> = Vec::new();
+            if let Some(q) = &q {
+                for p in &q.portals {
+                    let b = |v: Vec3| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()];
+                    let mut e = vec![2];
+                    e.extend(b(p.a));
+                    e.extend(b(p.b));
+                    e.extend([0x1ffff, p.clear_a.to_bits(), p.clear_b.to_bits(), m.node_id(p.left), m.node_id(p.entered)]);
+                    got.push(e);
+                }
+            }
+            // the original's last element is the point (type 0, +4 the point, +20 the goal node); not there when the
+            // 128-element cap dropped it
+            let (want_portals, want_goal) = match els.last() {
+                Some(e) if e[0] == 0 => (&els[..els.len() - 1], Some([e[1], e[2], e[3], e[5]])),
+                _ => (&els[..], None),
+            };
+            let goal = q.as_ref().and_then(|q| q.goal_node.map(|nd| [q.goal.x.to_bits(), q.goal.y.to_bits(), q.goal.z.to_bits(), m.node_id(nd)]));
+            if got != want_portals || goal != want_goal {
+                let k = got.iter().zip(want_portals).position(|(a, b)| a != b).unwrap_or(got.len().min(want_portals.len()));
+                bad.push(format!("{} portals {} / {} first diff {k}: port {:x?} orig {:x?}; goal {:x?} / {:x?}", h[1], got.len(), want_portals.len(),
+                    got.get(k), want_portals.get(k), goal, want_goal));
+            }
+        }
+        assert!(cases > 0);
+        assert!(bad.is_empty(), "{} of {cases} differ:\n{}", bad.len(), bad.iter().take(12).cloned().collect::<Vec<_>>().join("\n"));
     }
 }

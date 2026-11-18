@@ -133,14 +133,6 @@ fn single_polygon(mesh: &NavMesh, id: u32) -> Vec<Portal> {
     [(v[0], v[1]), (if poly.nv == 3 { v[0] } else { v[3] }, v[2])].into_iter().map(|(a, b)| Portal { a, b, normal: n, offroad: f, ext: (0.0, 0.0) }).collect()
 }
 
-/// The goal node of the path's point element (+20).
-/// (approx.: `QuickestPath` does not carry it; the port takes the polygon under the goal point
-/// within 1 m. navmesh.rs should add `goal_node: u32` to `QuickestPath` - the start polygon
-/// found to be a goal, the goal polygon popped, or the closest node.)
-fn goal_node(mesh: &NavMesh, path: &QuickestPath) -> Option<u32> {
-    mesh.find(path.goal, u32::MAX, 1.0)
-}
-
 /// F-47058 with the brain's +216 (`current`, the goal being driven to) and +220 (`next`,
 /// the goal the path was planned to). Call once the nav state is 4 and the aiv's goal ring has
 /// room (< 8). Returns false when the aiv's portal ring has no room for the path (nothing is
@@ -148,15 +140,16 @@ fn goal_node(mesh: &NavMesh, path: &QuickestPath) -> Option<u32> {
 /// nav state to 0, F-71636).
 #[allow(clippy::too_many_arguments)]
 pub fn path_to_aiv_at(aiv: &mut Aiv, mesh: &NavMesh, path: &QuickestPath, goals: &mut Vec<Goal>, current: usize, next: &mut usize, looping: bool, final_heading: Vec3, final_speed: f32) -> bool {
-    let node = if path.portals.is_empty() { goal_node(mesh, path) } else { None };
+    // (the point element's goal node +20)
+    let node = if path.portals.is_empty() { path.goal_node } else { None };
     path_to_aiv_with(aiv, mesh, path, node, goals, current, next, looping, final_heading, final_speed)
 }
 
 /// [`path_to_aiv_at`] with the point element's goal node (+20) given (used only by a path with no portal).
 #[allow(clippy::too_many_arguments)]
 fn path_to_aiv_with(aiv: &mut Aiv, mesh: &NavMesh, path: &QuickestPath, node: Option<u32>, goals: &mut Vec<Goal>, current: usize, next: &mut usize, looping: bool, final_heading: Vec3, final_speed: f32) -> bool {
-    // count = elements of the list (portals + the goal point)
-    let count = path.portals.len() as i32 + 1;
+    // count = elements of the list (portals + the goal point, unless the 128-element cap dropped it)
+    let count = path.portals.len() as i32 + path.goal_node.is_some() as i32;
     let (mut left, long) = if count + 1 >= 96 { (64, true) } else { (count, false) };
     if left + 1 > Aiv::PORTAL_CAP - aiv.portal_count() {
         return false;
@@ -291,7 +284,7 @@ mod tests {
                 Portal56 { a: Vec3::new(x, 0.0, 0.0), b: Vec3::new(x, 0.0, 10.0), clear_a: 0.4, clear_b: 0.6, left: k as u32, entered: k as u32 + 1, flags: m.polys[k + 1].flags, normal: Vec3::Y }
             })
             .collect();
-        QuickestPath { portals, goal: Vec3::new(10.0 * n as f32 - 5.0, 0.0, 5.0), reached: true }
+        QuickestPath { portals, goal: Vec3::new(10.0 * n as f32 - 5.0, 0.0, 5.0), reached: true, goal_node: Some(n as u32 - 1) }
     }
 
     fn goal(pos: Vec3, flags: u32) -> Goal {
@@ -443,7 +436,7 @@ mod tests {
                     Portal56 { a: vt(ia), b: vt(ib), clear_a: CL[(x >> 10) as usize & 3], clear_b: CL[(x >> 12) as usize & 3], left: l, entered: n, flags: 0, normal: Vec3::Y }
                 })
                 .collect();
-            let path = QuickestPath { portals, goal: Vec3::ZERO, reached: true };
+            let path = QuickestPath { portals, goal: Vec3::ZERO, reached: true, goal_node: Some(nd) };
             let mut goals: Vec<Goal> = (0..ng).map(|i| {
                 let b = g0 + 9 * i;
                 Goal { pos: v3(b), w: f(b + 3), p1: v3(b + 4), speed: f(b + 7), flags: v[b + 8] }
@@ -497,7 +490,7 @@ mod tests {
         // start far edge + portal + goal far edge
         assert_eq!((aiv.portal_count(), aiv.goal_count(), next, goals.len()), (3, 1, 1, 2));
         // the next leg (square 1 -> 2) drops the far edge and adds the portal and a new far edge
-        let p2 = QuickestPath { portals: vec![path(&m, 3).portals[1]], goal: Vec3::new(25.0, 0.0, 5.0), reached: true };
+        let p2 = QuickestPath { portals: vec![path(&m, 3).portals[1]], goal: Vec3::new(25.0, 0.0, 5.0), reached: true, goal_node: Some(2) };
         assert!(path_to_aiv_at(&mut aiv, &m, &p2, &mut goals, 0, &mut next, false, Vec3::Z, -1.0));
         assert_eq!((aiv.portal_count(), aiv.goal_count(), next), (4, 2, 2));
     }
