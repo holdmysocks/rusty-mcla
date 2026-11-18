@@ -1758,6 +1758,17 @@ pub fn flat_forward(back: Vec3) -> (f32, f32) {
     (-(back.x * k), -(back.z * k))
 }
 
+/// F-83397's view with no player (the cutscene and front-end modes): the camera's forward with y = 0 (+228), made unit
+/// by the same rsqrt and Newton step as `flat_forward`, not negated. A forward straight up or down: the original's step
+/// gives NaN (its select only catches a zero rsqrt); the port keeps -z there.
+pub fn camera_view(f: Vec3) -> Vec3 {
+    if f.x == 0.0 && f.z == 0.0 {
+        return Vec3::NEG_Z;
+    }
+    let (x, z) = flat_forward(f);
+    Vec3::new(-x, 0.0, -z)
+}
+
 /// F-83397's speed of the focus (the tracker +968): the player's velocity with y = 0 (+208), its length as the vector
 /// unit takes it (z^2 + (y^2 + x^2), the reciprocal square root with one Newton step, times the squared length; 0 for a
 /// zero length) times 2.2369363 (the image's mph word).
@@ -8029,6 +8040,8 @@ pub struct Spawner {
     pub region_box: (glam::Vec2, glam::Vec2, f32, f32),
     /// the cutscene mode this frame (F-97032): the parked lists' box as wide as it is long
     pub cutscene: bool,
+    /// the focus's height last frame (F-83397's +196, kept when its cutscene-mode ground probe hits nothing)
+    pub focus_y: f32,
     /// the front-end mode this frame (F-95688): its camera and values
     pub frontend: Option<FrontEnd>,
     /// the junctions' rectangles (as `ints`), the junctions the front-end region list holds,
@@ -8284,7 +8297,7 @@ impl Spawner {
             v.sort_by(|a, b| nav.links[*a].t[0].total_cmp(&nav.links[*b].t[0]));
         }
         let n = roads.len();
-        Spawner { roads, ints, tune: Tune::load(root), data_dir: root.to_string_lossy().into_owned(), list: Vec::new(), int_weight: 0.0, listed: vec![false; n], target: 0.0, current: 0, frame: 0, step: 0.0, script: Default::default(), why: [0; 8], player_road: None, perp_next: false, order: Vec::new(), int_of, int_box, region_box: (glam::Vec2::ZERO, glam::Vec2::NEG_Y, 0.0, 0.0), cutscene: false, frontend: None, int_rects, fe_ints: Vec::new(), fe_pts: FrontEndPoints::default(), lane_links }
+        Spawner { roads, ints, tune: Tune::load(root), data_dir: root.to_string_lossy().into_owned(), list: Vec::new(), int_weight: 0.0, listed: vec![false; n], target: 0.0, current: 0, frame: 0, step: 0.0, script: Default::default(), why: [0; 8], player_road: None, perp_next: false, order: Vec::new(), int_of, int_box, region_box: (glam::Vec2::ZERO, glam::Vec2::NEG_Y, 0.0, 0.0), cutscene: false, focus_y: 0.0, frontend: None, int_rects, fe_ints: Vec::new(), fe_pts: FrontEndPoints::default(), lane_links }
     }
 
     /// The road a link belongs to (F-86691): its lane's owner when that is a road (flag
@@ -8928,10 +8941,15 @@ impl Vehicles {
             None => (Vec3::NEG_Z, 0.0, None),
         };
         // (the cutscene mode, F-97032: the focus the camera's eye, the view its forward made
-        // flat, no speed - the velocity it takes, [0x828608D0], is zero - and no player's road)
+        // flat, no speed - the velocity it takes, [0x828608D0], is zero - and no player's road;
+        // F-83397: the focus's height the ground under the eye - the level probe F-57005, class 0x800,
+        // from y 250 down to -250 at its x, z, the hit's y - else last frame's)
         let cut = self.amb_cutscene;
         let (center, view, mph, player_link) = match cut {
-            Some((eye, f)) => (eye, Vec3::new(f.x, 0.0, f.z).normalize_or(Vec3::NEG_Z), 0.0, None),
+            Some((eye, f)) => {
+                let y = world.collider.probe_front(Vec3::new(eye.x, 250.0, eye.z), Vec3::NEG_Y, 500.0).map_or(sp.focus_y, |h| h.point.y);
+                (Vec3::new(eye.x, y, eye.z), camera_view(f), 0.0, None)
+            }
             None => (center, view, mph, player_link),
         };
         sp.cutscene = cut.is_some();
@@ -8939,9 +8957,10 @@ impl Vehicles {
         // camera as in the cutscene mode: its eye, its forward made flat, speed 0, no player's road)
         let fe = self.amb_frontend.filter(|_| cut.is_none()).map(|f| FrontEnd { eye: f.eye, fwd: f.dir.normalize_or(Vec3::NEG_Z), tan: self.amb_frontend_tan, amb: f.amb, index: f.index });
         let (center, view, mph, player_link) = match fe {
-            Some(f) => (f.eye, Vec3::new(f.fwd.x, 0.0, f.fwd.z).normalize_or(Vec3::NEG_Z), 0.0, None),
+            Some(f) => (f.eye, camera_view(f.fwd), 0.0, None),
             None => (center, view, mph, player_link),
         };
+        sp.focus_y = center.y;
         if sp.frontend.is_none() != fe.is_none() {
             sp.fe_pts = FrontEndPoints::default();
         }
@@ -13381,6 +13400,17 @@ mod ghost_tests {
         let v = focus_mph(Vec3::new(3.0, 50.0, 4.0));
         assert!((v - 5.0 * 2.236_936_3).abs() < 1e-5, "{v}");
         assert_eq!(focus_mph(Vec3::new(0.0, 9.0, 0.0)), 0.0);
+    }
+
+    /// F-83397's view with no player: the camera's forward made flat and unit, its sign kept; straight down gives -z.
+    #[test]
+    fn camera_view_is_flat() {
+        let v = camera_view(Vec3::new(3.0, -7.0, 4.0));
+        assert_eq!(v.y, 0.0);
+        assert!((v.x - 0.6).abs() < 1e-6 && (v.z - 0.8).abs() < 1e-6, "{v}");
+        let (x, z) = flat_forward(Vec3::new(3.0, -7.0, 4.0));
+        assert_eq!((v.x.to_bits(), v.z.to_bits()), ((-x).to_bits(), (-z).to_bits()));
+        assert_eq!(camera_view(Vec3::NEG_Y), Vec3::NEG_Z);
     }
 
     /// A layout item's parked car (F-90920 -> F-13129) is a pool request too: the item is held while it is pending (no
