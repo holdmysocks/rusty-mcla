@@ -273,15 +273,14 @@ impl BoomCam {
         self.started = false;
     }
 
-    /// Where the camera's collision probe starts (F-20517): the file's Collide point in
-    /// this frame's boom frame, P = origin + frame * (Collide - Center), origin = the car's
-    /// place + car * Center. Call after `update`.
+    /// Where the camera's collision probe starts (F-20517 / F-77832): the file's Collide point in
+    /// this frame's boom frame, P = the frame's matrix (rows right, up, back, origin = the car's place + car * Center)
+    /// applied to Collide - Center (`boom_point`). Call after `update`.
     pub fn collide_from(&self, t: &BoomTune, car: &BoomTarget) -> Vec3 {
         let car_m = Mat3::from_quat(car.rot);
         let x = self.up.cross(self.dir).normalize_or(car_m.x_axis);
         let z = x.cross(self.up);
-        let frame = Mat3::from_cols(x, self.up, z);
-        car.pos + car_m * t.v3("Center") + frame * (t.v3("Collide") - t.v3("Center"))
+        boom_point([x, self.up, z, car.pos + car_m * t.v3("Center")], t.v3("Collide") - t.v3("Center"))
     }
 }
 
@@ -294,37 +293,59 @@ pub fn boom_probe_bit(speed: f32, paused: bool) -> bool {
     speed < f32::from_bits(0x41B2_CCCD) || paused
 }
 
-/// The boom camera's collision (camBoomCS CollideType 2, F-12669 -> F-20517 for the
-/// chase and reverse views, F-77832 for POV / bumper; rules in
-/// `docs/reference/cameras/boom_collision_rule.md` and `probe_rule.md`). A ball the size of the
-/// near plane's corner (near * sqrt(tanX^2 + tanY^2), + 0.01; POV / bumper twice the corner) at the
-/// probe point `p`: if it touches anything (the city, other cars; up to ten contacts) each contact
-/// puts the camera at p + n depth and the pushes are summed by F-87913 in the list's order, one
-/// pass; else the ball is swept from `p` to the camera `c` and the camera stands where it first
-/// touches. POV / bumper sweep only. The focus moves with it (the look keeps its direction);
-/// every frame, no smoothing, the boom's own state is not changed. Returns the camera's move, or
-/// None when it is clear.
-pub fn boom_collide(p: Vec3, c: Vec3, r: f32, inside_car: bool, q: CamQuery, world: SphereTest) -> Option<Vec3> {
-    if !inside_car {
-        let k = world.contacts(p, r, q, 10);
-        if !k.is_empty() {
-            let mut acc = Vec3::ZERO;
-            for (d, n) in k {
-                acc = accumulate(acc, p + n * d - c);
-            }
-            return Some(acc);
-        }
-    }
-    let (t, _) = world.sweep(p, c, r, true)?;
-    Some(p + (c - p) * t - c)
+/// F-20517 / F-77832's probe point: the boom frame's matrix (`rows`: right, up, back, origin) applied to `d` =
+/// Collide - Center with w = 1, each lane a `vmsum4fp` (the recompilation's dpps): (d.x m0 + d.y m1) + (d.z m2 + o).
+pub fn boom_point(rows: [Vec3; 4], d: Vec3) -> Vec3 {
+    let l = |i: usize| (d.x * rows[0][i] + d.y * rows[1][i]) + (d.z * rows[2][i] + rows[3][i]);
+    Vec3::new(l(0), l(1), l(2))
 }
 
-/// F-87913: the next push adds only its part not along the sum so far.
+/// The boom's ball (F-20517 / F-77832) from the viewport's words: near +704, the lens's tangents up +712 and across
+/// +716: h = sqrt((tan_up near)^2 + (tan_across near)^2) as the scalar unit chains it; POV / bumper 2 h, else h + 0.01.
+pub fn boom_radius(near: f32, ty: f32, tx: f32, inside_car: bool) -> f32 {
+    let (a, b) = (ty * near, tx * near);
+    let h = crate::physics::exact::fma(a, a, b * b).sqrt();
+    if inside_car {
+        h * 2.0
+    } else {
+        h + f32::from_bits(0x3C23_D70A)
+    }
+}
+
+/// The boom camera's collision (camBoomCS CollideType 2, F-12669 -> F-20517 for the
+/// chase and reverse views, F-77832 for POV / bumper; rules in
+/// `docs/reference/cameras/boom_collision_rule.md` and `probe_rule.md`). A ball of radius `r`
+/// (`boom_radius`) at the probe point `p`: if it touches anything (the city, other cars; up to ten
+/// contacts) each contact's push (its point - C) + n r (the vector unit's unfused multiply-add) is summed by F-87913
+/// in the list's order, one pass; else the ball is swept from `p` to C and its first touch's record gives the push
+/// the same way. POV / bumper sweep only, the first record only. Every frame, no smoothing, the boom's own state is
+/// not changed. Returns the camera's move (the camera's place += it, lane by lane), or None when it is clear. The
+/// chase views move the focus by it too (the look keeps its direction); POV / bumper keep the focus where it is
+/// (F-77832 aims the moved eye at the unmoved focus).
+pub fn boom_collide(p: Vec3, c: Vec3, r: f32, inside_car: bool, q: CamQuery, world: SphereTest) -> Option<Vec3> {
+    let push = |pos: Vec3, n: Vec3| (pos - c) + n * r;
+    if !inside_car {
+        let k = world.contact_points(p, r, q, 10);
+        if !k.is_empty() {
+            return Some(k.into_iter().fold(Vec3::ZERO, |acc, (pos, n)| accumulate(acc, push(pos, n))));
+        }
+    }
+    let (pos, n) = world.sweep_point(p, c, r, true)?;
+    Some(accumulate(Vec3::ZERO, push(pos, n)))
+}
+
+/// F-87913: the next push adds only its part not along the sum so far (the scalar unit's chains for the dot products,
+/// then the vector unit's `vnmsubfp`: v' = -(acc s - v), unfused).
 fn accumulate(acc: Vec3, mut v: Vec3) -> Vec3 {
-    let dd = acc.dot(v);
-    let aa = acc.length_squared();
-    if dd > 1e-12 && aa > 1e-12 {
-        v -= acc * (dd / aa);
+    use crate::physics::exact::fma;
+    let tol = f32::from_bits(0x2B8C_BCCC);
+    let dd = fma(acc.z, v.z, fma(acc.y, v.y, acc.x * v.x));
+    if dd > tol {
+        let aa = fma(acc.y, acc.y, fma(acc.x, acc.x, acc.z * acc.z));
+        if aa > tol {
+            let s = dd / aa;
+            v = -(acc * s - v);
+        }
     }
     acc + v
 }
@@ -3762,6 +3783,16 @@ pub trait CamWorld {
         !self.contacts(c, r, q, 1).is_empty()
     }
     fn sweep(&self, a: Vec3, b: Vec3, r: f32, cars: bool) -> Option<(f32, Vec3)>;
+    /// The ball's contacts as the boom (F-20517) reads their records: (the contact point +16, the normal +32). Where the
+    /// world has no record of its own, the point is c - n (r - depth).
+    fn contact_points(&self, c: Vec3, r: f32, q: CamQuery, max: usize) -> Vec<(Vec3, Vec3)> {
+        self.contacts(c, r, q, max).into_iter().map(|(d, n)| (c - n * (r - d), n)).collect()
+    }
+    /// The sweep's first touch as the boom reads its record: (the contact point +16, the normal +32); where the world
+    /// has no record of its own, the ball's centre at the touch less n r.
+    fn sweep_point(&self, a: Vec3, b: Vec3, r: f32, cars: bool) -> Option<(Vec3, Vec3)> {
+        self.sweep(a, b, r, cars).map(|(t, n)| (a + (b - a) * t - n * r, n))
+    }
     /// The sweep's first touch as its record holds it: (t +64, depth +68, normal +32); the depth is the length of the
     /// sweep left after the touch, |b - a| (1 - t) where the world has no record of its own.
     fn sweep_rec(&self, a: Vec3, b: Vec3, r: f32, cars: bool) -> Option<(f32, f32, Vec3)> {
@@ -3785,6 +3816,12 @@ impl CamWorld for crate::physics::camprobe::CamLevel<'_> {
     }
     fn sweep_rec(&self, a: Vec3, b: Vec3, r: f32, cars: bool) -> Option<(f32, f32, Vec3)> {
         crate::physics::camprobe::CamLevel::sweep_hit(self, a, b, r, cars).map(|h| (h.t, h.depth, h.normal))
+    }
+    fn contact_points(&self, c: Vec3, r: f32, q: CamQuery, max: usize) -> Vec<(Vec3, Vec3)> {
+        crate::physics::camprobe::CamLevel::contacts(self, c, r, q, max).into_iter().map(|k| (k.pos, k.normal)).collect()
+    }
+    fn sweep_point(&self, a: Vec3, b: Vec3, r: f32, cars: bool) -> Option<(Vec3, Vec3)> {
+        crate::physics::camprobe::CamLevel::sweep_hit(self, a, b, r, cars).map(|h| (h.contact, h.normal))
     }
 }
 
@@ -6137,6 +6174,97 @@ SSFovMin 60
     /// the state bits +668 and the kept distance +672 equal word for word frame after frame, and the probes asked with the
     /// same centre, ends, radius, include and states - the ball at T touching, the sweep's touches, normals that do not
     /// face T -> C, touches outside 0..1, CollideMinDist, the release at MinAppXZPos m/s and at 30 % a call, sticky bits.
+    /// The boom's collision as the original's F-20517 (chase / reverse) and F-77832 (POV / bumper) run it offline
+    /// (`tools/boom_collide_reference.py`, 4,000 calls with the probes answering the case's records): the probe point,
+    /// the ball's radius, the probes' arguments, the pushes summed by F-87913, the camera's place after the call, the
+    /// direction handed to the look (the focus moved by the push or not) and the return, word for word.
+    #[test]
+    fn boom_collide_matches_the_original() {
+        use std::cell::RefCell;
+        struct Recs {
+            ball: Vec<(Vec3, Vec3)>,
+            sweep: Option<(Vec3, Vec3)>,
+            log: RefCell<(Vec<(Vec3, f32, usize)>, Vec<(Vec3, Vec3, f32)>)>,
+        }
+        impl CamWorld for Recs {
+            fn contacts(&self, _c: Vec3, _r: f32, _q: CamQuery, _max: usize) -> Vec<(f32, Vec3)> {
+                unreachable!()
+            }
+            fn sweep(&self, _a: Vec3, _b: Vec3, _r: f32, _cars: bool) -> Option<(f32, Vec3)> {
+                unreachable!()
+            }
+            fn contact_points(&self, c: Vec3, r: f32, _q: CamQuery, max: usize) -> Vec<(Vec3, Vec3)> {
+                self.log.borrow_mut().0.push((c, r, max));
+                self.ball.iter().copied().take(max).collect()
+            }
+            fn sweep_point(&self, a: Vec3, b: Vec3, r: f32, _cars: bool) -> Option<(Vec3, Vec3)> {
+                self.log.borrow_mut().1.push((a, b, r));
+                self.sweep
+            }
+        }
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let f = |w: u32| f32::from_bits(w);
+        let v = |w: &[u32]| Vec3::new(f(w[0]), f(w[1]), f(w[2]));
+        let same3 = |a: Vec3, b: &[u32]| a.x.to_bits() == b[0] && a.y.to_bits() == b[1] && a.z.to_bits() == b[2];
+        let (mut n, mut balls, mut multi, mut sweeps, mut clear, mut pov) = (0, 0, 0, 0, 0, 0);
+        for line in include_str!("testdata/boom_collide_ref.txt").lines() {
+            let (a, b) = line.split_once(" -> ").unwrap();
+            let i: Vec<u32> = a.split_whitespace().skip(1).map(h).collect();
+            let o: Vec<u32> = b.split_whitespace().map(h).collect();
+            assert_eq!((i.len(), o.len()), (129, 46));
+            let inside = i[0] == 1;
+            let rows = [v(&i[1..]), v(&i[5..]), v(&i[9..]), v(&i[13..])];
+            let (center, collide, c) = (v(&i[17..]), v(&i[21..]), v(&i[25..]));
+            let (near, ty, tx, focus, roll) = (f(i[29]), f(i[30]), f(i[31]), v(&i[32..]), i[36]);
+            let nb = i[39] as usize;
+            let ball: Vec<(Vec3, Vec3)> = (0..nb).map(|k| (v(&i[40 + 8 * k..]), v(&i[44 + 8 * k..]))).collect();
+            let sweep = (i[120] != 0).then(|| (v(&i[121..]), v(&i[125..])));
+            let world = Recs { ball, sweep, log: RefCell::new((vec![], vec![])) };
+            let p = boom_point(rows, collide - center);
+            let r = boom_radius(near, ty, tx, inside);
+            let m = boom_collide(p, c, r, inside, CamQuery::boom(false), &world);
+            let (bl, sl) = world.log.into_inner();
+            let ctx = format!("case {n}: {line}");
+            // the ball: F-20517 only, at P with the radius, max 10
+            assert_eq!(bl.len() as u32, o[0], "{ctx}");
+            if let Some(&(bc, br, max)) = bl.first() {
+                assert!(same3(bc, &o[1..]) && br.to_bits() == o[5] && max as u32 == o[10], "ball {bc} {br} {max} {ctx}");
+            }
+            // the sweep: from P by C - P, its length, the radius
+            assert_eq!(sl.len() as u32, o[12], "{ctx}");
+            if let Some(&(sa, sb, sr)) = sl.first() {
+                let d = sb - sa;
+                let len = crate::physics::exact::fma(d.x, d.x, crate::physics::exact::fma(d.y, d.y, d.z * d.z)).sqrt();
+                assert!(same3(sa, &o[13..]) && same3(c - sa, &o[17..]) && sb == c, "sweep {sa} {sb} {ctx}");
+                assert!(len.to_bits() == o[21] && sr.to_bits() == o[22], "sweep length {len} radius {sr} {ctx}");
+            }
+            match m {
+                Some(m) => {
+                    let eye = c + m;
+                    let at = boom_point(rows, focus) + if inside { Vec3::ZERO } else { m };
+                    assert!(same3(eye, &o[40..]), "place {eye} {ctx}");
+                    assert!(o[30] == 1 && same3(eye - at, &o[31..]), "look {} {ctx}", eye - at);
+                    assert!(o[37] == 1 && o[38] == roll && (o[44], o[45]) == (1, 1), "{ctx}");
+                    if inside {
+                        pov += 1;
+                    } else if nb > 0 {
+                        balls += 1;
+                        multi += (nb > 1) as usize;
+                    } else {
+                        sweeps += 1;
+                    }
+                }
+                None => {
+                    assert!(same3(c, &o[40..]) && o[30] == 0 && (o[44], o[45]) == (0, 0), "{ctx}");
+                    clear += 1;
+                }
+            }
+            n += 1;
+        }
+        eprintln!("boom collide: {n} calls, {balls} ball ({multi} with several contacts), {sweeps} sweep, {pov} POV / bumper, {clear} clear");
+        assert!(n == 4000 && balls >= 800 && multi >= 400 && sweeps >= 300 && pov >= 800 && clear >= 300);
+    }
+
     #[test]
     fn track_pull_matches_the_original() {
         use std::cell::RefCell;

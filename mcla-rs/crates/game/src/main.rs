@@ -11268,14 +11268,16 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         if tune.collide_type() & 2 != 0 && view_cam {
                             let aspect = gpu.config.width as f32 / gpu.config.height.max(1) as f32;
                             let ty = (out.fov.to_radians() * 0.5).tan();
-                            let corner = boomcam::DIRECTOR_NEAR * (ty * ty + (ty * aspect) * (ty * aspect)).sqrt();
                             let inside_car = boomcam::VIEW_OF_PORT[(mode as usize).min(5)] < 2 && !self.look_back;
-                            let r = if inside_car { corner * 2.0 } else { corner + 0.01 };
+                            let r = boomcam::boom_radius(boomcam::DIRECTOR_NEAR, ty, ty * aspect, inside_car);
                             let from = self.boom.collide_from(tune, &target);
                             let q = physics::camprobe::CamQuery::boom(boomcam::boom_probe_bit(target.vel.length(), self.game.audio_paused()));
                             if let Some(m) = boomcam::boom_collide(from, self.chase.pos, r, inside_car, q, &cam_level) {
                                 self.chase.pos += m;
-                                self.chase.look += m;
+                                // (F-20517 moves the focus with the eye; F-77832, POV / bumper, keeps it)
+                                if !inside_car {
+                                    self.chase.look += m;
+                                }
                                 boom_corrected = true;
                             }
                         }
