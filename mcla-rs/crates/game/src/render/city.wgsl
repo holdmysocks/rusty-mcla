@@ -544,7 +544,7 @@ struct Material {
     mode: u32,     // see MatMode in render/mod.rs
     nofog: u32,    // 1: no fog laid - the sea where the stencil holds 1 (render/mod.rs `pipeline_sea`)
     shore: u32,    // 1: the surf strip's own draw - the game's programs run on it (render/mod.rs `SHORE_PROGRAM`)
-    _pad2: u32,
+    blend: u32,    // 1: a shop sign drawn blended (CityStoreSign, batch flag 1) - its own alpha kept, alpha 0 dropped
 };
 @group(2) @binding(0) var<uniform> mat: Material;
 
@@ -2505,12 +2505,16 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
         // (diagnostics 330: the signs' own light off - NeonIntensity 0, as the override captures cap/ne_0 of the original)
         // (331: also the ambient alone, no highlight; 332: also everything but the ambient)
         if (g.params.w > 329.5 && g.params.w < 332.5) { sign_gain = 0.0; }
-        // (shop signs: the night picture on the second UV set. Neon signs: the program has ONE
-        // texture coordinate input and takes the neon map with it, scaled by the flip-book -
-        // VSCityNeon and the night draws' own vertex program both - so the map lies on the
-        // diffuse's coordinates. It stood on the second set until 2026-10-12, which left the
-        // poster over the start a flat grey; diagnostics 49 puts it back there.)
-        if ((b & 4096u) != 0u && (mat.mode == 24u || (g.params.w > 48.5 && g.params.w < 49.5))) { second_uv = in.uv1; }
+        // (Neon signs: the program has ONE texture coordinate input and takes the neon map with it,
+        // scaled by the flip-book - VSCityNeon and the night draws' own vertex program both - so the
+        // map lies on the diffuse's coordinates. It stood on the second set until 2026-10-12, which
+        // left the poster over the start a flat grey. Shop signs the same (2026-11-18): VSCityStoreSign
+        // (346bcee80668ea4e) has one texture coordinate input, passes it as o4.xy and the flip-book of
+        // it as o4.zw, and PSCityStoreSign (066fa48bb96323ba) reads the night picture (s1) at o4.zw; no
+        // CityStoreSign mesh of the city has a second set (all 420: vertex mask 0x4069), so the port's
+        // second set was (0, 0) - the night picture's transparent corner - and no shop sign lit at night.
+        // Diagnostics 49 puts both back on the second set.)
+        if ((b & 4096u) != 0u && g.params.w > 48.5 && g.params.w < 49.5) { second_uv = in.uv1; }
         // (the neon map as a flip-book: NumAnimsU x NumAnimsV frames, AnimSpeed frames an
         // hour of the game's clock - the shader steps it by its time-of-day global)
         let nu = max(f32(b & 7u), 1.0);
@@ -5405,7 +5409,15 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             lit = g.ambient_sky.rgb + lg_col * shadow * (lg_nl + 2.0 * lg_sp);
             a = 1.0;
         }
-        if (a < 0.3) { discard; }
+        // (the sectors' shop signs, batch flag 1 - every CityStoreSign batch: the original draws them in the blended
+        // bucket, SrcAlpha / InvSrcAlpha (0x2201 = 0x07060706), depth written, alpha test > 0, with the program's
+        // alpha = lerp(diffuse a, night a, night a) - docs/LIGHTING.md "The shop signs drawn blended". Props' signs and
+        // MCLA_SIGN_BLEND_OLD=1: opaque, cut at 0.3 as before)
+        if (mat.blend == 1u) {
+            if (a <= 0.0) { discard; }
+            alpha = a;
+            amb_keep_a = true;
+        } else if (a < 0.3) { discard; }
     } else if (mat.mode == 25u) {
         // PSCityNeonTint, 18:00 to 06:00: NightColor times NightIntensity, strongest face-on
         let hour = g.sun_color.w;

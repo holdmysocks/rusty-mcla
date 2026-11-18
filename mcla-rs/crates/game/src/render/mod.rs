@@ -946,6 +946,9 @@ impl Default for Globals {
 pub const SHORE_PROGRAM: u32 = 0x200;
 /// `mat_bgs` key bit of the sea's unfogged material (`pipeline_sea`)
 pub const SEA_NOFOG: u32 = 0x100;
+/// `mat_bgs` key bit of the shop signs' blended material (CityStoreSign, batch flag 1): `MaterialUniform::_pad[2]` = 1 -
+/// city.wgsl keeps the sign's own alpha and drops only alpha 0 (`world::sign_blend_on`)
+pub const SIGN_BLEND: u32 = 0x400;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, Debug)]
@@ -2620,6 +2623,20 @@ impl Gpu {
                 entries: &[wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() }],
             });
             mat_bgs.insert(mode | SHORE_PROGRAM, bg);
+        }
+        {
+            let mode = MatMode::StoreSign as u32;
+            let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("mat sign blended"),
+                contents: bytemuck::bytes_of(&MaterialUniform { mode, _pad: [0, 0, 1] }),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("mat bg sign blended"),
+                layout: &mat_layout,
+                entries: &[wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() }],
+            });
+            mat_bgs.insert(mode | SIGN_BLEND, bg);
         }
         // (binding 1: a car's vertex damage map, crate::damagemap - DmgTex; everything else has the
         // empty one, as the original's blank_dmg.dds: all zero)

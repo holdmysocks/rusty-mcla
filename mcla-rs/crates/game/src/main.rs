@@ -18044,7 +18044,9 @@ fn draw_sectors<'a>(pass: &mut wgpu::RenderPass<'_>, v: &SectorView<'a>, secs: i
         for b in &sec.batches {
             // (the surf strip: drawn after the sea of its sector, in phase 2 - world.rs `mark_shore`)
             let shore = v.sea_late && b.mode == MatMode::Blend && world::is_shore(&b.shader);
-            let blend = matches!(b.mode, MatMode::Blend | MatMode::StoreGlass) && !shore;
+            // (the shop signs: the original's blended bucket, batch flag 1 - world::sign_blend_on)
+            let sign_bl = b.mode == MatMode::StoreSign && world::sign_blend_on();
+            let blend = (matches!(b.mode, MatMode::Blend | MatMode::StoreGlass) || sign_bl) && !shore;
             if blend != (phase == 1) {
                 continue;
             }
@@ -18115,9 +18117,10 @@ fn draw_sectors<'a>(pass: &mut wgpu::RenderPass<'_>, v: &SectorView<'a>, secs: i
                 pass.set_bind_group(1, b.bind.as_ref(), &[]);
                 last_bind = bp;
             }
-            if b.mode as u32 != last_mode {
-                pass.set_bind_group(2, &gpu.mat_bgs[&(b.mode as u32)], &[]);
-                last_mode = b.mode as u32;
+            let mkey = b.mode as u32 | if sign_bl { render::SIGN_BLEND } else { 0 };
+            if mkey != last_mode {
+                pass.set_bind_group(2, &gpu.mat_bgs[&mkey], &[]);
+                last_mode = mkey;
                 // (the opaque phase: the material's own pipeline where it has one - render/mod.rs `mode_constant`)
                 if phase == 0 {
                     let own = gpu.pipeline_opaque_mode[b.mode as usize].as_ref().and_then(|p| p.ready(render::ms::current()));
@@ -18128,7 +18131,7 @@ fn draw_sectors<'a>(pass: &mut wgpu::RenderPass<'_>, v: &SectorView<'a>, secs: i
                 }
             }
             if pane_zw {
-                let want_pane = matches!(b.mode, MatMode::StoreGlass);
+                let want_pane = matches!(b.mode, MatMode::StoreGlass) || sign_bl;
                 if want_pane != pane_pipe {
                     pass.set_pipeline(if want_pane { &gpu.pipeline_pane } else { &gpu.pipeline_blend });
                     pane_pipe = want_pane;
@@ -18210,7 +18213,7 @@ fn far_bundles_on() -> bool {
 fn far_bundle(gpu: &Gpu, sec: &world::GpuSector, vb: &world::BufPart, ib: &world::BufPart) -> (Arc<wgpu::RenderBundle>, usize) {
     let cur = render::ms::current();
     let mut key = cur.slot() as u64;
-    for b in sec.batches.iter().filter(|b| !matches!(b.mode, MatMode::Blend | MatMode::StoreGlass)) {
+    for b in sec.batches.iter().filter(|b| !matches!(b.mode, MatMode::Blend | MatMode::StoreGlass) && !(b.mode == MatMode::StoreSign && world::sign_blend_on())) {
         if gpu.pipeline_opaque_mode[b.mode as usize].as_ref().and_then(|p| p.ready(cur)).is_some() {
             key |= 1 << (8 + (b.mode as u64).min(55));
         }
@@ -18244,7 +18247,7 @@ fn far_bundle(gpu: &Gpu, sec: &world::GpuSector, vb: &world::BufPart, ib: &world
     let mut n = 0usize;
     let mut runs: Vec<(u32, u32)> = Vec::new();
     for b in &sec.batches {
-        if matches!(b.mode, MatMode::Blend | MatMode::StoreGlass) {
+        if matches!(b.mode, MatMode::Blend | MatMode::StoreGlass) || (b.mode == MatMode::StoreSign && world::sign_blend_on()) {
             continue;
         }
         if let Some(o) = sec.obj.as_ref() {

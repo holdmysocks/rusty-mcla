@@ -124,7 +124,7 @@ struct GeoItem {
 }
 
 fn geo_rank(b: &CpuBatch) -> u32 {
-    if b.mode.blended() {
+    if b.mode.blended() || (b.mode == MatMode::StoreSign && sign_blend_on()) {
         2
     } else if shadow_cutout(b.mode) {
         1
@@ -139,7 +139,8 @@ pub fn prepare_geo(batches: Vec<CpuBatch>) -> Geo {
     // (the shop panes keep the sector's own batch order - the sort is stable: the original draws them
     // blended WITH depth writes in that order, so of two panes one behind the other the first drawn decides
     // what shows - a shop door behind an angled front pane is not drawn, LIGHTING_WORK.md 2026-10-15)
-    src.sort_by_key(|(_, b)| if b.mode == MatMode::StoreGlass { (geo_rank(b), b.mode as u32, Default::default(), Default::default()) } else { (geo_rank(b), b.mode as u32, b.diffuse, b.second) });
+    // (the blended shop signs go in the same run, in batch order between the panes, as the original's blended bucket)
+    src.sort_by_key(|(_, b)| if b.mode == MatMode::StoreGlass || (b.mode == MatMode::StoreSign && sign_blend_on()) { (geo_rank(b), MatMode::StoreGlass as u32, Default::default(), Default::default()) } else { (geo_rank(b), b.mode as u32, b.diffuse, b.second) });
     let mut verts: Vec<Vertex> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
     let mut items = Vec::with_capacity(src.len());
@@ -688,6 +689,14 @@ pub fn note_tex_miss(kind: &str, name: &str) {
     if SEEN.lock().unwrap().get_or_insert_with(Default::default).insert(key.clone()) {
         log::info!("texture miss: {key}");
     }
+}
+
+/// The sectors' shop signs (CityStoreSign: all 420 batches carry flag 1) drawn in the blended phase as the original's
+/// blended bucket draws them (main.rs `draw_sectors`, city.wgsl mode 24 `mat.blend`). MCLA_SIGN_BLEND_OLD=1: opaque
+/// with a cut at alpha 0.3, as before.
+pub fn sign_blend_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("MCLA_SIGN_BLEND_OLD").is_none())
 }
 
 fn water_old() -> bool {
