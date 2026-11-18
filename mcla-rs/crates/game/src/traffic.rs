@@ -11501,9 +11501,10 @@ mod original_curve_tests {
         assert_eq!(n, 4000);
     }
 
-    /// A car's lane entries (AddLane F-94578, RemoveLane F-59811) and the lanes' car lists (F-30206 / F-13436) against the
-    /// original's code run offline (tools/lane_entries_reference.py -> testdata/lane_entries_ref.txt: 2,000 cases of 160
-    /// operations on 8 cars and 6 lanes): each lane's cars in its list's order (the entries by their link order).
+    /// A car's lane entries (AddLane F-94578, RemoveLane F-59811, the drop of all of them F-11956) and the lanes' car lists
+    /// (F-30206 / F-13436) against the original's code run offline (tools/lane_entries_reference.py ->
+    /// testdata/lane_entries_ref.txt: 2,000 cases of 160 operations on 8 cars and 6 lanes, about 4 % drops "C"): each lane's
+    /// cars in its list's order (the entries by their link order).
     #[test]
     fn lane_entries_match_the_original() {
         let mut n = 0;
@@ -11516,6 +11517,8 @@ mod original_curve_tests {
                 let dl = &mut cars[o];
                 if w[0] == "A" {
                     dl.add(l, 0.5);
+                } else if w[0] == "C" {
+                    dl.list.clear();
                 } else if let Some(k) = dl.list.iter().position(|e| e.0 == l) {
                     dl.remove(k);
                 }
