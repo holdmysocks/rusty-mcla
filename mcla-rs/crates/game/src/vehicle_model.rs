@@ -863,6 +863,23 @@ pub fn kit_allows(primary: &str, wide: bool) -> bool {
     }
 }
 
+/// A car's AI tuning (the .r50 files of its folder, or of its tuning donor's) without building the car: the racer of a
+/// cruising man exists before his car does (docs/reference/ai/cruise_streamed_out.md, phase B).
+pub fn load_aitunes(car_dir: &Path) -> Option<std::sync::Arc<mcla_formats::rage::aitune::AiTunes>> {
+    let name = car_dir.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let mut r50: Vec<PathBuf> = std::fs::read_dir(car_dir).ok()?.flatten().map(|e| e.path()).filter(|p| p.extension().map_or(false, |x| x == "r50")).collect();
+    if let Some(donor) = crate::catalog::tune_donor(&name) {
+        let donor_dir = if crate::modcars::is_mod_car(&name) { crate::modcars::disc_vehicle_dir(donor).unwrap_or_default() } else { car_dir.with_file_name(donor) };
+        if let Ok(rd) = std::fs::read_dir(donor_dir) {
+            let theirs: Vec<_> = rd.flatten().map(|e| e.path()).filter(|p| p.extension().map_or(false, |x| x == "r50")).collect();
+            if !theirs.is_empty() {
+                r50 = theirs;
+            }
+        }
+    }
+    r50.iter().find_map(|p| load_resource_file(p).ok().and_then(|res| mcla_formats::rage::aitune::AiTunes::parse(&res))).map(std::sync::Arc::new)
+}
+
 pub fn load_car(assets: &Assets, car_dir: &Path) -> Result<CarAsset> {
     let name = car_dir.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
     let mut r83 = Vec::new();

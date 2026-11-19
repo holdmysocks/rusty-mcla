@@ -24,6 +24,18 @@ thread_local! {
     static HELD: std::cell::RefCell<std::collections::HashMap<u32, (u32, i32, u32)>> = Default::default();
     /// the racers whose car the walk streamed out, by owner: their brains ride on with no car
     static OUT: std::cell::RefCell<std::collections::HashMap<u32, Out>> = Default::default();
+    /// the men whose racer the core has made and whose car is not loaded yet: built by the next `tick_out`
+    static WANT: std::cell::RefCell<Vec<Want>> = Default::default();
+}
+
+/// A cruising man's racer asked for at his core's start (`want_out`), before any car of his exists.
+struct Want {
+    key: String,
+    pts: Vec<Vec3>,
+    first: usize,
+    reset: Vec3,
+    yaw: f32,
+    tune: std::sync::Arc<mcla_formats::rage::aitune::AiTune>,
 }
 
 /// A cruising man's racer with no car (racer +48 == 0; docs/reference/ai/cruise_streamed_out.md): the original keeps the
@@ -111,11 +123,74 @@ pub fn out_keys() -> Vec<String> {
 /// Man `key` is gone (deleted, suspended, the walk off): his racer with no car leaves the traffic.
 pub fn forget(key: &str) {
     OUT.with(|o| o.borrow_mut().retain(|_, r| r.key != key));
+    WANT.with(|w| w.borrow_mut().retain(|x| x.key != key));
+}
+
+/// Man `key`'s core starts while his car is not in the world (CruisingHookmanCore, HOOKMEN_POLICE.md 0x1a5..0x379: the
+/// racer made and reset at his first loop point, the cruising brain made, its destinations set, DriveToNearestRail with
+/// the warp flag - nothing waits for the car): his racer is made by the next `tick_out`, with the brains on his car's
+/// AI tuning (`tune`), at `reset` heading `yaw`. Nothing when he already has one.
+pub fn want_out(key: &str, pts: &[Vec3], first: usize, reset: Vec3, yaw: f32, tune: std::sync::Arc<mcla_formats::rage::aitune::AiTune>) {
+    if pts.len() < 2 || OUT.with(|o| o.borrow().values().any(|r| r.key == key)) || WANT.with(|w| w.borrow().iter().any(|x| x.key == key)) {
+        return;
+    }
+    WANT.with(|w| w.borrow_mut().push(Want { key: key.to_string(), pts: pts.to_vec(), first, reset, yaw, tune }));
+}
+
+/// A car's AI tuning by model name, read once (`vehicle_model::load_aitunes`); None: no tuning file.
+pub fn aitunes_of(root: &std::path::Path, car: &str) -> Option<std::sync::Arc<mcla_formats::rage::aitune::AiTunes>> {
+    thread_local! {
+        static TUNES: std::cell::RefCell<std::collections::HashMap<String, Option<std::sync::Arc<mcla_formats::rage::aitune::AiTunes>>>> = Default::default();
+    }
+    if root.as_os_str().is_empty() {
+        return None;
+    }
+    TUNES.with(|t| t.borrow_mut().entry(car.to_string()).or_insert_with(|| crate::vehicle_model::load_aitunes(&root.join("resources/vehicle").join(car))).clone())
+}
+
+/// Whether man `key` has a racer with no car, or one asked for.
+pub fn has_out(key: &str) -> bool {
+    OUT.with(|o| o.borrow().values().any(|r| r.key == key)) || WANT.with(|w| w.borrow().iter().any(|x| x.key == key))
+}
+
+/// The racer asked for by `want_out` made: a new owner id, the brains as `setup` makes them, the racer at its reset
+/// matrix, then TeleportToNearestRail with no car (the pose setter only stores the racer's pose, F-86308 with +48 = 0).
+fn begin_out(v: &mut Vehicles, col: &WorldCollider, rails: &'static Rails<'static>, w: Want) {
+    let owner = v.new_uid();
+    let tune48 = w.tune.idle_speed[0];
+    let mut cruiser = Box::new(Cruiser::new(owner, w.reset));
+    let mut brain = Box::new(crate::brain::Brain::police(w.tune));
+    brain.allow_nitro = false;
+    let n = w.pts.len();
+    let mut k = w.first % n;
+    cruiser.brain.set_current_dest(w.pts[k]);
+    for _ in 2..=n {
+        k = (k + 1) % n;
+        cruiser.brain.append_dest(w.pts[k]);
+    }
+    cruiser.brain.set_looping(1);
+    cruiser.physical = false;
+    let r = glam::Quat::from_rotation_y(w.yaw);
+    let m = Frame { a: r * Vec3::X, b: r * Vec3::Y, c: r * Vec3::Z, pos: w.reset };
+    let mut out = Out { key: w.key, cruiser, brain, m, vel: Vec3::ZERO, ang: Vec3::ZERO, tune48 };
+    let mut car = out.snap(col);
+    {
+        let k = out.cruiser.k;
+        let mut world = World { rails, traffic: v, car: &mut car, racing: &mut out.brain, owner, k, racer_ran: false, physical: false, racer: None };
+        out.cruiser.brain.teleport_to_nearest_rail(&mut world);
+    }
+    out.take_pose(&mut car);
+    log::debug!("cruiser {owner} (no car): made for {} at the core's start, {n} points, state {} at {:?}", out.key, out.cruiser.brain.state, out.m.pos);
+    note(&out.cruiser);
+    OUT.with(|o| o.borrow_mut().insert(owner, out));
 }
 
 /// Every racer with no car, once a game frame: the cruising update (F-64718) with no slot 11.
 pub fn tick_out(v: &mut Vehicles, col: &WorldCollider, dt: f32) {
     let Some(rails) = rails() else { return };
+    for w in WANT.with(|x| std::mem::take(&mut *x.borrow_mut())) {
+        begin_out(v, col, rails, w);
+    }
     let owners: Vec<u32> = OUT.with(|o| o.borrow().keys().copied().collect());
     for owner in owners {
         let Some(mut r) = OUT.with(|o| o.borrow_mut().remove(&owner)) else { continue };

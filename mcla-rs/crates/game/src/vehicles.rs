@@ -2643,6 +2643,13 @@ fn grid_ambient(c: &CarInstance) -> bool {
 }
 
 impl Vehicles {
+    /// A new car id with no car (the racer of a cruising man before his car exists: cruisedrive::tick_out); a car spawned
+    /// for him later takes it over (cruisedrive::stream_in).
+    pub fn new_uid(&mut self) -> u32 {
+        self.next_uid += 1;
+        self.next_uid
+    }
+
     /// Start reading the car in `dir` on a worker thread, if it is not read or being read (the model built from it
     /// later takes it from there - `load_model_cfg`).
     pub fn prefetch(&mut self, world: &World, dir: &Path) {

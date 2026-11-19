@@ -1282,6 +1282,22 @@ impl Roamers {
                         }
                         continue;
                     }
+                    // (his core starts with no car of his loaded: CruisingHookmanCore makes his racer and its cruising brain
+                    // at point 0 all the same and the brain finds its ghost - cruisedrive::want_out, docs/reference/ai/
+                    // cruise_streamed_out.md phase B; the car is built later on the racer's pose)
+                    if (m.fresh || m.reset) && only.is_none() && m.pts.len() > 1 && !crate::cruisedrive::has_out(&m.key) {
+                        if let Some(t) = crate::cruisedrive::aitunes_of(&vehicles.data_root, &m.car) {
+                            // (Racer_SetModValue: his mod value; -1 builds the car from its stages and leaves the mod value 0)
+                            let perf = if m.mod_value >= 0 { m.mod_value.clamp(0, 100) as f32 / 100.0 } else { 0.0 };
+                            let tune = std::sync::Arc::new(mcla_formats::rage::aitune::AiTune::lerp(&t.base, &t.mods, perf));
+                            let pos = m.start.unwrap_or(m.pts[0]);
+                            let dir = match m.heading {
+                                Some(h) => Vec3::new(-h.to_radians().sin(), 0.0, -h.to_radians().cos()),
+                                None => loop_at(&m.pts, 0.0).1,
+                            };
+                            crate::cruisedrive::want_out(&m.key, &m.pts, first_dest(&m.pts, pos), pos, (-dir.x).atan2(-dir.z), tune);
+                        }
+                    }
                     m.fresh = false;
                     m.reset = false;
                     // (his racer rides on its ghost with no car: where it is - cruisedrive::out_pose; with none the loop's
@@ -1512,6 +1528,14 @@ impl Roamers {
                             }
                             let cruising = if streamed.is_some() { crate::cruisedrive::stream_in(vehicles, &world.collider, idx, &m.key) } else { crate::cruisedrive::setup(vehicles, &world.collider, idx, &m.pts, next, at_reset, at) };
                             let c = &mut vehicles.cars[idx];
+                            // (slot 30 puts the car on its racer's pose with no probe and the racer drives it from the next
+                            // update, on the city's collision bound, which is loaded whole: it is placed. Left unplaced, a car
+                            // streamed in where the sectors round it were not loaded yet (390 - 400 m from the player) stood
+                            // still until they were, while its ghost rode on, and the follow gave up 10 m on (5 -> 1):
+                            // docs/reference/ai/cruise_streamed_out.md 4a, 9 of 61 stream-ins in a 25 min free roam)
+                            if streamed.is_some() && cruising && world.own_bound {
+                                c.placed = true;
+                            }
                             if let (Some(ai), false) = (c.ai.as_mut(), cruising) {
                                 ai.link = Some(li);
                                 ai.t = t;
