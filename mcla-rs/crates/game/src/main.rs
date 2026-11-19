@@ -5164,6 +5164,16 @@ impl App {
                 if self.tick_no % 30 == 0 && self.game.race.is_none() && self.cuts.playing.is_none() {
                     self.story_read_ahead(&world);
                 }
+                // (a queued story scene not read ahead yet - a CORE's scene after its race, MOTORCYCLE_REP's 2 s before it
+                // starts: read now, as the warp's and the approach's are - D59.story-read-ahead)
+                if self.tick_no % 15 == 7 && !std::env::var_os("MCLA_CUT_READ_QUEUED").is_some_and(|v| v == "0") {
+                    let due: Vec<String> = self.cuts.pending().map(|i| format!("story/{}", self.cuts.scenes[i].name.to_ascii_lowercase())).filter(|sc| !self.story_read.contains(sc)).collect();
+                    for scene in due {
+                        self.story_read.insert(scene.clone());
+                        log::info!("story: {} read ahead (queued)", scene);
+                        self.read_scene_ahead(&world, &scene);
+                    }
+                }
                 if self.tick_no % 30 == 15 && !self.scene_preps.is_empty() {
                     self.scene_preps_step();
                 }

@@ -193,6 +193,11 @@ impl Cutscenes {
         self.pending.front().copied()
     }
 
+    /// The queued scenes, the next first.
+    pub fn pending(&self) -> impl Iterator<Item = usize> + '_ {
+        self.pending.iter().copied()
+    }
+
     /// Take the scene that would start next off the queue.
     pub fn drop_front(&mut self) -> Option<usize> {
         self.pending.pop_front()
