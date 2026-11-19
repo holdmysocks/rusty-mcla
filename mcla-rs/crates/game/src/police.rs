@@ -168,6 +168,12 @@ fn side_pick(a: bool, b: bool, c: bool, d: bool, on_right: bool) -> bool {
 /// and dx fused) must be under r^2; B's chassis speed `sb` (+224) above fMovingSpeed x 0.447 and above A's `sa`; then the
 /// unit of A - B (F-41334, eps 1e-5, fallback (1, 0, 0)) dotted with B's velocity / `sb` over 0.9. The vector unit's
 /// subtract and multiply flush denormals.
+/// The Arrow Trap Halt's re-stop test (F-16041): a cop within the range is sent Stop again unless its brain's
+/// command (+568) is Stopping (1) with the handbrake mode (+688) clear.
+fn halt_restop(cmd: u32, hb: bool) -> bool {
+    !(cmd == 1 && !hb)
+}
+
 /// The Arrow Trap's Halt (F-16041) for a cop with no steer yet (+16[k] == 0): closing in within the range, -1 with the
 /// target on its right, else 1; 0 otherwise (test halt_steer_matches_the_recording).
 fn halt_steer_take(closing: bool, on_right: bool) -> f32 {
@@ -5214,13 +5220,20 @@ impl Police {
             swipes = s;
             self.radio_cue.extend(cues);
             if halted {
-                // Halt (F-58305 / F-16041): the cops within fSafeDist Stop again, x 0.5 when closing (the brain's +568 /
-                // +688 test is not ported)
+                // Halt (F-58305 / F-16041): a cop within fSafeDist is sent Stop again (F-24671, the plain Stop: +688 0)
+                // and slowed x 0.5 when closing (F-90575 with 0) - unless its brain is already Stopping (+568 == 1) with
+                // the handbrake mode +688 clear: then neither (F-16041 goes on to its next cop)
                 for c in vehicles.cars.iter_mut().filter(|c| pursuer(c) && c.state.pos.distance(ppos) < safe) {
                     let tc = tacs.entry(c.uid).or_default();
-                    if tc.st != Tac::Halt {
-                        *tc = CopTac { st: Tac::Halt, cmd: 1, sent: true, brain: tc.brain, ..Default::default() };
+                    // (the brain's state now: a command sent earlier this frame is applied before the Halt reads it)
+                    let (cmd, hb) = if tc.sent { (tc.cmd as u32, tc.hb) } else { (tc.brain.cmd, tc.brain.stop[0] >> 24 != 0) };
+                    if !halt_restop(cmd, hb) {
+                        continue;
                     }
+                    if tc.st != Tac::Halt {
+                        *tc = CopTac { st: Tac::Halt, brain: tc.brain, ..Default::default() };
+                    }
+                    (tc.cmd, tc.hb, tc.sent) = (1, false, true);
                     if closing(c, 0.0) {
                         c.state.vel *= 0.5;
                     }
@@ -7828,6 +7841,16 @@ mod tests {
     /// The Arrow Trap's Halt steer (F-16041 / F-58305) over the recorded Halt updates (testdata/halt_steer_rec.txt from
     /// work/hookmen2/dp/conv_h.py of a4, a5): each cop's +16[k] at the exit - kept when set, else `halt_steer_take` on the
     /// recorded geometry - and the brain's steer word at the exit, the steer at the entry when it was set.
+    #[test]
+    fn halt_restop_matches_the_recording() {
+        // recordings a2 / a4 / a5 (arrow_trap_recording.md "Halt's re-stop test"): a cop entering the Halt within the range
+        // with its brain Stopping (+568 1, +688 0) keeps it (2,613 updates, no new Stop); one entering with 4 / 5 leaves with 1
+        assert!(!halt_restop(1, false));
+        assert!(halt_restop(4, false) && halt_restop(5, false));
+        // decoded, not recorded (no update entered with +688 set): Stopping with the handbrake mode is sent the plain Stop
+        assert!(halt_restop(1, true));
+    }
+
     #[test]
     fn halt_steer_matches_the_recording() {
         let rec = include_str!("testdata/halt_steer_rec.txt");
