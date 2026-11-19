@@ -216,6 +216,8 @@ pub enum News {
     Tip { key: String, title: String, text: String },
     /// a mission's reward script that makes a call (`Career::reward_call`): the script's name
     Call(String),
+    /// a mission's reward script the game runs itself (Police_Tutorial: `Game::mc4_police_tutorial`)
+    Script(String),
     /// (step 21b) a story scene a script plays (a CORE at a completion or a meeting, an event
     /// script at a garage / hangout): the mission whose scene it is (`Cutscenes::for_mission`)
     Scene(String),
@@ -554,9 +556,11 @@ impl Career {
                     "Mission" => rewards.push(Reward::Mission { id: tag(r, "szMissionId").unwrap_or("").to_ascii_uppercase(), state: tag(r, "szTransitionState").unwrap_or("").to_ascii_uppercase().replace('_', "") }),
                     "Car" => rewards.push(Reward::Car(tag(r, "szCarName").unwrap_or("").to_ascii_lowercase())),
                     // (the reward scripts that make a call: `reward_call`)
-                    "Script" => match tag(r, "szScriptName").and_then(|n| n.rsplit('/').next()).filter(|n| Self::reward_call(n, Some(0)).is_some()) {
-                        Some(n) => rewards.push(Reward::Call(n.to_ascii_uppercase())),
-                        None => continue,
+                    "Script" => match tag(r, "szScriptName").and_then(|n| n.rsplit('/').next()) {
+                        Some(n) if Self::reward_call(n, Some(0)).is_some() => rewards.push(Reward::Call(n.to_ascii_uppercase())),
+                        // (GARAGE_HOLLYWOOD's Game/Career/Police_Tutorial: the police lesson, then mcCareer_UnlockPolice)
+                        Some(n) if n.eq_ignore_ascii_case("Police_Tutorial") => rewards.push(Reward::Script("Police_Tutorial".into())),
+                        _ => continue,
                     },
                     _ => continue,
                 }
@@ -1048,6 +1052,7 @@ impl Career {
 
     fn give(&mut self, r: &Reward) {
         match r {
+            Reward::Script(n) if n == "Police_Tutorial" => self.news.push(News::Script(n.clone())),
             Reward::Script(_) => {}
             Reward::Mission { id, state } => {
                 let Some(&i) = self.index.get(id) else { return };
@@ -1835,6 +1840,11 @@ impl Career {
         self.index.get(id).map_or(false, |&i| self.state[i].stage != Stage::Locked)
     }
 
+    /// Mission `id` is COMPLETE.
+    pub fn is_complete(&self, id: &str) -> bool {
+        self.index.get(id).map_or(false, |&i| self.state[i].stage == Stage::Complete)
+    }
+
     pub fn completed(&self) -> usize {
         self.state.iter().filter(|s| s.stage == Stage::Complete).count()
     }
@@ -1881,6 +1891,7 @@ impl Career {
                     News::Tip { key, text, .. } => format!("tip {} [{}]", key, text.chars().take(50).collect::<String>()),
                     News::Scene(id) => format!("scene {}", id),
                     News::Call(s) => format!("call {}", s),
+                    News::Script(s) => format!("script {}", s),
                 })
                 .collect();
             if !news.is_empty() {

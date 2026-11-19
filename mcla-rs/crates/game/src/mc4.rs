@@ -12727,6 +12727,11 @@ pub struct S23Live {
     pub sst_tut: SstTut,
     pub sst_race_was: bool,
     pub sst_poll: crate::racescript::ScriptWait,
+    /// Game/Career/Police_Tutorial under way (`Game::mc4_police_tutorial`): its WAITUNPAUSED(100) and the count of
+    /// passes that found the cruise free (local 5); None once its form is queued
+    pub cops_tut: Option<(crate::racescript::ScriptWait, u32)>,
+    /// Police_Tutorial runs (from its start until mcCareer_UnlockPolice)
+    pub cops_tut_on: bool,
     /// (step 23b) in a gas station last frame
     pub station_was: bool,
 }
@@ -13106,6 +13111,57 @@ impl Game {
         true
     }
 
+    /// Game/Career/Police_Tutorial (GARAGE_HOLLYWOOD's reward script, given when the Hollywood garage is first entered):
+    /// with GetNoTutorialCommandLine it goes straight to 0x319 - mcCareer_UnlockPolice and the three units; else it waits
+    /// for the player's racer and Cruising_Offline, then counts its WAITUNPAUSED(100) passes that find the cruise free
+    /// (not networked, Cruising_Offline, not paused, no warp, no sidekick card, no menu: `mc4_police_tutorial_poll`) and
+    /// on the 101st (0xf8..0x104) shows form 80 (tutorial_police) with TUTORIAL_COPS_INGAME (drv_mb_04_set, PLAYER) after
+    /// the ease to pause (form 108, 0, 1 / 0.5, 0, 1, 1; WAITUNWARPED(500)); when it is closed the ease from pause,
+    /// nInTutorial 0, mcCareer_UnlockPolice (0x319) and PoliceManager_CreatePolice x 3 (units 400 - 402: `create_units`).
+    pub fn mc4_police_tutorial(&mut self) {
+        if self.opt_x.s23.cops_tut_on {
+            return;
+        }
+        if Self::mc4_no_tutorial() {
+            self.mc4_police_unlock();
+            return;
+        }
+        log::info!("Police_Tutorial started");
+        self.opt_x.s23.cops_tut_on = true;
+        let mut w = crate::racescript::ScriptWait::new(100);
+        w.step(0.0, false);
+        self.opt_x.s23.cops_tut = Some((w, 0));
+    }
+
+    /// mcCareer_UnlockPolice: bit 2 of the career's flag word.
+    pub fn mc4_police_unlock(&mut self) {
+        let fresh = self.fresh_game;
+        let m = self.mc4.get_or_insert_with(|| Mc4::seeded(fresh));
+        m.career.set_police_unlocked(true);
+        self.opt_x.s23.cops_tut_on = false;
+        self.dirty = true;
+        log::info!("police unlocked (mcCareer_UnlockPolice)");
+    }
+
+    /// Police_Tutorial's wait (0xab..0x122), once a frame: `free` the script's test (the cruise free of everything it
+    /// names). The passes are WAITUNPAUSED(100) by the scaled step; on the 101st free one the form is queued.
+    pub fn mc4_police_tutorial_poll(&mut self, dt: f32, free: bool) {
+        let scaled = dt * self.mc4_time_scale();
+        let Some((w, n)) = self.opt_x.s23.cops_tut.as_mut() else { return };
+        if !w.step(scaled, false) {
+            return;
+        }
+        w.step(scaled, false);
+        if free {
+            *n += 1;
+        }
+        if *n > 100 {
+            self.opt_x.s23.cops_tut = None;
+            log::info!("Police_Tutorial: the cruise free for 101 passes - the police lesson");
+            self.opt_x.s23.queue.push(TutRun { flag: "Police_Tutorial".into(), form: 80, speech: "TUTORIAL_COPS_INGAME".into(), slow: true, phase: 0, wait: 0.0, modeless: false });
+        }
+    }
+
     /// The box of a tutorial form answers CONTINUE (A) (the forms of `TUTORIAL_FLAGS`).
     pub fn mc4_tut_continue(&self, title: &str) -> bool {
         self.opt_x.s23.run.as_ref().map_or(false, |r| r.phase == 2 && !r.modeless && tutorial_keys(r.form).map_or(false, |k| k.0 == title))
@@ -13234,6 +13290,9 @@ impl Game {
                         self.opt_x.s23.slow.ease(1.0);
                     }
                     log::info!("tutorial {} over", run.flag);
+                    if run.flag == "Police_Tutorial" {
+                        self.mc4_police_unlock();
+                    }
                     // (a hangout's panel held back for it comes up now)
                     if let Some(k) = self.opt_x.s23.hangout_hold.take() {
                         if self.hangout_key.as_deref() == Some(k.as_str()) {
@@ -18600,6 +18659,59 @@ mod tests {
         assert!(g.rgh06_race());
         g.hookman_race = false;
         assert!(!g.rgh06_race());
+    }
+
+    /// GARAGE_HOLLYWOOD's reward script Police_Tutorial (GitHub #60): the first entry of the Hollywood garage gives it;
+    /// the police stay locked until its form 80 (TUTORIAL_COPS_INGAME) is closed, after 101 passes of 100 ms that find
+    /// the cruise free; a pass that does not find it free does not count.
+    #[test]
+    fn police_tutorial_unlocks_the_police() {
+        if !std::path::Path::new(&data_dir()).join("tune/career").is_dir() {
+            return;
+        }
+        let mut g = Game::new(Vec::new(), 0);
+        g.data_dir = data_dir();
+        g.career = crate::career::Career::load(&data_dir());
+        g.fresh_game = true;
+        g.career.new_game();
+        g.mc4 = Some(Mc4::seeded(true));
+        g.fresh_game = false;
+        g.mode = crate::game::Mode::FreeRoam;
+        assert!(!g.mc4_police_unlocked());
+        g.career.give_mission("GARAGE_HOLLYWOOD", "INPROGRESS");
+        g.career.news.clear();
+        g.career.event(crate::career::Ev::Str("LOCATION_EVENT", "hw_garage"));
+        assert!(g.career.is_complete("GARAGE_HOLLYWOOD"));
+        assert!(g.career.news.iter().any(|n| matches!(n, crate::career::News::Script(s) if s == "Police_Tutorial")), "{:?}", g.career.news);
+        assert!(!g.mc4_police_unlocked());
+        g.mc4_police_tutorial();
+        let dt = 1.0 / 60.0;
+        // (60 frames not free: no pass counts)
+        for _ in 0..60 {
+            g.mc4_police_tutorial_poll(dt, false);
+        }
+        assert_eq!(g.opt_x.s23.cops_tut.as_ref().map(|c| c.1), Some(0));
+        let mut frames = 0;
+        while g.opt_x.s23.queue.is_empty() {
+            g.mc4_police_tutorial_poll(dt, true);
+            frames += 1;
+            assert!(frames < 1000);
+        }
+        // (the 101st pass: 10.1 s of free cruise)
+        assert!((605..=607).contains(&frames), "{frames}");
+        assert!(!g.mc4_police_unlocked());
+        g.mc4_tut_tick(dt);
+        for _ in 0..40 {
+            g.mc4_tut_tick(dt);
+        }
+        assert_eq!(g.tutorial_box.as_ref().map(|b| b.0.as_str()), Some("tutorial_police_title"));
+        assert!(g.opt_x.arcade.d.say_over.iter().any(|s| s == "TUTORIAL_COPS_INGAME"));
+        assert!(!g.mc4_police_unlocked());
+        g.tutorial_box = None;
+        g.mc4_tut_tick(dt);
+        assert!(g.mc4_police_unlocked());
+        assert!(g.mc4.as_ref().unwrap().career.flags.raw & 4 != 0);
+        assert!(!g.opt_x.s23.cops_tut_on);
     }
 
     /// The first career race (RACE_GH_06) runs at Easy: its core script sets the man's

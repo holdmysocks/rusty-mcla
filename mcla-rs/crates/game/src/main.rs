@@ -7581,6 +7581,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             }
                         }
                     }
+                    // (a reward script the game runs itself: GARAGE_HOLLYWOOD's Police_Tutorial)
+                    career::News::Script(s) => {
+                        if s == "Police_Tutorial" {
+                            self.game.mc4_police_tutorial();
+                        }
+                    }
                     // (step 21b: a story scene played by a CORE at a completion / meeting, or by
                     // an event script - no call, no line)
                     career::News::Scene(id) => {
@@ -7667,6 +7673,18 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // throws it by index at every scene's end (the cine manager's finish callback, F-65984 -> +232, set by F-91527);
             // only an online dialog listens. Nothing throws mc.cutscene)
             let cruising = self.game.cruising_offline() && self.pending_log.is_none() && !self.out_of_cruise_warp();
+            // (Police_Tutorial's wait: not networked, Cruising_Offline, not paused, no warp, no sidekick card, no menu)
+            // (a career saved by the port before it ran the script - GARAGE_HOLLYWOOD complete, the police never unlocked,
+            // GitHub #60 - runs it now: in the original every career past that garage has run it)
+            if career_up && self.game.career.loaded() && self.game.career.is_complete("GARAGE_HOLLYWOOD") && !self.game.mc4_police_unlocked()
+                && !self.game.opt_x.s23.cops_tut_on && self.game.mc4.as_ref().map_or(false, |m| m.made_by_port())
+            {
+                log::info!("Police_Tutorial: GARAGE_HOLLYWOOD complete and the police locked in a port save - run it");
+                self.game.mc4_police_tutorial();
+            }
+            let cops_free = career_up && cruising && self.game.mode == Mode::FreeRoam && !self.game.in_menu() && self.game.tip.is_none()
+                && self.cuts.playing.is_none() && self.cine.playing.is_none();
+            self.game.mc4_police_tutorial_poll(dt, cops_free);
             if cruising != self.phone_cruise {
                 self.phone_cruise = cruising;
                 self.phone_hold = true;
