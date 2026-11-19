@@ -72,9 +72,6 @@ pub struct HeadOn {
     pub hits: u32,
 }
 
-/// The game's shared generator (0x82860890, multiply with carry, a = 0x5CDCFAA7). (approx.: the
-/// state is the port's own: the original's is drawn by 53 other users)
-static RNG: std::sync::Mutex<[u32; 2]> = std::sync::Mutex::new([0x2545_F491, 0x1234_5678]);
 
 fn draw2(s: &mut [u32; 2]) -> (u32, u32) {
     let a = 0x5CDC_FAA7u64;
@@ -108,8 +105,12 @@ fn v3(v: V4) -> Vec3 {
 
 /// One call of the rule for a run of contacts (the own car's run as A or as B), with the game's generator.
 pub fn run(own: &Own, touches: &[Touch]) -> HeadOn {
-    let mut s = RNG.lock().unwrap_or_else(|e| e.into_inner());
-    run_with(own, touches, &mut s)
+    // (the game's shared generator G2, 0x82860890: the one state the replay saves, `brain::rng`)
+    let mut g = crate::brain::rng();
+    let mut s = [g.lo, g.carry];
+    let out = run_with(own, touches, &mut s);
+    (g.lo, g.carry) = (s[0], s[1]);
+    out
 }
 
 /// F-43509 for one run, the generator's state given (0x82860890). Checked against the original run offline:

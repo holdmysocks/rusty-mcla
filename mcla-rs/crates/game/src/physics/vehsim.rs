@@ -1024,9 +1024,9 @@ pub struct VehState {
     pub engine_roll: f32,
     /// the engine's shake angle (vehEngine +40, F-55648's tail, `engine::shake_step`); the blower's shake reads it
     pub engine_shake: f32,
-    /// the draws of the shake (approx.: the original draws them from the game's one shared generator, interleaved
-    /// with its other users; this is the port's own stream of the same generator, seeded as `parked::Mwc`)
-    pub shake_rng: [u32; 2],
+    /// the draws of the shake: the game's shared generator G2 (0x82860890, `brain::rng`), as the original, unless a
+    /// test gives the car a stream of its own here
+    pub shake_rng: Option<[u32; 2]>,
     pub engine_auxiliary: f32,
     /// Original transmission +32; independent of shaft engine binding.
     pub trans_inhibited: bool,
@@ -1212,8 +1212,9 @@ pub struct VehState {
     burn_yaw: f32,
     /// how far along the road's current bump the car is (vehChassis +548)
     pub bump_phase: f32,
-    /// random numbers of the bumps (the original's generator: multiply with carry, 0x5CDCFAA7)
-    rng: [u32; 2],
+    /// random numbers of the bumps: the game's shared generator G2 (0x82860890, `brain::rng`) unless a test gives the
+    /// car a stream of its own here
+    rng: Option<[u32; 2]>,
     gauss_spare: Option<f32>,
     /// the force and torque (about the centre of mass, world axes) of the last tick, for
     /// `physics::replay` to lay beside a recording's
@@ -1283,7 +1284,21 @@ pub struct VehState {
 
 impl Default for VehState {
     fn default() -> Self {
-        VehState { fluid: None, shaft_speed_in: 0.0, wipe_dir: Vec3::ZERO, set_down: false, prev_up: None, body_exact: None, seen_exact: None, body_now: None, rest_exact: None, body_at_exact: None, sums_gyro: [Vec3::ZERO; 4], gyro_sums_exact: None, com_exact: None, body: None, momentum_exact: None, drift_level: 1.0, wheel_grip: [1.0; 4], hull_kept: Vec::new(), manifolds: Vec::new(), wipe: None, wipe_hit: false, rider_vel: None, rider: None, rider_out: None, rider_job: None, loose: Default::default(), hull_last: None, cell_ball: None, by: BurnTick { exact: false, state_in: 0, held: false, brake_layout: None, cg: None, cg_return: true, launch: None, launch_layout: 0 }, lift_err: 0.0, rev: RevLimit { cut: 0.0, timer: 0.0, on: false, left: 0.0, pad: 0.0 }, last_seen: None, push_turn_left: Vec3::ZERO, deep_count: 0, last_set: false, stuck: 0, stuck_at: Vec3::ZERO, stuck_timer: 0.0, stuck_cool: 0.0, still_timer: 0.0, last_speed: 0.0, drive: 255, engine_w: 100.0, gear: 1, shift_timer: 0.0, gear_change: GearChange::default(), engine_pedal: 0.0, engine_torque: 0.0, engine_roll: 0.0, engine_shake: 0.0, shake_rng: [0x2545_F491, 1], engine_auxiliary: 0.0, trans_inhibited: false, hold_gear: None, shift_mod: [1.0; 2], pedal_was: 0.0, hyd: Hydraulics::default(), air: AirRide::default(), two: 0, two_target: 0.0, two_err: 0.0, two_trim: 0.0, two_wait: 0, two_acc: 0.0, g96: 0.0, g100: 0, lean_cg: None, gyro_impulse: Vec3::ZERO, omega: [0.0; 2], diff: [1.0; 2], wheels: [WheelSim::default(); 4], boost_timer: 0.0, steer: 0.0, nitro_timer: 0.0, turn_err: 0.0, turn_force: 0.0, melt: 0.0, sst: super::sst::SsTurbo::default(), lean: 0.0, lean_acc: 0.0, wheelie: 0, wheelie_boost: 0.0, wheelie_pitch: 0.0, wheelie_err: 0.0, wheelie_lift: 0.0, air_roll: 0.0, air_acc: [0.0; 3], torque_mult: 1.0, clutch: true, auto_brake: 0.0, started: false, nitro_level: 0.0, nitro_held: false, nitro_burning: false, nitro_records: 0, nitro_fires: 0, air584: 0.0, air584_before: 0.0, nitro_rest: 0.0, nitro_view: 0.0, nitro_pad: 0.0, nitro_left: false, aero_damp: 1.0, fric_boost: false, grip_h: 1.0, air_time: 0.0, burn_state: 0, burn: 0.0, burn_yaw: 0.0, bump_phase: 0.0, rng: [0x2545_F491, 0x1234_5678], gauss_spare: None, last_force: Vec3::ZERO, last_torque: Vec3::ZERO, pulse: None, last_gyro: Vec3::ZERO, cg: [0.0; 2], cg_set: false, bike_vel: Vec3::ZERO, bike_acc: Vec3::ZERO, lean_scale: 0.0, lean_lat: 0.0, lean_target: 0.0, bike_turn: Vec3::ZERO, bike_push: Vec3::ZERO, sss_chassis: 1.0, pad_steer: 0.0, steer132: 0.0, w_then: [0.0; 4], bg: BikeGyro::default(), bike_spin: None, bike_pending: None, sss_chassis_exact: 1.0, way_after: 0, pad: super::pad::PadHeld { pedals: super::pad::Pedals { state: 0, throttle: 0.0, brake: 0.0, way: 1 }, steer_next: 0.0, stick_y: 0.0, stick_next: 0.0, x36: 0.0, x36_next: 0.0, start80: false, start80_next: false, btn40: false, btn40_next: false, second_tick: false, live: false, cruise: super::pad::CruiseHeld { on: false, speed: 0.0, quiet: false }, button: false, handbrake: false, goal: 0.0, stomp: false }, kick_fwd: None, steer_back: 0.0, out_steer: None, grid_reset: false, agro: Default::default(), engine_stopped: false, deact_seen: false, susp: None, live_axle: None }
+        VehState { fluid: None, shaft_speed_in: 0.0, wipe_dir: Vec3::ZERO, set_down: false, prev_up: None, body_exact: None, seen_exact: None, body_now: None, rest_exact: None, body_at_exact: None, sums_gyro: [Vec3::ZERO; 4], gyro_sums_exact: None, com_exact: None, body: None, momentum_exact: None, drift_level: 1.0, wheel_grip: [1.0; 4], hull_kept: Vec::new(), manifolds: Vec::new(), wipe: None, wipe_hit: false, rider_vel: None, rider: None, rider_out: None, rider_job: None, loose: Default::default(), hull_last: None, cell_ball: None, by: BurnTick { exact: false, state_in: 0, held: false, brake_layout: None, cg: None, cg_return: true, launch: None, launch_layout: 0 }, lift_err: 0.0, rev: RevLimit { cut: 0.0, timer: 0.0, on: false, left: 0.0, pad: 0.0 }, last_seen: None, push_turn_left: Vec3::ZERO, deep_count: 0, last_set: false, stuck: 0, stuck_at: Vec3::ZERO, stuck_timer: 0.0, stuck_cool: 0.0, still_timer: 0.0, last_speed: 0.0, drive: 255, engine_w: 100.0, gear: 1, shift_timer: 0.0, gear_change: GearChange::default(), engine_pedal: 0.0, engine_torque: 0.0, engine_roll: 0.0, engine_shake: 0.0, shake_rng: None, engine_auxiliary: 0.0, trans_inhibited: false, hold_gear: None, shift_mod: [1.0; 2], pedal_was: 0.0, hyd: Hydraulics::default(), air: AirRide::default(), two: 0, two_target: 0.0, two_err: 0.0, two_trim: 0.0, two_wait: 0, two_acc: 0.0, g96: 0.0, g100: 0, lean_cg: None, gyro_impulse: Vec3::ZERO, omega: [0.0; 2], diff: [1.0; 2], wheels: [WheelSim::default(); 4], boost_timer: 0.0, steer: 0.0, nitro_timer: 0.0, turn_err: 0.0, turn_force: 0.0, melt: 0.0, sst: super::sst::SsTurbo::default(), lean: 0.0, lean_acc: 0.0, wheelie: 0, wheelie_boost: 0.0, wheelie_pitch: 0.0, wheelie_err: 0.0, wheelie_lift: 0.0, air_roll: 0.0, air_acc: [0.0; 3], torque_mult: 1.0, clutch: true, auto_brake: 0.0, started: false, nitro_level: 0.0, nitro_held: false, nitro_burning: false, nitro_records: 0, nitro_fires: 0, air584: 0.0, air584_before: 0.0, nitro_rest: 0.0, nitro_view: 0.0, nitro_pad: 0.0, nitro_left: false, aero_damp: 1.0, fric_boost: false, grip_h: 1.0, air_time: 0.0, burn_state: 0, burn: 0.0, burn_yaw: 0.0, bump_phase: 0.0, rng: None, gauss_spare: None, last_force: Vec3::ZERO, last_torque: Vec3::ZERO, pulse: None, last_gyro: Vec3::ZERO, cg: [0.0; 2], cg_set: false, bike_vel: Vec3::ZERO, bike_acc: Vec3::ZERO, lean_scale: 0.0, lean_lat: 0.0, lean_target: 0.0, bike_turn: Vec3::ZERO, bike_push: Vec3::ZERO, sss_chassis: 1.0, pad_steer: 0.0, steer132: 0.0, w_then: [0.0; 4], bg: BikeGyro::default(), bike_spin: None, bike_pending: None, sss_chassis_exact: 1.0, way_after: 0, pad: super::pad::PadHeld { pedals: super::pad::Pedals { state: 0, throttle: 0.0, brake: 0.0, way: 1 }, steer_next: 0.0, stick_y: 0.0, stick_next: 0.0, x36: 0.0, x36_next: 0.0, start80: false, start80_next: false, btn40: false, btn40_next: false, second_tick: false, live: false, cruise: super::pad::CruiseHeld { on: false, speed: 0.0, quiet: false }, button: false, handbrake: false, goal: 0.0, stomp: false }, kick_fwd: None, steer_back: 0.0, out_steer: None, grid_reset: false, agro: Default::default(), engine_stopped: false, deact_seen: false, susp: None, live_axle: None }
+    }
+}
+
+/// One draw of the game's shared generator G2 (0x82860890: multiply with carry, a = 0x5CDCFAA7; the new low word), from
+/// the given stream when there is one (tests feed a recorded state), else from the one G2 (`brain::rng`) that the
+/// replay saves and restores.
+pub(crate) fn g2_next(own: &mut Option<[u32; 2]>) -> u32 {
+    match own {
+        Some(r) => {
+            let t = 0x5CDC_FAA7u64 * r[0] as u64 + r[1] as u64;
+            *r = [t as u32, (t >> 32) as u32];
+            r[0]
+        }
+        None => crate::brain::rng().next(),
     }
 }
 
@@ -1296,9 +1311,7 @@ impl VehState {
 
     /// 23 random bits (the original's generator at 0x82860890).
     fn random_bits(&mut self) -> f32 {
-        let t = self.rng[0] as u64 * 0x5CDC_FAA7 + self.rng[1] as u64;
-        self.rng = [t as u32, (t >> 32) as u32];
-        (t as u32 & 0x7F_FFFF) as f32
+        (g2_next(&mut self.rng) & 0x7F_FFFF) as f32
     }
 
     /// A normally distributed number (F-66400: the polar method, the second value kept).
@@ -1522,11 +1535,7 @@ fn update_engine(vs: &mut VehState, vt: &VehTune, input: CarInput, pedal_release
     // (F-55648 next, on every car and in every gear: the shake angle +40 towards 0.05 share, and its jitter while
     // the engine runs)
     let rng = &mut vs.shake_rng;
-    vs.engine_shake = super::engine::shake_step(vs.engine_shake, share, !vs.engine_stopped, dt, || {
-        let t = 0x5CDC_FAA7u64 * rng[0] as u64 + rng[1] as u64;
-        *rng = [t as u32, (t >> 32) as u32];
-        rng[0]
-    });
+    vs.engine_shake = super::engine::shake_step(vs.engine_shake, share, !vs.engine_stopped, dt, || g2_next(rng));
     if (vs.gear == 0 || vs.trans_inhibited) && !bike_old(vt) && !dbg_flag("MCLA_DBG_NOENGINEROLL") {
         if vs.engine_w > (e.idle_rpm * 0.104_719_76) * 1.25 {
             vs.engine_roll = -(e.inertia * share);
@@ -9067,7 +9076,7 @@ mod original_normal_tests {
             let (head, calls) = a.split_once(" | ").unwrap();
             let hd: Vec<&str> = head.split(' ').collect();
             let mut vs = VehState::default();
-            vs.rng = [h(hd[0]), h(hd[1])];
+            vs.rng = Some([h(hd[0]), h(hd[1])]);
             let w: Vec<&str> = calls.split(' ').collect();
             for (i, row) in b.split(" | ").enumerate() {
                 let (mean, dev) = (f32::from_bits(h(w[2 * i])), f32::from_bits(h(w[2 * i + 1])));
@@ -9078,7 +9087,7 @@ mod original_normal_tests {
                 if let Some(sp) = vs.gauss_spare {
                     assert_eq!(sp.to_bits(), h(o[2]), "spare, call {i} of {line}");
                 }
-                assert_eq!(vs.rng, [h(o[3]), h(o[4])], "generator, call {i} of {line}");
+                assert_eq!(vs.rng, Some([h(o[3]), h(o[4])]), "generator, call {i} of {line}");
             }
             seqs += 1;
         }
