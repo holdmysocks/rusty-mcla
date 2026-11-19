@@ -409,9 +409,54 @@ impl ReplayBuffer {
     }
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// 4. The shared generator G2 at the race's start and at VIEW REPLAY (slot 2, F-26047)
+
+/// Seed(0), at the race's start: the replay manager's +1880 = G2's state as one 64-bit word, its first word (the low
+/// word of the last product) high, its carry low.
+pub fn g2_word(g: &crate::vehicles::parked::Mwc) -> u64 {
+    (g.lo as u64) << 32 | g.carry as u64
+}
+
+/// The state F-61637 stores from a saved word (+0 = the high word, +4 = the low word).
+pub fn g2_from_word(w: u64) -> crate::vehicles::parked::Mwc {
+    crate::vehicles::parked::Mwc { lo: (w >> 32) as u32, carry: w as u32 }
+}
+
+/// Seed(0) on the game's G2 (`brain::rng`).
+#[allow(dead_code)] // (called by the replay on inputs, whose live wiring is held)
+pub fn g2_save() -> u64 {
+    g2_word(&crate::brain::rng())
+}
+
+/// Seed(1), before VIEW REPLAY re-runs the race: F-61637 on G2 with the saved word - the state put back as it was;
+/// but with the start-up parameter "randomseed" (`MCLA_RANDOMSEED`) G2 is seeded anew from it (F-37317's rule), as the
+/// original's F-61637 does when that parameter is set.
+#[allow(dead_code)] // (called by the replay on inputs, whose live wiring is held)
+pub fn g2_restore(saved: u64) {
+    let seed = std::env::var("MCLA_RANDOMSEED").ok().and_then(|v| v.trim().parse::<i64>().ok()).map(|v| v as u32);
+    *crate::brain::rng() = match seed {
+        Some(x) => crate::sst_trail::rng_reset(x),
+        None => g2_from_word(saved),
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A saved G2 word puts the same draws back (F-26047's store, F-61637's load without the start-up parameter).
+    #[test]
+    fn g2_word_repeats_the_draws() {
+        let mut g = crate::vehicles::parked::Mwc { lo: 0x1234_5678, carry: 0x0BAD_F00D };
+        g.next();
+        let w = g2_word(&g);
+        assert_eq!(w, (g.lo as u64) << 32 | g.carry as u64);
+        let a: Vec<u32> = (0..8).map(|_| g.next()).collect();
+        let mut h = g2_from_word(w);
+        let b: Vec<u32> = (0..8).map(|_| h.next()).collect();
+        assert_eq!(a, b);
+    }
 
     fn hex(s: &str) -> Vec<u8> {
         (0..s.len() / 2).map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap()).collect()

@@ -484,12 +484,15 @@ use mcla_formats::rage::aitune::AiTune;
 use mcla_formats::rage::navmesh::{NavMesh, QuickestPath};
 use std::sync::Arc;
 
-/// The one random generator the original's brains share (the game's second shared MWC). Its seed as the
+/// The game's shared generator G2 (0x82860890, the second shared MWC), the one state the replay saves at the race's
+/// start and puts back at VIEW REPLAY (`replay_inputs::g2_save` / `g2_restore`). Its seed as the
 /// original's: the static constructor resets it with s = 1 (or the "randomseed" start-up parameter), then the
 /// game state's init F-71171 resets it again with the low word of the CPU's time base (read until it is not 0)
 /// through F-37317 - so every power-on draws a different sequence (grid releases, rev cycles, ...).
-/// MCLA_RANDOMSEED=<n> stands for the parameter, as for `sst_trail::game_rng`. (approx.: here only the
-/// brains, police and a few others draw from it.)
+/// MCLA_RANDOMSEED=<n> stands for the parameter, as for `sst_trail::game_rng`. Drawn by the brains, police, the car-hit
+/// strike, the physics' road bumps, engine shake and head-on rule (`vehsim::g2_next`, `headon::run`); traffic, parked
+/// cars, peds and the weather still have states of their own (docs/reference/cameras/replay_shared_g2_design.md).
+/// (approx.: the draw order is the port's tick's, not the original's frame's)
 pub fn rng() -> std::sync::MutexGuard<'static, Mwc> {
     static R: std::sync::OnceLock<std::sync::Mutex<Mwc>> = std::sync::OnceLock::new();
     R.get_or_init(|| {
