@@ -90,7 +90,7 @@ pub fn out_pose(key: &str) -> Option<Frame> {
 
 /// Man `key`'s car streams in again as car `i` (F-99412): the car takes the racer's owner id, its pose (matrix, velocity,
 /// angular velocity, no probe) and the brains, which go on where they were. False: no racer kept for him.
-pub fn stream_in(v: &mut Vehicles, col: &WorldCollider, i: usize, key: &str) -> bool {
+pub fn stream_in(v: &mut Vehicles, i: usize, key: &str) -> bool {
     let Some(r) = OUT.with(|o| {
         let mut o = o.borrow_mut();
         let owner = o.iter().find(|(_, r)| r.key == key).map(|(k, _)| *k)?;
@@ -104,7 +104,9 @@ pub fn stream_in(v: &mut Vehicles, col: &WorldCollider, i: usize, key: &str) -> 
     let c = &mut v.cars[i];
     c.uid = cruiser.owner;
     if let Some(vt) = c.params().veh.clone() {
-        crate::physics::vehsim::set_pose(&mut c.state, &vt, col, [m.a, m.b, m.c, m.pos], vel, ang);
+        // (slot 30 calls the pose setter with r7 = 0: no ground probe - the car stands on the racer's pose bit for bit,
+        // as recorded in the original, reference/ai/cruise_streamed_out.md section 6a)
+        crate::physics::vehsim::set_pose_at(&mut c.state, &vt, [m.a, m.b, m.c, m.pos], vel, ang);
         c.pose_history.reset();
     }
     log::debug!("cruiser {}: car streamed in, state {}, at {:?}", cruiser.owner, cruiser.brain.state, m.pos);
@@ -346,12 +348,13 @@ impl CruiseCar for CarSnap<'_> {
     fn set_computer_driven(&mut self, _on: bool) {}
 }
 
-/// The brain's teleport put on the car (F-86308's set: matrix, velocity, no spin, the chassis reset).
-fn apply_pose(v: &mut Vehicles, i: usize, col: &WorldCollider, pose: Option<(Frame, Vec3)>) {
+/// The brain's teleport put on the car (F-86308's set with r7 = 0, no probe - the teleport made its own ground hit:
+/// matrix, velocity, no spin, the chassis reset).
+fn apply_pose(v: &mut Vehicles, i: usize, pose: Option<(Frame, Vec3)>) {
     let Some((m, vel)) = pose else { return };
     let c = &mut v.cars[i];
     if let Some(vt) = c.params().veh.clone() {
-        crate::physics::vehsim::set_pose(&mut c.state, &vt, col, [m.a, m.b, m.c, m.pos], vel, Vec3::ZERO);
+        crate::physics::vehsim::set_pose_at(&mut c.state, &vt, [m.a, m.b, m.c, m.pos], vel, Vec3::ZERO);
         c.pose_history.reset();
     }
 }
@@ -417,7 +420,7 @@ pub fn events(v: &mut Vehicles, col: &WorldCollider) {
         let pose = car.pose.take();
         note(&cr);
         put(v, i, cr, br);
-        apply_pose(v, i, col, pose);
+        apply_pose(v, i, pose);
     }
 }
 
@@ -471,7 +474,7 @@ pub fn tick(v: &mut Vehicles, col: &WorldCollider, i: usize, dt: f32) -> CarInpu
     cr.held = Some(input);
     note(&cr);
     put(v, i, cr, br);
-    apply_pose(v, i, col, pose);
+    apply_pose(v, i, pose);
     input
 }
 
@@ -540,7 +543,7 @@ pub fn setup(v: &mut Vehicles, col: &WorldCollider, i: usize, pts: &[Vec3], firs
         a.cruiser.0 = Some(cr);
         a.brain.0 = Some(br);
     }
-    apply_pose(v, i, col, pose);
+    apply_pose(v, i, pose);
     true
 }
 

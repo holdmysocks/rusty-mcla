@@ -1526,7 +1526,7 @@ impl Roamers {
                             if let (Some(ai), Some(t)) = (c.ai.as_mut(), c.model.aitunes.clone()) {
                                 ai.tune = Some(std::sync::Arc::new(mcla_formats::rage::aitune::AiTune::lerp(&t.base, &t.mods, c.perf)));
                             }
-                            let cruising = if streamed.is_some() { crate::cruisedrive::stream_in(vehicles, &world.collider, idx, &m.key) } else { crate::cruisedrive::setup(vehicles, &world.collider, idx, &m.pts, next, at_reset, at) };
+                            let cruising = if streamed.is_some() { crate::cruisedrive::stream_in(vehicles, idx, &m.key) } else { crate::cruisedrive::setup(vehicles, &world.collider, idx, &m.pts, next, at_reset, at) };
                             let c = &mut vehicles.cars[idx];
                             // (slot 30 puts the car on its racer's pose with no probe and the racer drives it from the next
                             // update, on the city's collision bound, which is loaded whole: it is placed. Left unplaced, a car
