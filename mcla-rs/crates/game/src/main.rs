@@ -3767,7 +3767,10 @@ impl App {
                 LESSON.store(0, Relaxed);
             }
         }
-        let frozen_now = self.vehicles.frozen || self.vehicles.grid_hold.is_some();
+        // (and the race's end once its panels pause the game, time scale 0: the car stands still there, which is not being
+        // stuck either - the test driver's put-back fired every few seconds under REWARDS and moved the car while the sim
+        // did not step, so its wheels were drawn away from the hubs)
+        let frozen_now = self.vehicles.frozen || self.vehicles.grid_hold.is_some() || self.game.mc4_time_scale() == 0.0;
         // (the test driver --auto drives only a car that answers its pad: a deactivated one - the arrest's Racer_Deactivate
         // to its Racer_Activate, the garage, the start warp - keeps the deactivated input, else it crept on under the
         // arrest's black and form)
