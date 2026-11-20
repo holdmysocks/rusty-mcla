@@ -601,6 +601,8 @@ pub struct Game {
     pub last_results: Vec<(String, Option<f32>)>,
     /// The two delivery hangouts' race arrays (`delivery_hangout_core`: [the rest, South Central])
     pub delivery_lists: [DeliveryList; 2],
+    /// The running scripts' own generators (`script_rand`), by script instance
+    pub script_rngs: std::collections::HashMap<String, crate::vehicles::parked::Mwc>,
     pub rng: u32,
     pub nav_up: bool,
     pub nav_down: bool,
@@ -1579,6 +1581,7 @@ impl Game {
             best_time: None,
             last_results: Vec::new(),
             delivery_lists: Default::default(),
+            script_rngs: Default::default(),
             rng: 0xC0FFEE,
             nav_up: false,
             nav_down: false,
@@ -13125,18 +13128,6 @@ impl Game {
         }
     }
 
-    /// RAND_INT_RANGE(lo, hi), both ends in, on the port's generator (the original's sequence is not reproduced)
-    pub(crate) fn rand_int_range(&mut self, lo: usize, hi: usize) -> usize {
-        if hi <= lo {
-            return lo;
-        }
-        let mut x = self.rng;
-        x ^= x << 13;
-        x ^= x >> 17;
-        x ^= x << 5;
-        self.rng = x;
-        lo + (x as usize) % (hi - lo + 1)
-    }
 
     /// A district's deliveries (South Central's or the rest's), the order of the hangout's race array
     fn delivery_list(&self, south: bool) -> Vec<usize> {
@@ -13153,7 +13144,7 @@ impl Game {
         if n == 0 {
             return None;
         }
-        let cur = self.rand_int_range(0, n - 1);
+        let cur = script_rand(&mut self.script_rngs, delivery_core(south), 0, n as i32 - 1) as usize;
         let dl = &mut self.delivery_lists[south as usize];
         if dl.used.len() != n {
             dl.used = vec![false; n];
@@ -13207,7 +13198,7 @@ impl Game {
                     break;
                 }
             }
-            let mut r = self.rand_int_range(0, self.delivery_lists[south as usize].left - 1);
+            let mut r = script_rand(&mut self.script_rngs, delivery_core(south), 0, self.delivery_lists[south as usize].left as i32 - 1) as usize;
             let dl = &mut self.delivery_lists[south as usize];
             let mut found = None;
             for i in 0..n {
@@ -17209,6 +17200,21 @@ impl Game {
 /// The garage question's text (mcBaseMenu vt+84, F-84077)
 const GARAGE_CONFIRM_DESC: &str = "Dialog_Description_GarageConfirm";
 
+/// RAND_INT_RANGE(lo, hi) (F-32828) of a running script: each script context draws its own generator, seeded with one
+/// draw `& 0x7FFFFFFF` of the shared generator G2 when the script starts (F-36420 -> F-37317, `Mwc::script`). `scripts`
+/// keeps one per script instance; one not seeded yet is seeded here, at the script's first RAND_* (the original seeds it
+/// at the script's start - approximate for the hangout cores, whose start the port does not run). hi < lo gives lo and
+/// draws nothing. None of the career scripts that draw (delivery_hangout_core, wager_hangout_core, PaybackCore,
+/// PaybackLegCore) calls RAND_RESET.
+pub(crate) fn script_rand(scripts: &mut std::collections::HashMap<String, crate::vehicles::parked::Mwc>, script: &str, lo: i32, hi: i32) -> i32 {
+    scripts.entry(script.to_string()).or_insert_with(crate::vehicles::parked::Mwc::script).int_range(lo, hi)
+}
+
+/// The delivery hangout's core instance (one per hangout: the rest's, South Central's)
+fn delivery_core(south: bool) -> &'static str {
+    if south { "delivery_hangout_core:sc" } else { "delivery_hangout_core" }
+}
+
 #[cfg(test)]
 #[path = "ui_original_tests.rs"]
 mod ui_original_tests;
@@ -17591,6 +17597,24 @@ mod tests {
         race.failed = None;
         g.race = Some(race);
         assert_eq!(g.end_race_speech(), Some("WIN"));
+    }
+
+    #[test]
+    fn script_rand_draws_the_scripts_generator() {
+        use crate::game::script_rand;
+        use crate::vehicles::parked::Mwc;
+        let mut m = std::collections::HashMap::new();
+        m.insert("s".to_string(), Mwc::seed(0x1234_5678));
+        let mut r = Mwc::seed(0x1234_5678);
+        // hi < lo: lo, nothing drawn; hi == lo draws
+        assert_eq!(script_rand(&mut m, "s", 3, 2), 3);
+        assert_eq!(script_rand(&mut m, "s", 4, 4), r.int_range(4, 4));
+        for k in 0..64 {
+            assert_eq!(script_rand(&mut m, "s", 0, k), r.int_range(0, k));
+        }
+        // another script instance has a generator of its own
+        script_rand(&mut m, "t", 0, 9);
+        assert_eq!(script_rand(&mut m, "s", 15000, 30000), r.int_range(15000, 30000));
     }
 
     #[test]

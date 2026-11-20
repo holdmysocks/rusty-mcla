@@ -8366,6 +8366,8 @@ impl Game {
             // (step 19d: PaybackCore's locals 12..34 - nothing of the two tables used yet)
             let s19d = &mut self.opt_x.arcade.d;
             (s19d.cars_used, s19d.cars_n, s19d.drivers_used, s19d.drivers_n, s19d.lost_leg, s19d.next_call) = ([false; 12], 0, [false; 5], 0, false, false);
+            // (the run's PaybackCore starts: its generator seeded from G2 - F-36420)
+            self.script_rngs.insert("PaybackCore".to_string(), crate::vehicles::parked::Mwc::script());
             self.career.payback_used = self.current_race.and_then(|i| self.race_defs.get(i)).map(|d| d.id.to_ascii_lowercase()).into_iter().collect();
         } else {
             self.career.stats.insert(format!("tour_diff:{}", key.to_ascii_lowercase()), diff as i64);
@@ -8926,6 +8928,10 @@ impl Game {
             }
         }
         if race.countdown > 0.0 {
+            // (a new leg's PaybackLegCore starts: its generator seeded from G2 - F-36420)
+            if self.opt_x.arcade.pb != Some(PaybackLeg::default()) {
+                self.script_rngs.insert("PaybackLegCore".to_string(), crate::vehicles::parked::Mwc::script());
+            }
             self.opt_x.arcade.pb = Some(PaybackLeg::default());
             return thr;
         }
@@ -9157,27 +9163,6 @@ pub struct S19d {
     /// RACE while it is 1) and how often it was taken (its local 857)
     pub next_race: bool,
     pub next_count: u8,
-    rng: u32,
-}
-
-impl S19d {
-    fn rand(&mut self) -> u32 {
-        let mut x = if self.rng == 0 { 0x9e37_79b9 } else { self.rng };
-        x ^= x << 13;
-        x ^= x >> 17;
-        x ^= x << 5;
-        self.rng = x;
-        x
-    }
-
-    /// RAND_INT_RANGE(lo, hi): both ends in (PaybackLegCore picks one of two voices with
-    /// `RAND_INT_RANGE(0, 1) == 1`).
-    pub fn rand_range(&mut self, lo: i32, hi: i32) -> i32 {
-        if hi <= lo {
-            return lo;
-        }
-        lo + (self.rand() % (hi - lo + 1) as u32) as i32
-    }
 }
 
 /// PaybackCore 0x848..0x896: a random entry of `used` that is not used yet - the r-th free
@@ -9412,9 +9397,9 @@ impl Game {
         let pick = if self.career.mission_active("PAYBACK_GH_18") {
             ("vp_mzd_rx7_95".to_string(), "GH_18_2_vp_mzd_rx7_95".to_string(), "GH_18".to_string())
         } else {
-            let r = d.rand_range(0, 12 - d.cars_n as i32 - 1).max(0) as usize;
+            let r = crate::game::script_rand(&mut self.script_rngs, "PaybackCore", 0, 12 - d.cars_n as i32 - 1).max(0) as usize;
             let ci = payback_pick(&d.cars_used, d.cars_n, r);
-            let r = d.rand_range(0, 5 - d.drivers_n as i32 - 1).max(0) as usize;
+            let r = crate::game::script_rand(&mut self.script_rngs, "PaybackCore", 0, 5 - d.drivers_n as i32 - 1).max(0) as usize;
             let di = payback_pick(&d.drivers_used, d.drivers_n, r);
             d.cars_used[ci] = true;
             d.drivers_used[di] = true;
@@ -9549,7 +9534,7 @@ impl Game {
                 // (PoliceManager_CheckPoliceActivity(0) == 3 and the next taunt's time has come)
                 if police.heat == Heat::Search && leg.taunt_at < leg.clock {
                     self.opt_x.arcade.d.say.push("TAUNT_GOON_SEARCH".to_string());
-                    leg.taunt_at = leg.clock + self.opt_x.arcade.d.rand_range(15000, 30000) as f32 / 1000.0;
+                    leg.taunt_at = leg.clock + crate::game::script_rand(&mut self.script_rngs, "PaybackLegCore", 15000, 30000) as f32 / 1000.0;
                 }
                 // (test hook MCLA_PB_RESULT=lost@<s> | caught@<s>: that result once the pursuit
                 // has run so many seconds)
@@ -11996,14 +11981,16 @@ impl Game {
             "sc" => "SC",
             _ => return None,
         };
+        // (the hangout's wager_hangout_core instance draws them)
+        let core = format!("wager_hangout_core:{}", run.key.to_ascii_lowercase());
         if !won {
             // (lost, 0x5b31: the speech +1444 FAIL_PINKSLIP_<D>, the scene by RAND_INT_RANGE(0, 3))
             let speech = format!("FAIL_PINKSLIP_{district}");
-            let n = self.rand_int_range(0, 3);
+            let n = crate::game::script_rand(&mut self.script_rngs, &core, 0, 3) as usize;
             return Some((PINK_LOSS_SCENES[n.min(3)].to_string(), speech));
         }
         let speech = if run.profile.kind == 0 { format!("REWARD_PINKSLIP_{district}") } else { format!("REWARD_PINKSLIP_PLAYER_CAR_{district}") };
-        let n = self.rand_int_range(0, PINK_REWARD_SCENES.len() - 1);
+        let n = crate::game::script_rand(&mut self.script_rngs, &core, 0, PINK_REWARD_SCENES.len() as i32 - 1) as usize;
         Some((PINK_REWARD_SCENES[n].to_string(), speech))
     }
 
