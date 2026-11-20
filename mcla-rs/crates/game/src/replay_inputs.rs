@@ -439,6 +439,10 @@ pub fn g2_restore(saved: u64) {
         Some(x) => crate::sst_trail::rng_reset(x),
         None => g2_from_word(saved),
     };
+    // (the seed's path zeroes the generator's +8 / +12 - the normal deviate's spare - the word's path keeps them)
+    if seed.is_some() {
+        *crate::brain::g2_spare() = None;
+    }
 }
 
 #[cfg(test)]

@@ -509,6 +509,14 @@ pub fn rng() -> std::sync::MutexGuard<'static, Mwc> {
     .unwrap_or_else(|e| e.into_inner())
 }
 
+/// G2's kept normal deviate (F-66400's flag at the generator's +8 and value at +12): one spare for every user of the
+/// polar method on G2 (the cars' road bumps). F-26047 does not save it; F-61637 clears it only when it seeds anew from
+/// the start-up parameter "randomseed" (`replay_inputs::g2_restore`). Never locked while `rng` is held.
+pub fn g2_spare() -> std::sync::MutexGuard<'static, Option<f32>> {
+    static S: std::sync::Mutex<Option<f32>> = std::sync::Mutex::new(None);
+    S.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// A draw state that is the shared generator G2 (`rng`) in the game, or - in the unit tests and for a test hook - a
 /// stream of its own. Every draw locks G2 only for the draw, so no draw can deadlock; `get` / `set` lend a copy for a
 /// stretch that passes a `&mut Mwc` on (the traffic riders' step, the peds' update), which nothing else may draw from G2

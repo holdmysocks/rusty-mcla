@@ -1219,6 +1219,8 @@ pub struct VehState {
     /// random numbers of the bumps: the game's shared generator G2 (0x82860890, `brain::rng`) unless a test gives the
     /// car a stream of its own here
     rng: Option<[u32; 2]>,
+    /// the normal deviate's kept second value for a test's own stream (`rng` Some); drawing G2, the spare is G2's
+    /// own (`brain::g2_spare`, the generator's +8 flag / +12 value in the original), one for every car
     gauss_spare: Option<f32>,
     /// the force and torque (about the centre of mass, world axes) of the last tick, for
     /// `physics::replay` to lay beside a recording's
@@ -1322,7 +1324,9 @@ impl VehState {
     fn random_normal(&mut self, mean: f32, deviation: f32) -> f32 {
         // (the original's arithmetic, offline run in docs/reference/cameras/verify_dispatch_evidence.md: s = fma(b, b, a a), the game's own
         // logarithm, the result fma(value, deviation, mean))
-        if let Some(v) = self.gauss_spare.take() {
+        // (the spare lives in the generator, F-66400's +8 / +12: drawing G2 one spare serves every car in turn)
+        let kept = if self.rng.is_some() { self.gauss_spare.take() } else { crate::brain::g2_spare().take() };
+        if let Some(v) = kept {
             return v.mul_add(deviation, mean);
         }
         loop {
@@ -1331,7 +1335,11 @@ impl VehState {
             let s = b.mul_add(b, a * a);
             if s < 1.0 && s != 0.0 {
                 let f = ((crate::caraudio::ln_guest(s as f64) as f32 / s) * -2.0).sqrt();
-                self.gauss_spare = Some(f * a);
+                if self.rng.is_some() {
+                    self.gauss_spare = Some(f * a);
+                } else {
+                    *crate::brain::g2_spare() = Some(f * a);
+                }
                 return (f * b).mul_add(deviation, mean);
             }
         }
