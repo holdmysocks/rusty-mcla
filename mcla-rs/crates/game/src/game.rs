@@ -4301,19 +4301,17 @@ impl Game {
             RaceKind::Race if self.arcade_restore.is_none() && !self.phone_race && self.career.tournament_of(&def.id).is_some() => crate::mc4::TOURNAMENT_OPPONENTS.min(def.grid.len().saturating_sub(1)),
             RaceKind::Race => def.opponents.clamp(1, 7).min(def.grid.len().saturating_sub(1)),
         };
-        let mut seed = (self.rand() * 4.0e9) as u32 | 1;
-        let mut lcg = move || {
-            seed ^= seed << 13;
-            seed ^= seed >> 17;
-            seed ^= seed << 5;
-            (seed >> 8) as f32 / 16777216.0
-        };
-        // (each opponent's pick of the routes, drawn in turn on the generator - the same draws in the same order as the
-        // grid's loop below made them; the player's line draws none - and every line built side by side: the player's
+        // (the opponents' lines below are the port's own: a racer with a brain takes its alt paths in `Brain::setup_race`,
+        // whose goal build draws them from the shared generator G2 as the original does (F-58517 -> F-60279), and drives
+        // those. The line draws nothing, as nothing is drawn at the original's grid set-up: each takes the heaviest route.
+        // Test hook MCLA_SHORTCUTS=2: the rarest)
+        let mut rarest = || 0.0f32;
+        let rarest_hook = std::env::var("MCLA_SHORTCUTS").map_or(false, |v| v == "2");
+        // (each opponent's pick of the routes, in turn, and every line built side by side: the player's
         // 15 - 45 ms and the opponents' 10 - 22 ms each were in the race start's tick one after the other,
         // docs/PERFORMANCE.md 2026-11-10 (3) and 2026-11-11 (3); MCLA_RACE_LINES_AHEAD=0: in turn)
         let opp_legs: Vec<Vec<Vec<(Vec3, f32)>>> = match routed {
-            Some(c) => (0..n_opp).map(|_| c.pick(circuit, Some(&mut lcg as &mut dyn FnMut() -> f32))).collect(),
+            Some(c) => (0..n_opp).map(|_| c.pick(circuit, rarest_hook.then_some(&mut rarest as &mut dyn FnMut() -> f32))).collect(),
             None => Vec::new(),
         };
         let (own_line, opp_lines): (_, Vec<(Vec<Vec3>, usize, Vec<Shortcut>)>) = match routed {
