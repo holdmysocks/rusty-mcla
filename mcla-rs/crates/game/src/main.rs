@@ -3445,6 +3445,7 @@ impl App {
 
     fn update_gameplay(&mut self, dt: f32) {
         self.tick_no += 1;
+        brain::g2_log_tick(self.tick_no);
         self.game.gps_race_teardown();
         self.vehicles.begin_tick();
         // (the walkers and the loose props drawn between this tick's start and end, as the cars - peds.rs, props.rs)

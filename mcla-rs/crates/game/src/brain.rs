@@ -494,7 +494,17 @@ use std::sync::Arc;
 /// parked cars, the ghost pool, the race script's action pick (`Vehicles::park_rng`, a `G2Rng`), the peds' clip pick and
 /// path seeds (`Peds::g2`) and the weather's auto change (docs/reference/cameras/replay_shared_g2_design.md).
 /// (approx.: the draw order is the port's tick's, not the original's frame's)
-pub fn rng() -> std::sync::MutexGuard<'static, Mwc> {
+#[track_caller]
+pub fn rng() -> G2Guard {
+    let g = g2_lock();
+    // (the caller read here: inside a closure it would be the closure's)
+    let loc = std::panic::Location::caller();
+    let at = g2_log_on().then_some((loc, *g));
+    G2Guard { g, at }
+}
+
+/// G2 itself, locked (no log).
+fn g2_lock() -> std::sync::MutexGuard<'static, Mwc> {
     static R: std::sync::OnceLock<std::sync::Mutex<Mwc>> = std::sync::OnceLock::new();
     R.get_or_init(|| {
         let s = std::env::var("MCLA_RANDOMSEED").ok().and_then(|v| v.trim().parse::<i64>().ok()).map(|v| v as u32).unwrap_or_else(|| loop {
@@ -507,6 +517,78 @@ pub fn rng() -> std::sync::MutexGuard<'static, Mwc> {
     })
     .lock()
     .unwrap_or_else(|e| e.into_inner())
+}
+
+/// G2 held for a draw (`rng`); derefs to the generator. With MCLA_G2_LOG=<file> its drop logs the caller and how many
+/// draws it made (the diagnostic that lays the port's draw order beside the original's, work/cameras2/g2rec).
+pub struct G2Guard {
+    g: std::sync::MutexGuard<'static, Mwc>,
+    at: Option<(&'static std::panic::Location<'static>, Mwc)>,
+}
+
+impl std::ops::Deref for G2Guard {
+    type Target = Mwc;
+    fn deref(&self) -> &Mwc {
+        &self.g
+    }
+}
+
+impl std::ops::DerefMut for G2Guard {
+    fn deref_mut(&mut self) -> &mut Mwc {
+        &mut self.g
+    }
+}
+
+impl Drop for G2Guard {
+    fn drop(&mut self) {
+        if let Some((loc, start)) = self.at {
+            g2_log(loc, start, *self.g);
+        }
+    }
+}
+
+fn g2_log_file() -> &'static Option<std::sync::Mutex<std::io::BufWriter<std::fs::File>>> {
+    static F: std::sync::OnceLock<Option<std::sync::Mutex<std::io::BufWriter<std::fs::File>>>> = std::sync::OnceLock::new();
+    F.get_or_init(|| {
+        let p = std::env::var_os("MCLA_G2_LOG")?;
+        Some(std::sync::Mutex::new(std::io::BufWriter::new(std::fs::File::create(p).ok()?)))
+    })
+}
+
+fn g2_log_on() -> bool {
+    g2_log_file().is_some()
+}
+
+/// The G2 log's tick (`g2_log_tick`, once per gameplay tick).
+static G2_TICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// MCLA_G2_LOG: marks a new gameplay tick (the port's 60 Hz `tick_no`).
+pub fn g2_log_tick(tick: u64) {
+    G2_TICK.store(tick, std::sync::atomic::Ordering::Relaxed);
+    if let Some(f) = g2_log_file() {
+        use std::io::Write;
+        let _ = writeln!(f.lock().unwrap_or_else(|e| e.into_inner()), "T {tick}");
+    }
+}
+
+/// One log line: the tick, the caller, the draws made (the generator's steps from `start` to `end`; -1 when not reachable
+/// in 100,000 steps: a seed or a restore).
+fn g2_log(loc: &std::panic::Location<'_>, start: Mwc, end: Mwc) {
+    let Some(f) = g2_log_file() else { return };
+    let mut m = start;
+    let mut n = 0i64;
+    while (m.lo, m.carry) != (end.lo, end.carry) {
+        m.next();
+        n += 1;
+        if n > 100_000 {
+            n = -1;
+            break;
+        }
+    }
+    if n != 0 {
+        use std::io::Write;
+        let _ = writeln!(f.lock().unwrap_or_else(|e| e.into_inner()), "D {} {}:{} {n}", G2_TICK.load(std::sync::atomic::Ordering::Relaxed), loc.file(), loc.line());
+    }
 }
 
 /// G2's kept normal deviate (F-66400's flag at the generator's +8 and value at +12): one spare for every user of the
@@ -525,24 +607,29 @@ pub fn g2_spare() -> std::sync::MutexGuard<'static, Option<f32>> {
 pub struct G2Rng {
     own: Option<Mwc>,
     lent: Option<Mwc>,
+    /// (MCLA_G2_LOG) who took the lent copy
+    at: Option<&'static std::panic::Location<'static>>,
 }
 
 impl Default for G2Rng {
     fn default() -> Self {
         // (the unit tests keep the stream they drew before, the parked-car generator's old default seed)
-        if cfg!(test) { G2Rng::own(Mwc::default()) } else { G2Rng { own: None, lent: None } }
+        if cfg!(test) { G2Rng::own(Mwc::default()) } else { G2Rng { own: None, lent: None, at: None } }
     }
 }
 
 impl G2Rng {
     /// A stream of its own (a test's recorded state).
     pub fn own(m: Mwc) -> Self {
-        G2Rng { own: Some(m), lent: None }
+        G2Rng { own: Some(m), lent: None, at: None }
     }
     /// The state now (a copy lent out until `set`).
+    #[track_caller]
     pub fn get(&mut self) -> Mwc {
-        let m = match self.own { Some(m) => m, None => *rng() };
+        let m = match self.own { Some(m) => m, None => *g2_lock() };
         self.lent = Some(m);
+        let loc = std::panic::Location::caller();
+        self.at = (self.own.is_none() && g2_log_on()).then_some(loc);
         m
     }
     /// Puts back the state drawn on from `get`.
@@ -550,7 +637,7 @@ impl G2Rng {
         match &mut self.own {
             Some(o) => *o = m,
             None => {
-                let mut g = rng();
+                let mut g = g2_lock();
                 if self.lent.is_some_and(|l| (l.lo, l.carry) != (g.lo, g.carry)) {
                     static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
                     if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
@@ -558,23 +645,32 @@ impl G2Rng {
                     }
                 }
                 *g = m;
+                if let (Some(loc), Some(l)) = (self.at, self.lent) {
+                    drop(g);
+                    g2_log(loc, l, m);
+                }
             }
         }
         self.lent = None;
+        self.at = None;
     }
     /// `f` draws on the state as a `&mut Mwc`.
+    #[track_caller]
     pub fn with<R>(&mut self, f: impl FnOnce(&mut Mwc) -> R) -> R {
         let mut m = self.get();
         let r = f(&mut m);
         self.set(m);
         r
     }
+    #[track_caller]
     pub fn next(&mut self) -> u32 {
         match &mut self.own { Some(m) => m.next(), None => rng().next() }
     }
+    #[track_caller]
     pub fn float(&mut self) -> f32 {
         match &mut self.own { Some(m) => m.float(), None => rng().float() }
     }
+    #[track_caller]
     pub fn index(&mut self, n: u32) -> u32 {
         match &mut self.own { Some(m) => m.index(n), None => rng().index(n) }
     }
