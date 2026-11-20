@@ -296,6 +296,8 @@
   "set.o_lang_french": "Français",
   "set.o_lang_german": "Deutsch",
   "set.o_lang_italian": "Italiano",
+  "set.o_lowmem": "LOW MEMORY MODE (for 8 GB RAM)",
+  "set.o_lowmem_note": "Keeps fewer sound clips in memory; about 250-400 MB less in use, same sound. Takes effect at next game start.",
   "set.o_playername": "Player name",
   "set.o_playername_ph": "PLAYER",
   "set.o_playername_note": "Shown in race results and on the Last Man Out line. Up to 15 letters (including accented ones), digits and spaces; other characters are dropped. Blank shows PLAYER. Applies the next time the game starts.",

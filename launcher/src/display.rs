@@ -37,6 +37,8 @@ pub struct DisplayView {
     player_name: String,
     /// the non-ASCII letters a name may hold (the config crate's list); the page's typing filter mirrors the game's rule
     player_name_letters: &'static str,
+    /// `game.low_memory` (the game reads it at start: fewer idle sound clips kept)
+    low_memory: bool,
     window_mode: &'static str,
     resolution: String,
     /// the resolutions offered: common sizes up to the chosen monitor's, its own, and the one in the file
@@ -152,6 +154,7 @@ pub fn view(window: &WebviewWindow) -> DisplayView {
         language: l.settings.game.language.word(),
         player_name: l.settings.game.player_name.clone(),
         player_name_letters: mcla_config::PLAYER_NAME_LETTERS,
+        low_memory: l.settings.game.low_memory,
         window_mode: d.window_mode.word(),
         resolution: d.resolution.text(),
         resolutions: res.into_iter().map(|(w, h)| format!("{w}x{h}")).collect(),
@@ -176,7 +179,7 @@ pub fn view(window: &WebviewWindow) -> DisplayView {
 }
 
 /// The rows `set` writes (besides the monitor's own command).
-const LIVE_KEYS: [&str; 18] = ["game.intro", "game.language", "game.player_name", "display.window_mode", "display.resolution", "display.vsync", "display.fps_cap", "display.fps_monitor", "display.aa", "display.bloom", "display.dof", "display.motion_blur", "display.texture_filtering", "display.backend", "display.render_scale", "game.shadow_resolution", "game.draw_distance", "game.detail_level"];
+const LIVE_KEYS: [&str; 19] = ["game.intro", "game.language", "game.player_name", "game.low_memory", "display.window_mode", "display.resolution", "display.vsync", "display.fps_cap", "display.fps_monitor", "display.aa", "display.bloom", "display.dof", "display.motion_blur", "display.texture_filtering", "display.backend", "display.render_scale", "game.shadow_resolution", "game.draw_distance", "game.detail_level"];
 /// Window sizes offered beside the monitor's own (those that fit on it).
 const COMMON_RESOLUTIONS: [(u32, u32); 9] = [(1280, 720), (1366, 768), (1600, 900), (1920, 1080), (2560, 1080), (2560, 1440), (3440, 1440), (3840, 1600), (3840, 2160)];
 /// The caps the game's DISPLAY page steps through (crates/game/src/hooks.rs `FPS_CAPS`).
@@ -193,7 +196,7 @@ fn checked(key: &str, value: &serde_json::Value) -> Result<mcla_config::toml::Va
         "game.player_name" => Value::String(mcla_config::clean_player_name(&text()?)),
         "display.window_mode" => Value::String(mcla_config::WindowMode::parse(&text()?).ok_or("bad_value")?.word().into()),
         "display.resolution" => Value::String(mcla_config::Resolution::parse(&text()?).ok_or("bad_value")?.text()),
-        "display.vsync" => Value::Boolean(value.as_bool().ok_or("bad_value")?),
+        "display.vsync" | "game.low_memory" => Value::Boolean(value.as_bool().ok_or("bad_value")?),
         "display.fps_monitor" => Value::String(mcla_config::FpsMonitor::parse(&text()?).ok_or("bad_value")?.word().into()),
         "display.aa" => Value::String(mcla_config::Aa::parse_any(&text()?).ok_or("bad_value")?.word().into()),
         "display.bloom" | "display.dof" | "display.motion_blur" => Value::Boolean(value.as_bool().ok_or("bad_value")?),
@@ -307,6 +310,22 @@ mod tests {
         let v = checked("game.language", &json!("german")).unwrap();
         mcla_config::set_key(&path, "game", "language", v).unwrap();
         assert_eq!(mcla_config::Settings::load(&path).settings.game.language.word(), "german");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_low_memory_row_saves_a_bool_the_game_reads() {
+        use serde_json::json;
+        assert_eq!(checked("game.low_memory", &json!(true)), Ok(mcla_config::toml::Value::Boolean(true)));
+        assert_eq!(checked("game.low_memory", &json!("on")), Err("bad_value".to_string()));
+        assert!(LIVE_KEYS.contains(&"game.low_memory"));
+        assert!(mcla_config::schema().iter().any(|k| k.key == "game.low_memory" && k.implemented));
+        let dir = std::env::temp_dir().join(format!("mcla-launcher-lowmem-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.toml");
+        assert!(!mcla_config::Settings::load(&path).settings.game.low_memory);
+        mcla_config::set_key(&path, "game", "low_memory", checked("game.low_memory", &json!(true)).unwrap()).unwrap();
+        assert!(mcla_config::Settings::load(&path).settings.game.low_memory);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
