@@ -2184,6 +2184,12 @@ fn at_occ(pos: Vec3, occ: u16) -> Req {
     Req { occluder: occ, ..Req::at(pos) }
 }
 
+/// A cop's delayed siren start (F-60528, +1140): the shared generator G2's 23-bit draw x fMaxSirenDelayTime (tune +340)
+/// x 2^-23 - the same bits as the unit draw times the delay, the scale being a power of two
+fn siren_delay(max_delay: f32) -> f32 {
+    crate::brain::rng().float() * max_delay
+}
+
 /// The call signs the cruisers are given, in the order of the PoliceVoices OFFICER group (F-23825).
 const CALLSIGNS: [&str; 6] = ["3ADAM5", "1LINCOLN4", "4ADAM8", "4ADAM13", "2ADAM6", "1EDWARD7"];
 
@@ -2688,7 +2694,7 @@ impl Fleet {
                 (0 | 1, 2) => {
                     pa.tactic = cops.clone();
                     for (k, &i) in cops.iter().enumerate() {
-                        starts.push((i, if k == 0 { 0.0 } else { lib.rand_float(0.0, 1.0) * pol.siren.max_delay }));
+                        starts.push((i, if k == 0 { 0.0 } else { siren_delay(pol.siren.max_delay) }));
                     }
                 }
                 // escaped, busted, ticket: the tactic ends and every siren stops (Search keeps them)
@@ -2705,7 +2711,7 @@ impl Fleet {
             for &i in &cops {
                 if !pa.tactic.contains(&i) {
                     pa.tactic.push(i);
-                    starts.push((i, lib.rand_float(0.0, 1.0) * pol.siren.max_delay));
+                    starts.push((i, siren_delay(pol.siren.max_delay)));
                 }
             }
         }
