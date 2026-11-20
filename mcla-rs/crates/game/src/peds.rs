@@ -2973,6 +2973,9 @@ pub struct Peds {
     /// the traffic region list's count (traffic.rs `Vehicles::traffic_regions`, M +1792; None: no traffic spawner):
     /// the unspawners' dispatcher F-75661 runs the people's unspawner F-39594 only while it is not 0
     pub traffic_regions: Option<usize>,
+    /// the ambient manager's garage latch (`Vehicles::garage_latch`): the tracker's frame F-47889, which runs the people's
+    /// spawner (F-93348) and unspawner (F-75661), is skipped while it is set
+    pub garage_hold: bool,
     /// each car slot's velocity at the previous frame's walker update (the threats' +416, `Threat::all`)
     pub threat_prev: Vec<Option<Vec3>>,
     /// spawner frames still to run at once (the front-end mode's loading wait, traffic.rs
@@ -3080,6 +3083,7 @@ impl Peds {
             cutscene: None,
             preroll: 0,
             traffic_regions: None,
+            garage_hold: false,
             threat_prev: Vec::new(),
             districts: Distribution::default(),
             hour: 12.0,
@@ -3422,6 +3426,15 @@ impl Peds {
     /// Where walker `key` stands now (a sound of its reaction follows it).
     pub fn pos_of(&self, key: (usize, u32)) -> Option<Vec3> {
         self.list.iter().find(|p| p.key == key).map(|p| p.pos)
+    }
+
+    /// The ambient manager's removal message with the people's bit 0x10 (F-99126; the garage's 0x70, F-86550): every
+    /// walker goes at once, no fade (a layout item's person too - its item stays). Returns how many went.
+    pub fn remove_all(&mut self) -> usize {
+        let n = self.list.len();
+        self.list.clear();
+        self.active.clear();
+        n
     }
 
     pub fn clear(&mut self) {
@@ -3810,7 +3823,7 @@ impl Peds {
                     self.step -= FRAME;
                 }
                 self.frame_no = self.frame_no.wrapping_add(1);
-                if self.frame_no % 2 == 0 {
+                if self.frame_no % 2 == 0 && !self.garage_hold {
                     self.spawn_frame(gpu, &mesh, col, center);
                 }
             }

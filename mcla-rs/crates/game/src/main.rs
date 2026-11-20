@@ -6265,6 +6265,13 @@ impl App {
             }
             crate::ticktimes::mark(crate::ticktimes::S::Traffic);
             self.vehicles.manage_traffic(&gpu, &world, focus, sim_dt);
+            // (the garage byte, F-86550 after the tracker's frame: on its rise every ambient car and walker goes at once,
+            // and the spawners and unspawners stand until it goes off - `Vehicles::garage_flag`)
+            if self.vehicles.garage_flag(self.game.mode == Mode::Garage) {
+                let n = self.peds.remove_all();
+                log::info!("ambient: garage - {n} walkers taken out");
+            }
+            self.peds.garage_hold = self.vehicles.garage_latch;
             crate::ticktimes::mark(crate::ticktimes::S::Other);
             self.vehicles.manage_parked(&gpu, focus);
         }

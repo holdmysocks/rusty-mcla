@@ -7178,6 +7178,40 @@ mod tests {
         eprintln!("ambient removal: {k} runs, {removed} objects removed; {e} native calls");
     }
 
+    /// The garage byte's step (F-86550) against the original's code run whole offline (tools/garage_latch_reference.py ->
+    /// testdata/garage_latch_ref.txt): 4,000 cases of the garage byte, the latch, the threaded byte, the current race (none,
+    /// or its type, its two answers, the race byte) and the stack byte. Where the latch is 0 or 1 (the only values F-86550,
+    /// the manager's ctor and FullReset write), the latch after and whether the message goes must be `garage_step`'s; the
+    /// message is 0x70 with the stack byte's low nibble, at once (F-99126) with the threaded byte 0, else queued
+    /// (F-60395).
+    #[test]
+    fn garage_latch_matches_the_original() {
+        let h = |t: &str| u32::from_str_radix(t, 16).unwrap();
+        let (mut n, mut sent) = (0, 0);
+        for l in include_str!("testdata/garage_latch_ref.txt").lines().filter(|l| !l.is_empty()) {
+            let (c, o) = l.split_once(" -> ").unwrap();
+            let c: Vec<u32> = c.split_whitespace().skip(1).map(h).collect();
+            let o: Vec<&str> = o.split_whitespace().collect();
+            if c[1] > 1 {
+                continue;
+            }
+            let (latch, send) = garage_step(c[1] == 1, c[0] & 0xFF != 0);
+            assert_eq!(h(o[0]) == 1, latch, "{l}");
+            assert!(h(o[0]) <= 1, "{l}");
+            match send {
+                false => assert!(o[1] != "M" && o[1] != "Q", "{l}"),
+                true => {
+                    assert_eq!(o[1], if c[2] != 0 { "Q" } else { "M" }, "{l}");
+                    assert_eq!(h(o[2]), 0x70 | (c[8] & 0x0F), "{l}");
+                    sent += 1;
+                }
+            }
+            n += 1;
+        }
+        assert!(n >= 3000 && sent >= 800, "{n} {sent}");
+        eprintln!("garage latch: {n} cases, {sent} sending");
+    }
+
     /// The race holds and the wanted speeds (F-70324 with F-73512, F-15116, F-50269 and F-85925 by the case) against the
     /// original's code run offline on 6,000 cases (tools/race_hold_reference.py -> testdata/race_hold_ref.txt): the gate
     /// (the event byte, a remote car, a proxy, the route's lane, the path), the two lanes' owners, parents and flags, the
@@ -8395,6 +8429,12 @@ pub fn ambient_kind(flag108: u8, spot: u32, v24: u32, v28: u32) -> u8 {
     k
 }
 
+/// F-86550's garage part: (the latch S+0x64253, the garage byte 0x82908D5D non-zero) -> (the latch after, the message
+/// 0x70 sent). The byte on with the latch clear sets it and sends; the byte off clears it.
+pub fn garage_step(latch: bool, garage: bool) -> (bool, bool) {
+    (garage, garage && !latch)
+}
+
 /// Does removal message `msg` take an object of kind `kind` (F-99126: any of the bits 0x80, 0x40, 0x20, 0x10 set in both)?
 pub fn removal_hits(kind: u8, msg: u8) -> bool {
     kind & msg & 0xF0 != 0
@@ -8837,6 +8877,31 @@ impl Vehicles {
         }
     }
 
+    /// The garage byte's part of the ambient manager's frame (F-86550, after the tracker's frame F-47889 in F-96156; not
+    /// in a paused frame - the garage pauses nothing: `MenuStyleGarage` only disables the car's input). The byte is set by
+    /// the garage's enter and showroom handlers (F-37588, F-61850) and cleared by its exit (F-74297). When it comes on and
+    /// the latch S+0x64253 is clear: the latch set, then the removal message 0x70 (the threaded byte +0x64259 is 0 in the
+    /// original's runs, so at once - F-99126): the pending spawn requests of those kinds ended (F-42105: state 7, run once
+    /// at 0.0), then every ambient car of kind 0x40 or 0x20 - riding traffic, trailers, the cars in spots, the layout
+    /// items' cars - and every walker (0x10, the caller: `Peds::remove_all`). When it goes off the latch is cleared. While
+    /// the latch is set the tracker's frame skips its region list, spawners and unspawners (`spawn_traffic`). Returns
+    /// true on the frame the message is sent.
+    pub fn garage_flag(&mut self, on: bool) -> bool {
+        let (latch, send) = garage_step(self.garage_latch, on);
+        self.garage_latch = latch;
+        if !send {
+            return false;
+        }
+        // (F-42105: the traffic and parked requests - kind 0x40 or 0x20 by their type, F-15088 / F-70957 - still pending)
+        let pending: Vec<i32> = self.ghosts.pool.recs.iter().enumerate().filter(|(_, r)| r.state == 2 && r.amb.is_some()).map(|(i, _)| i as i32).collect();
+        for &id in &pending {
+            crate::cruiser::GhostTraffic::cancel_request(self, id);
+        }
+        let n = self.ambient_remove(0x70);
+        log::info!("ambient: garage - {} requests ended, {} cars taken out, {} left", pending.len(), n, self.cars.len());
+        true
+    }
+
     /// The roads' part of the railnet's reset (F-44338, which also resets the junctions: `Signals::release`):
     /// every road's script density index +164 back to -1 (F-46490); script requests not yet taken go too.
     pub fn reset_road_density(&mut self) {
@@ -9056,7 +9121,9 @@ impl Vehicles {
             if let Some(f) = fe {
                 sp.frontend_points(nav, &f);
             }
-            if sp.frame % 2 == 1 {
+            // (F-47889's gate: the garage latch S+0x64253 set - `garage_flag` - skips both halves of the frame)
+            let latched = self.garage_latch;
+            if !latched && sp.frame % 2 == 1 {
                 self.region_list(&mut sp, nav, center, view, mph, free_fast);
                 // the parked cars' lists right after (F-51021, vehicles/parked.rs)
                 self.parked_lists(&sp);
@@ -9069,7 +9136,7 @@ impl Vehicles {
                 if std::env::var("MCLA_TRAFFIC_TRACE").is_ok() && sp.frame % 30 == 1 {
                     log::info!("traffic regions {} target {:.2} current {} enabled {} mph {:.0} turned down (type, pool, junction, freeway, one way, room, seen, no ground) {:?}", sp.list.len(), sp.target, sp.current, enabled, mph, sp.why);
                 }
-            } else if !wiped {
+            } else if !latched && !wiped {
                 // F-93348 (traffic, people, then the parked cars) and F-75661 (the
                 // unspawners, only while the region list has roads); none while wiped out
                 // (the type weights' use of the types, F-68379 -> F-83932: parked.rs)

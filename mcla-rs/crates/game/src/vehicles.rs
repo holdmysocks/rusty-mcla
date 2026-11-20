@@ -1603,6 +1603,9 @@ pub struct Vehicles {
     pub parked_target: usize,
     /// AmbientMgr_SetParkedCarsEnable(0) in force (main.rs: CarSelection, the new career's opening)
     pub parked_held: bool,
+    /// the ambient manager's garage latch (S+0x64253, F-86550): set on the frame the garage byte comes on, cleared when
+    /// it goes off; while set the tracker's frame runs no region list, spawner or unspawner (`Vehicles::garage_flag`)
+    pub garage_latch: bool,
     /// the ambient manager's cutscene mode (F-97032: AmbientMgr_SetCutscene's flag, the race
     /// timer >= 0, no replay recording or playback): the cutscene camera's eye and forward - the
     /// focus and view of the spawners (F-83397), set by main.rs while a scene plays
