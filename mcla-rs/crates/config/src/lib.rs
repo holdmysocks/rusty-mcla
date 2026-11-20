@@ -202,6 +202,9 @@ pub struct GameSettings {
     /// the player's name where the original shows the Xbox gamertag (results rows, the Last Man Out line); empty =
     /// the string table's PLAYER (`drv_mp_01_set`) in the chosen language. Always as [`clean_player_name`] leaves it.
     pub player_name: String,
+    /// for PCs with little RAM (GitHub #61, DECISIONS.md D59): sound clips nothing plays are kept to 64 MB instead of 256 MB
+    /// (they are read again when asked for); the sound and picture are the same
+    pub low_memory: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -251,7 +254,7 @@ impl Default for Settings {
                 texture_filtering: TexFilter::Original,
                 backend: Backend::Auto,
             },
-            game: GameSettings { intro: Intro::Normal, shadow_resolution: ShadowRes::Original, draw_distance: Scale::Original, detail_level: Scale::Original, stick_dead_zone: 0, language: Language::English, player_name: String::new() },
+            game: GameSettings { intro: Intro::Normal, shadow_resolution: ShadowRes::Original, draw_distance: Scale::Original, detail_level: Scale::Original, stick_dead_zone: 0, language: Language::English, player_name: String::new(), low_memory: false },
             paths: Paths { data_dir: String::new(), screenshots: String::new() },
             launcher: LauncherSettings { language: String::new(), check_updates: true },
             extra: Table::new(),
@@ -344,6 +347,7 @@ impl Settings {
         s.game.detail_level = r.word(gt, "game.detail_level", "detail_level", d.game.detail_level, Scale::parse, Scale::WORDS);
         s.game.language = r.word(gt, "game.language", "language", d.game.language, Language::parse, Language::WORDS);
         s.game.player_name = clean_player_name(&r.string(gt, "game.player_name", "player_name", &d.game.player_name));
+        s.game.low_memory = r.boolean(gt, "game.low_memory", "low_memory", d.game.low_memory);
         s.game.stick_dead_zone = r.uint(gt, "game.stick_dead_zone", "stick_dead_zone", d.game.stick_dead_zone, |n| n <= 50 && n % 5 == 0, "0 .. 50 in steps of 5");
         let pt = sub(t, "paths");
         s.paths.data_dir = r.string(pt, "paths.data_dir", "data_dir", &d.paths.data_dir);
@@ -394,6 +398,7 @@ impl Settings {
         put(&mut t, "game", "stick_dead_zone", Value::Integer(g.stick_dead_zone as i64));
         put(&mut t, "game", "language", g.language.word().into());
         put(&mut t, "game", "player_name", clean_player_name(&g.player_name).into());
+        put(&mut t, "game", "low_memory", g.low_memory.into());
         put(&mut t, "paths", "data_dir", p.data_dir.clone().into());
         put(&mut t, "paths", "screenshots", p.screenshots.clone().into());
         put(&mut t, "launcher", "language", l.language.clone().into());

@@ -656,10 +656,34 @@ struct Node {
     kind: Kind,
 }
 
+/// (test hook MCLA_SND_WAIT_LOG=1, GitHub #61: how long sounds wait for their waves - played sounds that waited, the
+/// total, the longest and those over 50 / 100 ms - logged once a minute; low memory's smaller clip budget against the default)
+static WAIT_STATS: std::sync::Mutex<(u32, f32, f32, u32, u32, Option<std::time::Instant>)> = std::sync::Mutex::new((0, 0.0, 0.0, 0, 0, None));
+
+fn wait_stat(w: f32) {
+    if std::env::var_os("MCLA_SND_WAIT_LOG").is_none() {
+        return;
+    }
+    if let Ok(mut s) = WAIT_STATS.lock() {
+        s.0 += 1;
+        s.1 += w;
+        s.2 = s.2.max(w);
+        s.3 += (w > 0.05) as u32;
+        s.4 += (w > 0.1) as u32;
+        let t0 = *s.5.get_or_insert_with(std::time::Instant::now);
+        if t0.elapsed().as_secs_f32() >= 60.0 {
+            log::info!("sound waits: {} sounds waited for their waves in the last minute, {:.0} ms in all, longest {:.0} ms, {} over 50 ms, {} over 100 ms", s.0, s.1 * 1000.0, s.2 * 1000.0, s.3, s.4);
+            *s = (0, 0.0, 0.0, 0, 0, Some(std::time::Instant::now()));
+        }
+    }
+}
+
 struct Instance {
     id: u64,
     /// the wave files a `wait_load` request still waits for (the original's preparing state 1, not updated)
     loading: Vec<(PathBuf, i32)>,
+    /// seconds it has waited for `loading` (the MCLA_SND_WAIT_LOG test hook)
+    waited: f32,
     /// the sounds.dat object played (0: a converted wave)
     hash: u32,
     root: Node,
@@ -1555,22 +1579,23 @@ impl SoundLib {
     /// Keep what the clips nothing plays hold under a budget, the longest unused dropped first: the ambience
     /// and the streams alone are gigabytes decoded (docs/PERFORMANCE.md, 2026-10-30). A clip asked for again is read again.
     fn trim_clips(&mut self) {
-        const IDLE_CLIPS: u64 = 256 << 20;
+        // (settings.toml game.low_memory: 64 MB for PCs with little RAM - GitHub #61, D59; a clip dropped is read again)
+        let idle_clips: u64 = if crate::hooks::low_memory() { 64 << 20 } else { 256 << 20 };
         let bytes = |c: &Clip| 4 * c.stream.as_ref().map_or(c.data.len(), |s| s.samples.len()) as u64;
         // (summed first without a copy: this runs every update)
         let is_idle = |p: &PathBuf, c: &Option<Arc<Clip>>| !self.resident.contains(p) && c.as_ref().is_some_and(|c| Arc::strong_count(c) == 1);
         let sum: u64 = self.clips.iter().filter(|(p, (c, _))| is_idle(p, c)).map(|(_, (c, _))| bytes(c.as_ref().unwrap())).sum();
-        if sum <= IDLE_CLIPS {
+        if sum <= idle_clips {
             return;
         }
         let mut idle: Vec<(u64, PathBuf, u64)> = self.clips.iter().filter(|(p, _)| !self.resident.contains(*p)).filter_map(|(p, (c, used))| c.as_ref().filter(|c| Arc::strong_count(c) == 1).map(|c| (*used, p.clone(), bytes(c)))).collect();
         let mut total: u64 = idle.iter().map(|e| e.2).sum();
-        if total <= IDLE_CLIPS {
+        if total <= idle_clips {
             return;
         }
         idle.sort_unstable();
         for (_, p, b) in idle {
-            if total <= IDLE_CLIPS {
+            if total <= idle_clips {
                 break;
             }
             self.clips.remove(&p);
@@ -1830,7 +1855,7 @@ impl SoundLib {
         if std::env::var_os("MCLA_SOUND_STARTS").is_some() {
             log::info!("sound start: {} vol {:.2} pitch {}", self.snd.name_of(hash).unwrap_or("?"), req.volume, req.pitch);
         }
-        self.insts.push(Instance { loading, id, hash, root, req, prev_pos: None, frame_pos: None, doppler: 1.0, stop: false, kill: false, stop_ms: -1, timer });
+        self.insts.push(Instance { loading, waited: 0.0, id, hash, root, req, prev_pos: None, frame_pos: None, doppler: 1.0, stop: false, kill: false, stop_ms: -1, timer });
         Some(Handle(id))
     }
 
@@ -1890,7 +1915,7 @@ impl SoundLib {
         if std::env::var_os("MCLA_SOUND_STARTS").is_some() {
             log::info!("sound start: clip {key} ({category})");
         }
-        self.insts.push(Instance { loading, id, hash: 0, root, req, prev_pos: None, frame_pos: None, doppler: 1.0, stop: false, kill: false, stop_ms: -1, timer });
+        self.insts.push(Instance { loading, waited: 0.0, id, hash: 0, root, req, prev_pos: None, frame_pos: None, doppler: 1.0, stop: false, kill: false, stop_ms: -1, timer });
         Some(Handle(id))
     }
 
@@ -2164,6 +2189,10 @@ impl SoundLib {
             if !inst.loading.is_empty() {
                 let clips = &self.clips;
                 inst.loading.retain(|f| !clips.contains_key(&f.0));
+                inst.waited += dt;
+                if inst.loading.is_empty() {
+                    wait_stat(inst.waited);
+                }
                 // (a load that came and was trimmed before this update: asked for again)
                 for (f, ls) in &inst.loading {
                     self.loader.ask(f, *ls, true);

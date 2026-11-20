@@ -970,6 +970,19 @@ fn set_game_live(g: mcla_config::GameSettings) {
     }
 }
 
+/// `game.low_memory` (GitHub #61, D59): fewer idle sound clips kept (`sndobj::SoundLib::trim_clips`); read at start.
+pub fn low_memory() -> bool {
+    static AT_START: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *AT_START.get_or_init(|| {
+        // (MCLA_LOW_MEMORY=1: the same, a test hook)
+        let on = get().is_some_and(|r| r.settings.game.low_memory) || std::env::var_os("MCLA_LOW_MEMORY").is_some();
+        if on {
+            log::info!("low memory: on (idle sound clips kept to 64 MB)");
+        }
+        on
+    })
+}
+
 /// Shadow map side multiplier: 1 (the original's), 2 or 4.
 pub fn shadow_res_scale() -> u32 {
     game_live().shadow_resolution.factor()

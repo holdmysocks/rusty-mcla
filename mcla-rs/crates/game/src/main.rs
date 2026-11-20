@@ -16946,13 +16946,15 @@ impl App {
         if wait || got.is_some() {
             self.citymap_rx = None;
         }
-        if let Some(map) = got {
+        if let Some(mut map) = got {
             if (map.w.max(map.h) as u32) <= gpu.max_tex {
                 use wgpu::util::DeviceExt;
                 let (verts, idx) = map.mesh();
                 let vb = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("citymap vb"), contents: bytemuck::cast_slice(&verts), usage: wgpu::BufferUsages::VERTEX });
                 let ib = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("citymap ib"), contents: bytemuck::cast_slice(&idx), usage: wgpu::BufferUsages::INDEX });
                 let tex = Arc::new(render::create_rgba(&gpu.device, &gpu.queue, map.w as u32, map.h as u32, &map.rgba(), "citymap"));
+                // (the colour image is read only for this texture - the patches take `fine` and `night`: 63 MB less held, GitHub #61)
+                map.color = Vec::new();
                 let clear = gpu.clear_tex.clone();
                 let bind = gpu.texture_bind_group(&tex, &clear, 0xC17A_0001, 0xC17A_0002);
                 log::info!("city map: ready ({} x {} texels, {} vertices)", map.w, map.h, verts.len());
