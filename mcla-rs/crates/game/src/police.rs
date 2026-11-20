@@ -2206,6 +2206,16 @@ pub(crate) struct RdoIn<'a> {
     pub max_t: f32,
 }
 
+/// `f` draws on G2 as the radio's (lo, hi) pair (`rdo_draw`).
+fn g2_pair<R>(g: &mut crate::brain::G2Rng, f: impl FnOnce(&mut (u32, u32)) -> R) -> R {
+    g.with(|m| {
+        let mut t = (m.lo, m.carry);
+        let r = f(&mut t);
+        (m.lo, m.carry) = t;
+        r
+    })
+}
+
 /// The radio's draw (F-26639): x = lo x 0x5CDCFAA7 + hi; low and high 32 bits the new state.
 pub(crate) fn rdo_draw(rng: &mut (u32, u32)) -> u32 {
     let x = rng.0 as u64 * 0x5CDC_FAA7 + rng.1 as u64;
@@ -2668,7 +2678,10 @@ pub struct Police {
     rdo_nitro: u8,
     rdo_far: bool,
     hard_tab: Option<Vec<(u32, f32)>>,
-    rdo_rng: (u32, u32),
+    /// the shared generator G2 (0x82860890): the radio's sender / line picks (F-26639), the cop zone's pick and set-off,
+    /// the patrol path change, the random Follow rolls, the teleport's roll and ring (F-37056) - a stream of its own in
+    /// the unit tests (`brain::G2Rng`)
+    g2: crate::brain::G2Rng,
     time: f32,
     rng: u32,
     /// the launching script's generator for EvaluatePolice's roll: its script context's MWC, seeded by one draw of the
@@ -2826,7 +2839,7 @@ impl Police {
             rdo_nitro: 0,
             rdo_far: true,
             hard_tab: None,
-            rdo_rng: (0x2f6e_2b1d, 0x51ed_270b),
+            g2: Default::default(),
             time: 0.0,
             rng: 0x51ed_270b,
             script_rng: None,
@@ -3110,7 +3123,7 @@ impl Police {
             // that one path and nothing changes; the general rule is `path_change`)
             if let Some(g) = self.units[ui].path {
                 let group = std::slice::from_ref(&self.paths[g]);
-                if let Some((j, k)) = path_change(group, 0, &mut self.units[ui].cd, pos, change, &mut self.rdo_rng) {
+                if let Some((j, k)) = g2_pair(&mut self.g2, |r| path_change(group, 0, &mut self.units[ui].cd, pos, change, r)) {
                     if j >= 0 {
                         self.units[ui].pi = k as usize;
                     }
@@ -3163,7 +3176,7 @@ impl Police {
             if !ok {
                 return false;
             }
-            if self.rand() < tun.get("iRndFollowOnProbPrcnt", 5.0) * 0.01 {
+            if self.g2.float() < tun.get("iRndFollowOnProbPrcnt", 5.0) * 0.01 {
                 log::info!("police: unit {} randomly starting to follow the player", self.units[ui].id);
                 let u = &mut self.units[ui];
                 u.follow = true;
@@ -3195,7 +3208,7 @@ impl Police {
         };
         end |= goal.is_none();
         if !end && self.units[ui].fol_t <= 0.0 {
-            if self.rand() < tun.get("iRndFollowOffProbPrcnt", 8.0) * 0.01 {
+            if self.g2.float() < tun.get("iRndFollowOffProbPrcnt", 8.0) * 0.01 {
                 log::info!("police: unit {} randomly breaking off the follow", self.units[ui].id);
                 end = true;
             } else {
@@ -3390,7 +3403,7 @@ impl Police {
         self.zone_go = false;
         // (the manager's police list, F-53190: the units CreatePolice made; the dev override F-47443 is never set)
         let police = self.units.len() as i32;
-        let picked = zone_pick(&mut self.rdo_rng, None, police, zones.min(u16::MAX as usize) as u16, Some(laps as i32));
+        let picked = g2_pair(&mut self.g2, |r| zone_pick(r, None, police, zones.min(u16::MAX as usize) as u16, Some(laps as i32)));
         self.zone = picked.map(|(idx, lap)| {
             log::info!("police: cop zone {} enabled on lap {}", idx, lap);
             CopZone { idx: idx as usize, lap: lap as usize, state: if lap == 0 { 1 } else { 0 }, timer: 0.0, target: None, player: false, stationed: false }
@@ -3431,7 +3444,7 @@ impl Police {
                 let pos: Vec<Vec3> = racers.iter().map(|r| r.2).collect();
                 let ai: Vec<usize> = (0..racers.len()).filter(|&i| !racers[i].1).collect();
                 let ai_pos: Vec<Option<Vec3>> = ai.iter().map(|&i| Some(racers[i].2)).collect();
-                if let Some((_, tgt)) = zone_set_off(&mut self.rdo_rng, kind, prob, ai_r, zone.0, zone.1, &pos, scripted, Some(&ai_pos)) {
+                if let Some((_, tgt)) = g2_pair(&mut self.g2, |r| zone_set_off(r, kind, prob, ai_r, zone.0, zone.1, &pos, scripted, Some(&ai_pos))) {
                     z.state = 2;
                     z.timer = 5.5;
                     say = Some("PLAYER_COPS_BEGIN_PURSUIT");
@@ -3660,7 +3673,8 @@ impl Police {
                 // (no road within 125 m: 125 m ahead turned by a random eighth, 8 tries a 45 degree turn each; over the mesh,
                 // closer than the cop, hidden, and ground within 7 m)
                 let mesh = crate::offroad::mesh();
-                let k0 = (self.rand() * 8.0) as i32;
+                // ((MWC & 0x7FFFFFFF) mod 8 on G2)
+                let k0 = self.g2.index(8) as i32;
                 (0..8).find_map(|k| {
                     let off = glam::Quat::from_rotation_y((k0 + k) as f32 * std::f32::consts::FRAC_PI_4) * (tfwd * 125.0);
                     let q = tpos + off;
@@ -3744,7 +3758,8 @@ impl Police {
                 p_tel = if far > 0.0 { prob * (d / far) } else { prob };
                 self.tel.entry(u).or_default().0 = down;
                 self.tel_lock = down;
-                if self.rand() >= p_tel {
+                // (one G2 draw (lo & 0x7FFFFF) x 2^-23)
+                if self.g2.float() >= p_tel {
                     continue;
                 }
             }
@@ -3952,7 +3967,7 @@ impl Police {
         let within = |d: f32| cops.iter().filter_map(|u| vehicles.cars.iter().find(|c| c.uid == *u)).any(|c| c.state.pos.distance(ppos) < d);
         let vic = self.tun.get("fRdoVicinityDist", 100.0);
         let (within_vic, within_10) = if n > 1 && car.is_some() { (within(vic), within(10.0)) } else { (false, false) };
-        let mut st = RdoState { t: self.rdo_t, road: self.rdo_road, fw_t: self.rdo_fw_t, nitro: self.rdo_nitro, far: self.rdo_far, rng: self.rdo_rng };
+        let mut st = RdoState { t: self.rdo_t, road: self.rdo_road, fw_t: self.rdo_fw_t, nitro: self.rdo_nitro, far: self.rdo_far, rng: (0, 0) };
         let i = RdoIn {
             dt,
             on: on && self.heat != Heat::Search && car.is_some(),
@@ -3975,13 +3990,18 @@ impl Police {
             min_t: self.tun.get("fMinPerRdoTime", 15.0),
             max_t: self.tun.get("fMaxPerRdoTime", 30.0),
         };
-        let call = chatter_step(&mut st, &i);
+        // (the picks draw G2, lent for the step)
+        let call = g2_pair(&mut self.g2, |r| {
+            st.rng = *r;
+            let c = chatter_step(&mut st, &i);
+            *r = st.rng;
+            c
+        });
         self.rdo_t = st.t;
         self.rdo_road = st.road;
         self.rdo_fw_t = st.fw_t;
         self.rdo_nitro = st.nitro;
         self.rdo_far = st.far;
-        self.rdo_rng = st.rng;
         call.map(|(name, k, r)| RadioCall { name, sender: cops[k], receiver: r.map(|r| cops[r]) })
     }
 
