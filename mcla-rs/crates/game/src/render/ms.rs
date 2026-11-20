@@ -288,6 +288,23 @@ pub fn build_ahead(pipes: &[&MsPipe], v: Variant) {
     }
 }
 
+/// Whether this thread has a C locale of its own (csrc/dxc_crt.c's TLS callback, so that DXC's setlocale on the
+/// building threads cannot race: docs/PERFORMANCE.md 2026-11-19).
+fn thread_locale_on() -> bool {
+    #[cfg(all(windows, target_env = "gnu"))]
+    {
+        extern "C" {
+            fn _configthreadlocale(flag: i32) -> i32;
+        }
+        // (0 asks; _ENABLE_PER_THREAD_LOCALE = 1)
+        unsafe { _configthreadlocale(0) == 1 }
+    }
+    #[cfg(not(all(windows, target_env = "gnu")))]
+    {
+        false
+    }
+}
+
 /// The same on threads of their own (the menus' 4x set while the game drives at 2x), so that the first switch
 /// does not wait for the driver's compiler. The variants in the order given (the first for every pipeline before
 /// the second), shared out over up to four threads.
@@ -312,7 +329,7 @@ pub fn warm(variants: Vec<Variant>) {
                 p.at(*v);
             }
             if left.fetch_sub(1, Ordering::AcqRel) == 1 {
-                log::info!("pipeline: {} scene pipelines built ahead in {} ms ({} threads)", jobs.len(), t.elapsed().as_millis(), threads);
+                log::info!("pipeline: {} scene pipelines built ahead in {} ms ({} threads; C locale per thread: {})", jobs.len(), t.elapsed().as_millis(), threads, thread_locale_on());
                 super::pcache::save();
             }
         });
