@@ -1356,7 +1356,9 @@ pub struct Game {
     /// (F-67246 -> F-51256) marks the call done and clears it. A call without a line ends on its timer and never sets it.
     pub sidekick_wait: bool,
     /// The call up was appended with argument 9 = 0 and has a line: Some(false) while it is spoken, Some(true) once the
-    /// flag holds it (`sidekick_wait`). The telephone challenge's call is such a call; the reminders pass 2.
+    /// flag holds it (`sidekick_wait`). The telephone challenge's call is such a call; the reminders pass 2. While it is
+    /// Some the call's clock stands: F-37697 counts the record's time (+0, `tip`'s seconds) down only for a call without
+    /// a line (its speech handle +20 is 0); one with a line is done when the line is no longer the playing one.
     pub tip_waits: Option<bool>,
     /// the challenge was taken: main opens the race menu
     pub phone_accept: bool,
@@ -6046,7 +6048,8 @@ impl Game {
             let dt = ctx.input(|i| i.stable_dt).min(0.1);
             // (the phone is put away for an event: none of the race captures shows it)
             let msg = self.tip.as_ref().filter(|_| self.race.is_none()).map(|(title, body, _)| (title.to_uppercase(), body.to_uppercase()));
-            if let Some((title, body, left)) = self.tip.clone().filter(|_| self.tip_waits != Some(true)) {
+            // (a call with a line runs no clock: F-37697 ends it when its line is over, `tip_waits`)
+            if let Some((title, body, left)) = self.tip.clone().filter(|_| self.tip_waits.is_none()) {
                 self.tip = if left > dt && !matches!(self.mode, Mode::MainMenu) { Some((title, body, left - dt)) } else { None };
             }
             if msg.is_some() || fp.is_active() {
@@ -6069,7 +6072,7 @@ impl Game {
         } else if panel_up && self.flash_phone.is_some() {
             // (the call waits behind the panel)
         } else if let Some((title, body, left)) = self.tip.clone() {
-            let dt = if self.tip_waits == Some(true) { 0.0 } else { ctx.input(|i| i.stable_dt) };
+            let dt = if self.tip_waits.is_some() { 0.0 } else { ctx.input(|i| i.stable_dt) };
             self.tip = if (left > dt || dt == 0.0) && !matches!(self.mode, Mode::MainMenu) { Some((title.clone(), body.clone(), left - dt)) } else { None };
             let sc = (screen.height() / 900.0).clamp(0.5, 2.0);
             let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("tip")));

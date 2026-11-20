@@ -7965,14 +7965,16 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         let who = self.game.career.name_of(caller);
                         self.phone_caller = caller;
                         let st = |k: &str, d: &str| self.game.career.strings.get(k).map(|s| s.to_string()).unwrap_or_else(|| d.to_string());
-                        self.game.tip = Some((who, st("Lets Race", "LET'S RACE.  YOU PICK THE LOCATION."), 12.0));
+                        // (Sidekick_AppendData(3, 'TelephoneChallenge', id, 1, 4.0, ...) at 0x201..0x27b: the record's time 4.0 s
+                        // counts only for a call without a line; with HOOKMAN_PHONE_INVITE_PLAYER found the call stands until the
+                        // line is over and then, argument 9 being 0, waits for the script - its 51 rounds and the decline below)
+                        let spoken = self.speech.say_as("HOOKMAN_PHONE_INVITE_PLAYER", caller);
+                        self.game.tip = Some((who, st("Lets Race", "LET'S RACE.  YOU PICK THE LOCATION."), 4.0));
                         self.game.phone_prompt = st("Back To Accept", "ACCEPT").to_uppercase();
                         self.game.phone_challenge = true;
-                        // (Sidekick_AppendData's argument 9 is 0: the call waits for the script once its line is over)
-                        self.game.tip_waits = Some(false);
+                        self.game.tip_waits = spoken.then_some(false);
                         self.phone_wait = None;
                         self.phone_declining = false;
-                        self.speech.say_as("HOOKMAN_PHONE_INVITE_PLAYER", caller);
                     }
                 }
             }
