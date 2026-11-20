@@ -92,14 +92,20 @@ impl Skeleton {
     pub fn parse(res: &Resource) -> Result<Option<Skeleton>> {
         let rd = Rd::new(res);
         let Some(lod) = rd.ptr(0x24) else { return Ok(None) };
-        let Some(mats) = rd.ptr(lod + 0x10) else { return Ok(None) };
+        Ok(Self::parse_at(&rd, lod, rd.ptr(0x14)))
+    }
+
+    /// The skeleton object at `lod` (a fragment drawable's +0x0c, a vehicle's root +0x24), its bone names from the string
+    /// list `names` when there is one.
+    pub fn parse_at(rd: &Rd, lod: usize, names_list: Option<usize>) -> Option<Skeleton> {
+        let Some(mats) = rd.ptr(lod + 0x10) else { return None };
         let count = rd.u16(lod + 0x14) as usize;
         if count == 0 || count > 512 || !rd.has(mats, count * 2 * 64) {
-            return Ok(None);
+            return None;
         }
         // bone names (optional): root+0x14 → array of string objects
         let mut names = vec![String::new(); count];
-        if let Some(nl) = rd.ptr(0x14) {
+        if let Some(nl) = names_list {
             for i in 0..count {
                 if let Some(so) = rd.ptr(nl + i * 4) {
                     if let Some(sp) = rd.ptr(so) {
@@ -168,7 +174,7 @@ impl Skeleton {
             bones.push(Bone { local: locals[i], world: w, name: names[i].clone(), tag: tags[i], parent: parents[i], trans_limits: limits[i],
                 dof_trans: dofs[i].0, dof_rot: dofs[i].1, dof_id: dofs[i].2 });
         }
-        Ok(Some(Skeleton { bones }))
+        Some(Skeleton { bones })
     }
 
     pub fn bone_by_tag(&self, tag: u16) -> Option<usize> {

@@ -802,10 +802,10 @@ pub struct LooseState {
     pool_frame: u32,
     pool_slot: u64,
     viewer: Option<[f32; 4]>,
-    /// the start times the props' animation events took when their cache entry was last given (`give_anim_starts`,
-    /// F-55624): (instance, time), instances in the order given, each event of each matching animation once. Kept for
-    /// the animation's playback, which the port does not have yet (the oil pumps, planes, Ferris wheel stand)
-    pub anim_starts: Vec<(u32, f32)>,
+    /// the props' animations (`crate::propanim`): one for each event of each matching animation of a prop whose type
+    /// holds its cache entry, in the level's instance order; their times start when the entry is given
+    /// (`give_anim_starts`, F-55624) and step every game frame (`step_anims`, F-85177)
+    pub anims: Vec<crate::propanim::AnimProp>,
     /// the prop instances F-74663 took out of the level when the pool took their entry (+80 bit 0x20: not met, not drawn,
     /// F-92987) until the whole city is reset (`reset_props`)
     pub out: std::collections::BTreeSet<u32>,
@@ -5238,22 +5238,71 @@ impl LooseState {
     /// level's instance order (the prop resource's list, the file's). The original does this at the pool sweep and at
     /// each instance's reset of PropManager_ResetProps (`reset_props`) and at each prop's insert of the replay start's
     /// seed (F-52672 -> F-30607); recording r2 (docs/reference/cameras/g2_draw_order_rec.md): 33 draws each time.
+    /// Every animation starts running at its new time; the prop manager's tracked list (the blast props, F-76379) is made
+    /// anew with every prop running (the recording's 24 starts and 24 stops at each reset: its stopped bits cleared).
     pub fn give_anim_starts(&mut self, world: &LooseWorld) {
-        self.anim_starts.clear();
-        let mut g2 = crate::brain::rng();
-        for (i, (_, ty)) in world.instances.iter().enumerate() {
-            let t = &world.types[*ty];
-            if !t.keeps_entry {
-                continue;
-            }
-            for e in &t.anim_events {
-                // (the names compared without case, F-40755, ASCII A-Z folded: the Ferris wheel's event says "Cycle")
-                for a in t.anims.iter().filter(|a| a.name.eq_ignore_ascii_case(&e.anim)) {
-                    let time = anim_start_time(e, a.length, || g2.float());
-                    self.anim_starts.push((i as u32, time));
+        let mut out = Vec::with_capacity(self.anims.len());
+        {
+            let mut g2 = crate::brain::rng();
+            for (i, (_, ty)) in world.instances.iter().enumerate() {
+                let t = &world.types[*ty];
+                if !t.keeps_entry {
+                    continue;
+                }
+                // (F-76379's list: present, breakable and named like a blast prop - on the disc the 23 oil pumps and the
+                // gas-station ball, the 24 the recording's manager lists)
+                let listed = crate::propblast::is_blast_name(&t.name);
+                for (ei, e) in t.anim_events.iter().enumerate() {
+                    // (the names compared without case, F-40755, ASCII A-Z folded: the Ferris wheel's event says "Cycle")
+                    for (ai, a) in t.anims.iter().enumerate().filter(|(_, a)| a.name.eq_ignore_ascii_case(&e.anim)) {
+                        let time = anim_start_time(e, a.length, || g2.float());
+                        out.push(crate::propanim::AnimProp {
+                            inst: i as u32,
+                            ty: *ty,
+                            event: ei,
+                            anim: ai,
+                            time,
+                            running: true,
+                            listed,
+                            saved: 0.0,
+                            deltas: Vec::new(),
+                        });
+                    }
                 }
             }
         }
+        for p in &mut out {
+            crate::propanim::repose(p, &world.types);
+        }
+        self.anims = out;
+    }
+
+    /// One game frame of the props' animations (F-85177 for each running one, then posed), after the prop manager's
+    /// switch of its tracked props (`refp` the player's car, or the camera; F-75502's call): a restart draws G2 once
+    /// (the start F-55624 again) and goes on from the kept time. The level's first frame gives the entries if nothing
+    /// gave them yet (the level's insert of every kept entry). Returns how many were posed.
+    pub fn step_anims(&mut self, world: &LooseWorld, refp: Vec3) -> usize {
+        if self.anims.is_empty() && world.instances.iter().any(|(_, t)| world.types[*t].keeps_entry && !world.types[*t].anim_events.is_empty()) {
+            self.give_anim_starts(world);
+        }
+        let mut n = 0;
+        for p in &mut self.anims {
+            let at = v(world.instances[p.inst as usize].0.matrix[3]);
+            crate::propanim::lod(p, at, refp, &world.types, |p, types| {
+                let t = &types[p.ty];
+                let e = &t.anim_events[p.event];
+                let mut g2 = crate::brain::rng();
+                let _ = anim_start_time(e, t.anims[p.anim].length, || g2.float());
+            });
+            if !p.running {
+                continue;
+            }
+            let t = &world.types[p.ty];
+            p.time = crate::propanim::step_time(&t.anim_events[p.event], t.anims[p.anim].length, p.time);
+            crate::propanim::repose(p, &world.types);
+            n += 1;
+        }
+        n
     }
 
     /// The whole city's props as new (PropManager_ResetProps, F-27147 -> F-87948; GitHub #48): first the fragment cache's

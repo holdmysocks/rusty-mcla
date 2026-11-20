@@ -198,6 +198,7 @@ mod cruisedrive;
 mod cruiser;
 mod oppmgr;
 mod propblast;
+mod propanim;
 mod navjob;
 mod tunebuild;
 mod brainturn;
@@ -6889,6 +6890,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             crate::ticktimes::mark(crate::ticktimes::S::Props);
             if let Some(lw) = world.collider.loose.as_deref() {
                 self.props.follow_level(&gpu, &self.vehicles.level, lw);
+                // (the props' animations: once a 30 Hz game frame, F-85177 from the fragment pool's update, after the
+                // prop manager's switch of its tracked props by the player's car - the camera without one, F-75502)
+                if self.tick_no % 2 == 0 {
+                    let refp = self.vehicles.player().map_or(self.cam.pos, |c| c.state.pos);
+                    self.vehicles.level.step_anims(lw, refp);
+                    self.props.update_anims(&gpu, &self.vehicles.level);
+                }
             }
             // (the prop manager's update hands the camera's place to the fragment cache's viewer sphere, F-44865)
             self.vehicles.level.set_viewer(self.cam.pos);

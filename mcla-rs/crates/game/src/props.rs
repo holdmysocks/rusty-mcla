@@ -642,6 +642,28 @@ pub struct Props {
     pub emitters: Vec<(Vec3, u8, Quat, Vec<(u32, Vec3)>)>,
     /// the wind-debris streets: segments of the rails of `city/sc/0xad0a8b94.r66` (`trash.xrn`)
     pub trash: Vec<(Vec3, Vec3)>,
+    /// the animated props (crate::propanim): each one's pieces (one bone's triangles each, a model of its own), drawn
+    /// at the prop's instance times the bone's pose (`update_anims`); their instances (written every frame) and boxes
+    anim_pieces: Vec<AnimPiece>,
+    anim_buf: Option<wgpu::Buffer>,
+    anim_insts: Vec<Inst>,
+    anim_bounds: Vec<(Vec3, Vec3)>,
+    /// the models drawn as pieces instead (by model)
+    anim_model: Vec<bool>,
+}
+
+/// One bone's piece of an animated prop.
+struct AnimPiece {
+    /// the piece's model and the whole prop's (its reach)
+    model: usize,
+    whole: usize,
+    /// the prop's instance (`Props::insts`) and the level's (`LooseWorld::instances`, `AnimProp::inst`)
+    inst: u32,
+    level: u32,
+    bone: u16,
+    /// the piece's box at rest, in the prop's frame
+    min: Vec3,
+    max: Vec3,
 }
 
 /// `trash.xrn` (root class 0x47b4cc like the road network): 98 short rails in four groups laid
@@ -863,7 +885,7 @@ fn prop_mode(shader: &str) -> MatMode {
 
 impl Props {
     pub fn empty() -> Props {
-        Props { hedge_low: HashMap::new(), impostors: None, signal_glows: SignalGlows::default(), glow_buf: None, glow_count: 0, lights: Vec::new(), prop_lamps: Vec::new(), glow_lamps: Vec::new(), glow_cull: Vec::new(), glow_signal: Vec::new(), glow_gfx: Vec::new(), glow_boxes: Vec::new(), light_grid: HashMap::new(), models: Vec::new(), inst_buf: None, cells: HashMap::new(), instances: 0, insts: Vec::new(), colliders: Vec::new(), gas_stations: Vec::new(), col_grid: HashMap::new(), debris: Vec::new(), hits: Vec::new(), scrapes: Vec::new(), deflects: Vec::new(), fx: Vec::new(), defl_done: Default::default(), knocked: 0, placed: HashMap::new(), rng: 12345, level_on: false, level_map: None, moving: HashMap::new(), between: HashMap::new(), between_tick: 0, between_log: std::env::var_os("MCLA_DRAW_STEPS").map(|_| Vec::new()), heads: Vec::new(), signals: Default::default(), race_models: HashMap::new(), race_buf: None, race_runs: Vec::new(), barriers: Vec::new(), barrier_buf: None, barrier_on: 0, emitters: Vec::new(), trash: Vec::new() }
+        Props { hedge_low: HashMap::new(), impostors: None, signal_glows: SignalGlows::default(), glow_buf: None, glow_count: 0, lights: Vec::new(), prop_lamps: Vec::new(), glow_lamps: Vec::new(), glow_cull: Vec::new(), glow_signal: Vec::new(), glow_gfx: Vec::new(), glow_boxes: Vec::new(), light_grid: HashMap::new(), models: Vec::new(), inst_buf: None, cells: HashMap::new(), instances: 0, insts: Vec::new(), colliders: Vec::new(), gas_stations: Vec::new(), col_grid: HashMap::new(), debris: Vec::new(), hits: Vec::new(), scrapes: Vec::new(), deflects: Vec::new(), fx: Vec::new(), defl_done: Default::default(), knocked: 0, placed: HashMap::new(), rng: 12345, level_on: false, level_map: None, moving: HashMap::new(), between: HashMap::new(), between_tick: 0, between_log: std::env::var_os("MCLA_DRAW_STEPS").map(|_| Vec::new()), heads: Vec::new(), signals: Default::default(), race_models: HashMap::new(), race_buf: None, race_runs: Vec::new(), barriers: Vec::new(), barrier_buf: None, barrier_on: 0, emitters: Vec::new(), trash: Vec::new(), anim_pieces: Vec::new(), anim_buf: None, anim_insts: Vec::new(), anim_bounds: Vec::new(), anim_model: Vec::new() }
     }
 
     pub fn load(gpu: &mut Gpu, world: &mut World, data_dir: &str) -> Props {
@@ -922,6 +944,34 @@ impl Props {
             }
             m
         };
+        // the animated props (crate::propanim: the level's types that keep a cache entry and play an animation): their meshes
+        // cut by bone - each vertex is bound to one bone, at rest in the type's frame -, each bone's triangles a prop of
+        // its own (an offset of its own too: `by_off` must find the whole prop). MCLA_PROP_ANIM_OFF=1: they stand, as before.
+        let loose_types = world.collider.loose.clone();
+        let mut anim_split: HashMap<usize, Vec<(u16, usize)>> = HashMap::new();
+        if let Some(lw) = loose_types.as_deref().filter(|_| std::env::var_os("MCLA_PROP_ANIM_OFF").is_none()) {
+            for t in lw.types.iter().filter(|t| t.keeps_entry && !t.anim_events.is_empty()) {
+                let Some(sk) = t.skeleton.as_ref() else { continue };
+                let Some(pi) = all.iter().position(|p| p.off == t.off) else { continue };
+                let mut pieces = Vec::new();
+                for b in 0..sk.bones.len() as u16 {
+                    let meshes: Vec<(mcla_formats::rage::geometry::Mesh, u16)> = all[pi].meshes.iter().filter_map(|(m, si)| {
+                        let tris: Vec<usize> = (0..m.indices.len() / 3).filter(|&k| m.vertex_bone(m.indices[k * 3] as usize).unwrap_or(0) == b).collect();
+                        (!tris.is_empty()).then(|| (m.subset(&tris), *si))
+                    }).collect();
+                    if meshes.is_empty() {
+                        continue;
+                    }
+                    let p = &all[pi];
+                    let piece = mcla_formats::rage::props::Prop { off: usize::MAX - all.len(), name: format!("{}#b{b}", p.name), hash: p.hash, meshes, lod1: Vec::new(), shaders: p.shaders.clone(), min: p.min, max: p.max, center: p.center, radius: p.radius, mass: 0.0, parts: Vec::new(), locators: Vec::new(), obstacle: p.obstacle };
+                    all.push(piece);
+                    pieces.push((b, all.len() - 1));
+                }
+                anim_split.insert(pi, pieces);
+            }
+        }
+        // (the whole prop's model -> its pieces' (bone, model, box at rest))
+        let mut anim_of: HashMap<usize, Vec<(u16, usize, Vec3, Vec3)>> = HashMap::new();
         let mut hedge_low: HashMap<usize, usize> = HashMap::new();
         let by_name: HashMap<String, usize> = all.iter().enumerate().map(|(i, p)| (p.name.to_ascii_lowercase(), i)).collect();
         let foliage = parse_foliage(&fres);
@@ -1272,6 +1322,21 @@ impl Props {
                 }
                 continue;
             };
+            if let Some(pieces) = anim_split.get(&pi).filter(|_| !anim_of.contains_key(&mi)) {
+                let mut v = Vec::new();
+                for &(b, ppi) in pieces {
+                    if let Some(pm) = model_for(gpu, world, &mut models, ppi) {
+                        let (mut mn, mut mx) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
+                        for (m, _) in &all[ppi].meshes {
+                            let (a, c) = m.bbox();
+                            mn = mn.min(a);
+                            mx = mx.max(c);
+                        }
+                        v.push((b, pm, mn, mx));
+                    }
+                }
+                anim_of.insert(mi, v);
+            }
             let cell = if models[mi].reach(1.0, FOV_REST, Lod::ORIGINAL).1 > NEAR_DIST { far_cell_of(it.pos) } else { cell_of(it.pos) };
             per_model.entry(mi).or_default().entry(cell).or_default().push(Inst { pos_scale: [it.pos.x, it.pos.y, it.pos.z, 1.0], rot_tint: [it.rot.x, it.rot.y, it.rot.z, it.rot.w], fill: crate::fillmap::prop(it.pos.x, it.pos.z), ..Inst::NONE });
             n_static += 1;
@@ -1712,7 +1777,41 @@ impl Props {
             }
         }
         let impostors = impostor::Impostors::new(gpu, data_dir, &mut models, &imp_types, &slot_infos);
-        Props { hedge_low, impostors, signal_glows, glow_buf, glow_count: glows.len() as u32, lights, prop_lamps, glow_lamps, glow_boxes, glow_cull, glow_signal, glow_gfx, light_grid, models, inst_buf, cells, instances: total, insts, colliders, gas_stations, col_grid, debris: Vec::new(), hits: Vec::new(), scrapes: Vec::new(), deflects: Vec::new(), fx: Vec::new(), defl_done: Default::default(), knocked: 0, placed: HashMap::new(), rng: 12345, level_on: false, level_map: None, moving: HashMap::new(), between: HashMap::new(), between_tick: 0, between_log: std::env::var_os("MCLA_DRAW_STEPS").map(|_| Vec::new()), heads, signals, race_models, race_buf: None, race_runs: Vec::new(), barriers, barrier_buf, barrier_on: 0, emitters, trash: load_resource_file(&Path::new(data_dir).join("resources/city/sc/0xad0a8b94.r66")).map(|r| trash_rails(&r)).unwrap_or_default() }
+        // (the animated props' instances: each matched to the level's by its place, as `follow_level` does)
+        let mut anim_pieces: Vec<AnimPiece> = Vec::new();
+        if let Some(lw) = loose_types.as_deref().filter(|_| !anim_of.is_empty()) {
+            let key = |p: Vec3| ((p.x * 20.0).round() as i32, (p.y * 20.0).round() as i32, (p.z * 20.0).round() as i32);
+            // (a place may hold two: the two helicopter_02 stand at one place, each its own time - taken in order)
+            let mut level: HashMap<(i32, i32, i32), std::collections::VecDeque<u32>> = HashMap::new();
+            for (i, (fi, t)) in lw.instances.iter().enumerate() {
+                if lw.types[*t].keeps_entry && !lw.types[*t].anim_events.is_empty() {
+                    level.entry(key(Vec3::from(fi.matrix[3]))).or_default().push_back(i as u32);
+                }
+            }
+            let mut runs: Vec<&Run> = cells.values().flatten().filter(|r| anim_of.contains_key(&r.model)).collect();
+            runs.sort_by_key(|r| r.start);
+            for r in runs {
+                for ii in r.start..r.start + r.count {
+                    let Some(li) = level.get_mut(&key(insts[ii as usize].pos())).and_then(|q| q.pop_front()) else {
+                        log::warn!("props: an animated prop at {:?} is not the level's", insts[ii as usize].pos());
+                        continue;
+                    };
+                    for &(bone, model, min, max) in &anim_of[&r.model] {
+                        anim_pieces.push(AnimPiece { model, whole: r.model, inst: ii, level: li, bone, min, max });
+                    }
+                }
+            }
+            anim_pieces.sort_by_key(|p| (p.level, p.bone));
+            log::info!("props: {} animated props in {} pieces", anim_pieces.iter().map(|p| p.level).collect::<hashbrown::HashSet<_>>().len(), anim_pieces.len());
+        }
+        let mut anim_model = vec![false; models.len()];
+        for p in &anim_pieces {
+            anim_model[p.whole] = true;
+        }
+        let anim_insts: Vec<Inst> = anim_pieces.iter().map(|p| insts[p.inst as usize]).collect();
+        let anim_bounds: Vec<(Vec3, Vec3)> = anim_pieces.iter().map(|p| (insts[p.inst as usize].pos() + p.min, insts[p.inst as usize].pos() + p.max)).collect();
+        let anim_buf = (!anim_insts.is_empty()).then(|| gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("animated props"), contents: bytemuck::cast_slice(&anim_insts), usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST }));
+        Props { hedge_low, impostors, signal_glows, glow_buf, glow_count: glows.len() as u32, lights, prop_lamps, glow_lamps, glow_boxes, glow_cull, glow_signal, glow_gfx, light_grid, models, inst_buf, cells, instances: total, insts, colliders, gas_stations, col_grid, debris: Vec::new(), hits: Vec::new(), scrapes: Vec::new(), deflects: Vec::new(), fx: Vec::new(), defl_done: Default::default(), knocked: 0, placed: HashMap::new(), rng: 12345, level_on: false, level_map: None, moving: HashMap::new(), between: HashMap::new(), between_tick: 0, between_log: std::env::var_os("MCLA_DRAW_STEPS").map(|_| Vec::new()), heads, signals, race_models, race_buf: None, race_runs: Vec::new(), barriers, barrier_buf, barrier_on: 0, emitters, trash: load_resource_file(&Path::new(data_dir).join("resources/city/sc/0xad0a8b94.r66")).map(|r| trash_rails(&r)).unwrap_or_default(), anim_pieces, anim_buf, anim_insts, anim_bounds, anim_model }
     }
 
     /// Keep the effects of the particle props near the camera playing, and the litter on the
@@ -1871,6 +1970,9 @@ impl Props {
                 for dz in -r..=r {
                     let Some(runs) = self.cells.get(&(cell.0 + dx, cell.1 + dz)) else { continue };
                     for run in runs {
+                        if self.anim_model.get(run.model).copied().unwrap_or(false) {
+                            continue;
+                        }
                         let model = &self.models[run.model];
                         let d = dist_to_box(cam, run.min, run.max);
                         let (near, far) = model.reach(run.scale, lens, k);
@@ -1910,6 +2012,59 @@ impl Props {
                 }
             }
         }
+        if let Some(ab) = self.anim_buf.as_ref() {
+            pass.set_vertex_buffer(1, ab.slice(..));
+            for (m, first, count) in self.anim_drawn(cam, frustum, None) {
+                put(pass, m as usize, first, count, draws);
+            }
+        }
+    }
+
+    /// The animated props' pieces in sight: (model, instance, 1), culled by their posed boxes and the whole prop's reach.
+    fn anim_drawn(&self, cam: Vec3, frustum: &Frustum, occluded: Option<&crate::occluder::Selected>) -> Vec<(u32, u32, u32)> {
+        let lens = lens();
+        let k = Lod::now();
+        let mut out = Vec::new();
+        for (i, p) in self.anim_pieces.iter().enumerate() {
+            let (mn, mx) = self.anim_bounds[i];
+            if self.anim_insts[i].pos_scale[3] == 0.0 {
+                continue;
+            }
+            let model = &self.models[p.whole];
+            let (_, far) = model.reach(1.0, lens, k);
+            let far = model.cull_far(far, 1.0, lens, k);
+            if dist_to_box(cam, mn, mx) > far || !frustum.intersects_aabb(mn, mx) || occluded.map_or(false, |o| o.hides_aabb(mn, mx)) {
+                continue;
+            }
+            out.push((p.model as u32, i as u32, 1));
+        }
+        out
+    }
+
+    /// The animated props' pieces at this frame's pose (`LooseState::anims`): each its prop's instance (where the map
+    /// or the level put it) times its bone's pose; hidden with the prop.
+    pub fn update_anims(&mut self, gpu: &Gpu, level: &crate::physics::loose::LooseState) {
+        let Some(buf) = self.anim_buf.as_ref() else { return };
+        for (i, p) in self.anim_pieces.iter().enumerate() {
+            let base = self.insts[p.inst as usize];
+            let delta = level.anims.binary_search_by_key(&p.level, |a| a.inst).ok().and_then(|k| level.anims[k].deltas.get(p.bone as usize)).copied().unwrap_or(glam::Mat4::IDENTITY);
+            let (q, _) = base.rot();
+            let w = glam::Mat4::from_rotation_translation(q, base.pos()) * delta;
+            let (_, r, t) = w.to_scale_rotation_translation();
+            let mut inst = base;
+            inst.pos_scale = [t.x, t.y, t.z, base.pos_scale[3]];
+            inst.rot_tint = [r.x, r.y, r.z, r.w];
+            self.anim_insts[i] = inst;
+            let (mut mn, mut mx) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
+            for c in 0..8 {
+                let v = Vec3::new(if c & 1 == 0 { p.min.x } else { p.max.x }, if c & 2 == 0 { p.min.y } else { p.max.y }, if c & 4 == 0 { p.min.z } else { p.max.z });
+                let wv = w.transform_point3(v);
+                mn = mn.min(wv);
+                mx = mx.max(wv);
+            }
+            self.anim_bounds[i] = (mn, mx);
+        }
+        gpu.queue.write_buffer(buf, 0, bytemuck::cast_slice(&self.anim_insts));
     }
 
     /// Once a frame, before the shadow pass: the shadow impostors' masks that are due.
@@ -1987,6 +2142,9 @@ impl Props {
                 for dz in -r..=r {
                     let Some(runs) = self.cells.get(&(cell.0 + dx, cell.1 + dz)) else { continue };
                     for run in runs {
+                        if self.anim_model.get(run.model).copied().unwrap_or(false) {
+                            continue;
+                        }
                         let model = &self.models[run.model];
                         let d = dist_to_box(cam, run.min, run.max);
                         let (near, far) = model.reach(run.scale, lens, k);
@@ -2084,6 +2242,14 @@ impl Props {
                     pass.draw_indexed(0..b.count, 0, k as u32..k as u32 + 1);
                     *draws += 1;
                 }
+            }
+        }
+        // the animated props' pieces
+        if let Some(ab) = self.anim_buf.as_ref() {
+            let mut out = self.anim_drawn(cam, frustum, occluded);
+            if !out.is_empty() {
+                pass.set_vertex_buffer(1, ab.slice(..));
+                self.draw_ranges(pass, gpu, &mut out, own, glass, &mut pick, draws);
             }
         }
         if pick.1 {

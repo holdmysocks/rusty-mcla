@@ -114,6 +114,51 @@ pub struct Mesh {
 }
 
 impl Mesh {
+    /// The mesh of the triangles `tris` (indices into the triangle list) alone, its vertices those they use, in first-use
+    /// order, with every attribute the mesh has.
+    pub fn subset(&self, tris: &[usize]) -> Mesh {
+        let mut map: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+        let mut order: Vec<usize> = Vec::new();
+        let mut indices = Vec::with_capacity(tris.len() * 3);
+        for &t in tris {
+            for k in 0..3 {
+                let v = self.indices[t * 3 + k];
+                let n = *map.entry(v).or_insert_with(|| {
+                    order.push(v as usize);
+                    order.len() as u32 - 1
+                });
+                indices.push(n);
+            }
+        }
+        fn pick<T: Clone>(a: &[T], order: &[usize]) -> Vec<T> {
+            if a.is_empty() { Vec::new() } else { order.iter().map(|&i| a[i].clone()).collect() }
+        }
+        Mesh {
+            positions: pick(&self.positions, &order),
+            normals: pick(&self.normals, &order),
+            tangents: pick(&self.tangents, &order),
+            uv0: pick(&self.uv0, &order),
+            uv1: pick(&self.uv1, &order),
+            uv2: pick(&self.uv2, &order),
+            colors: pick(&self.colors, &order),
+            colors1: pick(&self.colors1, &order),
+            blend_weights: pick(&self.blend_weights, &order),
+            blend_indices: pick(&self.blend_indices, &order),
+            indices,
+            raw_stride: self.raw_stride,
+            bone_palette: self.bone_palette.clone(),
+        }
+    }
+
+    /// The bone a vertex is bound to: the blend index of its largest weight (through the palette when there is one).
+    pub fn vertex_bone(&self, v: usize) -> Option<u16> {
+        let (w, i) = (self.blend_weights.get(v)?, self.blend_indices.get(v)?);
+        let a = w.to_array();
+        let k = (0..4).max_by(|&x, &y| a[x].total_cmp(&a[y]))?;
+        let b = i[k] as usize;
+        Some(if self.bone_palette.is_empty() { b as u16 } else { *self.bone_palette.get(b)? })
+    }
+
     pub fn bbox(&self) -> (Vec3, Vec3) {
         let mut mn = Vec3::splat(f32::INFINITY);
         let mut mx = Vec3::splat(f32::NEG_INFINITY);

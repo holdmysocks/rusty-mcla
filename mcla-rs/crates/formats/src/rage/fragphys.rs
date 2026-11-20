@@ -134,6 +134,8 @@ pub struct AnimEvent {
 pub struct FragAnim {
     pub name: String,
     pub length: f32,
+    /// the animation itself (read for the types with animation events only)
+    pub clip: Option<super::anim::Animation>,
 }
 
 fn anim_events(rd: &Rd, child: u8, set: Option<usize>, out: &mut Vec<AnimEvent>) {
@@ -195,6 +197,8 @@ pub struct FragType {
     pub anim_events: Vec<AnimEvent>,
     /// the drawable's animations (+0xb4 -> +0xe8, count +0xec)
     pub anims: Vec<FragAnim>,
+    /// an animated type's skeleton (drawable +0x0c), as the clips pose it
+    pub skeleton: Option<super::skeleton::Skeleton>,
     /// the skeleton's bones in the type's frame, as it stands unposed (drawable +0x0c: matrices +0x10, count +0x14,
     /// parents +0x04; rows x y z and the place): what a break event follows
     pub bones: Vec<[[f32; 3]; 4]>,
@@ -354,7 +358,7 @@ pub fn parse_frag_types(res: &Resource) -> Vec<FragType> {
             if let Some(arr) = rd.ptr(dr + 0xe8) {
                 for k in 0..rd.u16(dr + 0xec) as usize {
                     let Some(e) = rd.ptr(arr + 4 * k) else { continue };
-                    t.anims.push(FragAnim { name: rd.ptr(e + 0x0c).map(|o| cstr(&rd, o)).unwrap_or_default(), length: rd.ptr(e).map_or(0.0, |a| rd.f32(a + 0x0c)) });
+                    t.anims.push(FragAnim { name: rd.ptr(e + 0x0c).map(|o| cstr(&rd, o)).unwrap_or_default(), length: rd.ptr(e).map_or(0.0, |a| rd.f32(a + 0x0c)), clip: None });
                 }
             }
         }
@@ -363,6 +367,17 @@ pub fn parse_frag_types(res: &Resource) -> Vec<FragType> {
                 if let Some(ch) = rd.ptr(cp + 4 * k) {
                     anim_events(&rd, k as u8, rd.ptr(ch + 0x98), &mut t.anim_events);
                 }
+            }
+        }
+        // (an animated type: its clips and its skeleton, drawable +0x0c)
+        if !t.anim_events.is_empty() {
+            if let Some(dr) = rd.ptr(fr + 0xb4) {
+                if let Some(arr) = rd.ptr(dr + 0xe8) {
+                    for (k, a) in t.anims.iter_mut().enumerate() {
+                        a.clip = rd.ptr(arr + 4 * k).and_then(|e| rd.ptr(e)).and_then(|o| super::anim::animation_named(&rd, o));
+                    }
+                }
+                t.skeleton = rd.ptr(dr + 0x0c).and_then(|sk| super::skeleton::Skeleton::parse_at(&rd, sk, None));
             }
         }
         t.bones = bones_of(&rd, fr);
