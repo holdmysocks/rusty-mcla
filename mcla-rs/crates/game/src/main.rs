@@ -364,8 +364,14 @@ struct App {
     frame_ms: f32,
     /// the speech clock's real time, each frame's once (`speech::RealClock`)
     speech_real: speech::RealClock,
-    // (MCLA_FRAMELOG=<ms>: the worst-frame log - docs/PERFORMANCE.md)
+    // (MCLA_FRAMELOG=<ms>: the worst-frame log - docs/PERFORMANCE.md; without it, frames over 100 ms all session, at most
+    // FL_CAP lines a minute and a count of the rest - GitHub #61)
     framelog: Option<f32>,
+    fl_capped: bool,
+    fl_win_s: f32,
+    fl_win_n: u32,
+    fl_win_skip: u32,
+    fl_win_worst: f32,
     fl_prev: [f32; 9],
     fl_ui: [f32; 7],
     fl_stream_ms: f32,
@@ -1582,7 +1588,12 @@ impl App {
             fps: 0.0,
             frame_ms: 0.0,
             speech_real: Default::default(),
-            framelog: std::env::var("MCLA_FRAMELOG").ok().map(|v| v.parse::<f32>().unwrap_or(25.0)),
+            framelog: Some(std::env::var("MCLA_FRAMELOG").ok().map_or(100.0, |v| v.parse::<f32>().unwrap_or(25.0))),
+            fl_capped: std::env::var_os("MCLA_FRAMELOG").is_none(),
+            fl_win_s: 0.0,
+            fl_win_n: 0,
+            fl_win_skip: 0,
+            fl_win_worst: 0.0,
             fl_prev: [0.0; 9],
             fl_ui: [0.0; 7],
             fl_stream_ms: 0.0,
@@ -10321,7 +10332,26 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         // (MCLA_FRAMELOG=<ms>: a frame whose whole interval passed the limit, with the phases of the frame
         // that took it - the interval of frame N is known when frame N+1 starts)
         if let Some(limit) = self.framelog {
-            if self.frame_ms > limit && self.frame_no > 0 {
+            const FL_CAP: u32 = 20;
+            if self.fl_capped {
+                self.fl_win_s += wall_dt;
+                if self.fl_win_s >= 60.0 {
+                    if self.fl_win_skip > 0 {
+                        log::info!("slowframe: {} more over {:.0} ms in the last minute not listed (worst {:.0} ms)", self.fl_win_skip, limit, self.fl_win_worst);
+                    }
+                    self.fl_win_s = 0.0;
+                    self.fl_win_n = 0;
+                    self.fl_win_skip = 0;
+                    self.fl_win_worst = 0.0;
+                }
+            }
+            let listed = !self.fl_capped || self.fl_win_n < FL_CAP;
+            if self.frame_ms > limit && self.frame_no > 0 && !listed {
+                self.fl_win_skip += 1;
+                self.fl_win_worst = self.fl_win_worst.max(self.frame_ms);
+            }
+            if self.frame_ms > limit && self.frame_no > 0 && listed {
+                self.fl_win_n += 1;
                 let p = self.fl_prev;
                 let u = self.fl_ui;
                 log::info!("slowframe: #{} {:.1} ms (limit {:.0}) | ticks {:.0} sim {:.2} (streaming {:.2}) prep {:.2} acquire {:.2} ui {:.2} (run {:.2} tessellate {:.2} textures {:.2} movies {:.2} buffers {:.2}) passes {:.2} submit+present {:.2} | loaded {} pending {} draws {}",

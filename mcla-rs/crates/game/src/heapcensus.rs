@@ -25,7 +25,8 @@ static LAST: AtomicU64 = AtomicU64::new(0);
 static BASE: AtomicUsize = AtomicUsize::new(0);
 static SAMPLE: AtomicUsize = AtomicUsize::new(1);
 const FRAMES: usize = 24;
-const TOP: usize = 25;
+/// the sites a report lists (`MCLA_HEAP_CENSUS=<s>,<min KB>,<N>,<sites>`; default 25)
+static TOP: AtomicUsize = AtomicUsize::new(25);
 /// the size classes' upper bounds (bytes) of the `all:` line; the last class is everything larger
 const CLASS: [usize; 5] = [64, 256, 1024, 16 << 10, 256 << 10];
 static CLASS_LIVE: [AtomicI64; 6] = [const { AtomicI64::new(0) }; 6];
@@ -250,6 +251,7 @@ pub fn init() {
     let every = it.next().and_then(|s| s.parse::<u64>().ok()).unwrap_or(60).max(1);
     let min_kb = it.next().and_then(|s| s.parse::<usize>().ok()).unwrap_or(1024);
     let sample = it.next().and_then(|s| s.parse::<usize>().ok()).unwrap_or(1).max(1);
+    TOP.store(it.next().and_then(|s| s.parse::<usize>().ok()).unwrap_or(25).max(1), Relaxed);
     EVERY.store(every, Relaxed);
     SAMPLE.store(sample, Relaxed);
     MIN.store(min_kb << 10, Relaxed);
@@ -281,7 +283,7 @@ pub fn tick() {
             .map(|(h, s)| (s.live, s.blocks, s.made, *h, s.frames[..s.n].iter().map(|f| format!("{f:x}")).collect::<Vec<_>>().join(",")))
             .collect();
         v.sort_unstable_by(|a, b| b.0.cmp(&a.0));
-        v.truncate(TOP);
+        v.truncate(TOP.load(Relaxed));
         (st.sites.values().map(|s| s.live).sum::<usize>(), st.blocks.values().map(|b| b.2).sum::<usize>(), st.sites.len(), v)
     }) else {
         return;
