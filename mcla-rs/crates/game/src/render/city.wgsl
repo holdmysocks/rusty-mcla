@@ -5385,7 +5385,14 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
         // world::blended_bucket; MCLA_SIGN_BLEND_OLD=1: opaque as before)
         if (mat.blend == 1u) {
             if (albedo.a <= 0.0) { discard; }
-            alpha = albedo.a;
+            // (the scene target's exponent bias 4 multiplies the exported alpha by 16 as well; the shop signs' program
+            // undoes it - x gInvColorExpBias, 1/16 - but the neon's does not, and the blend takes the source factor
+            // unclamped: 16 a. Where a > 1/16 the wall under the tube is subtracted - the tube's black edges and,
+            // at noon, its cyan; work/lighting-trails/neonblend tube.py: tube pixels' mean, noon 16.6 39.3 40.5 vs
+            // the original's 17.4 39.7 41.2. Diagnostics 873: clamped to 1; 874: alpha a as before.)
+            alpha = albedo.a * 16.0;
+            if (g.params.w > 872.5 && g.params.w < 873.5) { alpha = clamp(alpha, 0.0, 1.0); }
+            if (g.params.w > 873.5 && g.params.w < 874.5) { alpha = albedo.a; }
             amb_keep_a = true;
         }
     } else if (mat.mode == 24u) {
