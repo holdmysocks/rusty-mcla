@@ -802,6 +802,10 @@ pub struct LooseState {
     pool_frame: u32,
     pool_slot: u64,
     viewer: Option<[f32; 4]>,
+    /// the start times the props' animation events took when their cache entry was last given (`give_anim_starts`,
+    /// F-55624): (instance, time), instances in the order given, each event of each matching animation once. Kept for
+    /// the animation's playback, which the port does not have yet (the oil pumps, planes, Ferris wheel stand)
+    pub anim_starts: Vec<(u32, f32)>,
     /// the prop instances F-74663 took out of the level when the pool took their entry (+80 bit 0x20: not met, not drawn,
     /// F-92987) until the whole city is reset (`reset_props`)
     pub out: std::collections::BTreeSet<u32>,
@@ -1144,6 +1148,21 @@ fn sweep_polygon(core: &Core, margin: f32, cg: Vec3, now: &[Vec3; 4], last: &[Ve
     let la = inv(&[now[0], now[1], now[2], pa], r.on_a - pa);
     let (on_a, on_b) = (xf(&now, la), r.on_b);
     Some(Nearest { on_a, on_b, distance: 0.0 - dot3(r.normal, on_b - on_a), ..r })
+}
+
+/// F-55624's start time of an animation event on an animation of `length` s: the event's start, or - its random byte set -
+/// `start + (top - start) x u` with u the 23-bit draw (`draw`, G2), top the event's end when start <= end < length, else
+/// the length; a start past the length plays from the length (the original logs it).
+pub fn anim_start_time(e: &mcla_formats::rage::fragphys::AnimEvent, length: f32, mut draw: impl FnMut() -> f32) -> f32 {
+    let mut time = e.start;
+    if e.random {
+        let top = if !(e.end < e.start) && e.end < length { e.end } else { length };
+        time = (top - e.start) * draw() + e.start;
+    }
+    if length < e.start {
+        time = length;
+    }
+    time
 }
 
 impl LooseState {
@@ -5213,6 +5232,30 @@ impl LooseState {
         self.remove_objs(&gone);
     }
 
+    /// Every prop in the level that holds a cache entry for good gets it anew (F-44697 -> F-95132 -> F-71690 -> F-80348):
+    /// the entry starts its children's always-on event sets (F-68984), and each animation event's start (F-55624) draws
+    /// the shared generator G2 once for every animation of its type of that name when its random byte is set. In the
+    /// level's instance order (the prop resource's list, the file's). The original does this at the pool sweep and at
+    /// each instance's reset of PropManager_ResetProps (`reset_props`) and at each prop's insert of the replay start's
+    /// seed (F-52672 -> F-30607); recording r2 (docs/reference/cameras/g2_draw_order_rec.md): 33 draws each time.
+    pub fn give_anim_starts(&mut self, world: &LooseWorld) {
+        self.anim_starts.clear();
+        let mut g2 = crate::brain::rng();
+        for (i, (_, ty)) in world.instances.iter().enumerate() {
+            let t = &world.types[*ty];
+            if !t.keeps_entry {
+                continue;
+            }
+            for e in &t.anim_events {
+                // (the names compared without case, F-40755, ASCII A-Z folded: the Ferris wheel's event says "Cycle")
+                for a in t.anims.iter().filter(|a| a.name.eq_ignore_ascii_case(&e.anim)) {
+                    let time = anim_start_time(e, a.length, || g2.float());
+                    self.anim_starts.push((i as u32, time));
+                }
+            }
+        }
+    }
+
     /// The whole city's props as new (PropManager_ResetProps, F-27147 -> F-87948; GitHub #48): first the fragment cache's
 
     /// sweep (F-48442 -> F-86846: every entry of the pool's used list released, F-74663 - the teardown takes a broken-off
@@ -5223,6 +5266,10 @@ impl LooseState {
     /// place in the list; the pairs that name one of them go (the next step meets them anew). The torn bumpers (`pieces`:
     /// a phInst of their own, no cache entry) are not the cache's and stay. Returns (props reset, pieces gone).
     pub fn reset_props(&mut self, world: &LooseWorld) -> (usize, usize) {
+        // (the sweep gives every kept entry anew, F-86846, then each instance's reset (the resource's slot 3, F-70450 -> F-79581)
+        // releases it and gives it again: the animation events start twice)
+        self.give_anim_starts(world);
+        self.give_anim_starts(world);
         let named = |s: &LooseState, o: usize| s.pieces.iter().any(|p| p.obj == o) || s.extras.iter().any(|e| e.obj == o) || s.lead == Some(o) || s.merged.contains(&o);
         let mut changed = vec![false; self.objs.len()];
         let mut gone = vec![false; self.objs.len()];
@@ -6548,6 +6595,28 @@ mod piece_tests {
         let again = s.obj_of(&world, 1);
         assert_eq!(again, 2);
         assert_eq!(format!("{:?}", s.objs[2]), before);
+    }
+
+    /// F-55624's start time of a prop's animation event (the cases of the eight animated types' numbers).
+    #[test]
+    fn anim_start_time_rule() {
+        use mcla_formats::rage::fragphys::AnimEvent;
+        let ev = |start, end, random| AnimEvent { child: 0, anim: "cycle".into(), rate: 0.5, start, end, random };
+        // (end -1 < start: the range is the animation's length; the oil pump's 1.9666667 s)
+        assert_eq!(anim_start_time(&ev(0.0, -1.0, true), 1.9666667, || 0.5), 1.9666667 * 0.5);
+        // (start <= end < length: up to the end; the gas-station ball's end 120 is past its 4 s, so its length)
+        assert_eq!(anim_start_time(&ev(1.0, 3.0, true), 4.0, || 0.25), 1.5);
+        assert_eq!(anim_start_time(&ev(0.0, 120.0, true), 4.0, || 0.25), 1.0);
+        // (no random byte: the start, no draw; a start past the length: the length)
+        assert_eq!(anim_start_time(&ev(2.0, -1.0, false), 4.0, || panic!()), 2.0);
+        assert_eq!(anim_start_time(&ev(5.0, -1.0, false), 4.0, || panic!()), 4.0);
+        // (the draw: (lo & 0x7FFFFF) x 2^-23 of G2's next step, scaled by the range in one rounding as the original's
+        // fmuls / fmadds with the power of two)
+        let mut m = crate::vehicles::parked::Mwc::seed(12345);
+        let mut c = m;
+        let x = c.next() & 0x7F_FFFF;
+        let t = anim_start_time(&ev(0.0, -1.0, true), 13.366667, || m.float());
+        assert_eq!(t, ((13.366667f32 * x as f32) as f64 * (1.0 / 8_388_608.0)) as f32);
     }
 
     /// PropManager_ResetProps on the level: a moved, broken prop stands untouched at its file matrix in its place, a piece

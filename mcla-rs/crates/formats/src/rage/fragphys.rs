@@ -110,6 +110,43 @@ pub struct PropEvent {
     pub min_speed: f32,
 }
 
+/// An animation event of a child's always-on set (child +0x98, class 0x680a04): started when the prop's cache entry is
+/// made (F-80348 -> F-68984 -> F-55624), which plays the type's animation of that name from `start`, or - `random`
+/// set - from a time drawn on the shared generator G2 between `start` and `end` (or the animation's length).
+#[derive(Debug, Clone, Default)]
+pub struct AnimEvent {
+    /// the child whose set holds it
+    pub child: u8,
+    /// +0x20: the animation's name (64 bytes)
+    pub anim: String,
+    /// +0x60: its rate (the update steps time by rate / 60, F-85177)
+    pub rate: f32,
+    /// +0x64 / +0x68: the start time and the end of the random range
+    pub start: f32,
+    pub end: f32,
+    /// +0x6c (byte): start at a random time
+    pub random: bool,
+}
+
+/// One animation of a type's drawable (type +0xb4 -> +0xe8 entries, u16 count +0xec): entry +0x0c its name, entry +0
+/// the animation, whose +0x0c is its length.
+#[derive(Debug, Clone, Default)]
+pub struct FragAnim {
+    pub name: String,
+    pub length: f32,
+}
+
+fn anim_events(rd: &Rd, child: u8, set: Option<usize>, out: &mut Vec<AnimEvent>) {
+    let Some(set) = set else { return };
+    let (Some(arr), n) = (rd.ptr(set + 4), rd.u16(set + 8) as usize) else { return };
+    for k in 0..n.min(16) {
+        let Some(e) = rd.ptr(arr + k * 4) else { continue };
+        if rd.vtable(e) == 0x0068_0a04 {
+            out.push(AnimEvent { child, anim: cstr(rd, e + 0x20), rate: rd.f32(e + 0x60), start: rd.f32(e + 0x64), end: rd.f32(e + 0x68), random: rd.u8(e + 0x6c) != 0 });
+        }
+    }
+}
+
 /// The events of an `evtSet` (+04 -> event pointers, +08 u16 count); only the particle effect events.
 fn event_set(rd: &Rd, set: Option<usize>) -> Vec<PropEvent> {
     let mut out = Vec::new();
@@ -154,6 +191,10 @@ pub struct FragType {
     pub damping: [[f32; 3]; 6],
     /// +0x10c: the effects played on every impact report of the prop (closing speed > 0.1)
     pub type_events: Vec<PropEvent>,
+    /// the animation events of the children's always-on sets (+0x98), children in order
+    pub anim_events: Vec<AnimEvent>,
+    /// the drawable's animations (+0xb4 -> +0xe8, count +0xec)
+    pub anims: Vec<FragAnim>,
     /// the skeleton's bones in the type's frame, as it stands unposed (drawable +0x0c: matrices +0x10, count +0x14,
     /// parents +0x04; rows x y z and the place): what a break event follows
     pub bones: Vec<[[f32; 3]; 4]>,
@@ -309,6 +350,21 @@ pub fn parse_frag_types(res: &Resource) -> Vec<FragType> {
             t.damping[k] = v3(&rd, fr + 0x50 + 16 * k);
         }
         t.type_events = event_set(&rd, rd.ptr(fr + 0x10c));
+        if let Some(dr) = rd.ptr(fr + 0xb4) {
+            if let Some(arr) = rd.ptr(dr + 0xe8) {
+                for k in 0..rd.u16(dr + 0xec) as usize {
+                    let Some(e) = rd.ptr(arr + 4 * k) else { continue };
+                    t.anims.push(FragAnim { name: rd.ptr(e + 0x0c).map(|o| cstr(&rd, o)).unwrap_or_default(), length: rd.ptr(e).map_or(0.0, |a| rd.f32(a + 0x0c)) });
+                }
+            }
+        }
+        if let Some(cp) = rd.ptr(fr + 0xd4) {
+            for k in 0..rd.u8(fr + 0x12f) as usize {
+                if let Some(ch) = rd.ptr(cp + 4 * k) {
+                    anim_events(&rd, k as u8, rd.ptr(ch + 0x98), &mut t.anim_events);
+                }
+            }
+        }
         t.bones = bones_of(&rd, fr);
         t.keeps_entry = rd.u8(fr + 0x135) != 0 || rd.u16(fr + 0xdc) != 0 || rd.u32(fr + 0xe0) != 0 || {
             let c = rd.u8(fr + 0x12f) as usize;
@@ -538,6 +594,18 @@ mod event_tests {
         let insts = parse_frag_instances(&res);
         let kept = insts.iter().filter(|i| i.state != 3 && types.iter().find(|t| t.off == i.frag).is_some_and(|t| t.keeps_entry)).count();
         assert_eq!(kept, 102);
+        // the animated props (child 0's always-on set, one "cycle" event each, random start): 33 instances, the 33 draws
+        // of G2 a pass of recording r2 shows (docs/reference/cameras/g2_draw_order_rec.md)
+        let mut draws = 0;
+        for t in types.iter().filter(|t| !t.anim_events.is_empty()) {
+            assert!(t.keeps_entry && t.anim_events.len() == 1 && t.anim_events[0].random && t.anim_events[0].child == 0);
+            let n = insts.iter().filter(|i| i.state != 3 && i.frag == t.off).count();
+            draws += n * t.anims.iter().filter(|a| a.name.eq_ignore_ascii_case(&t.anim_events[0].anim)).count();
+        }
+        assert_eq!(draws, 33);
+        let pump = of("la_prop_oil_pump_01x");
+        assert_eq!((pump.anims[0].name.as_str(), pump.anims[0].length, pump.anim_events[0].rate, pump.anim_events[0].start, pump.anim_events[0].end), ("cycle", 1.9666667, 0.5, 0.0, -1.0));
+        assert_eq!((of("la_prop_farriswheel_01x").anim_events[0].anim.as_str(), of("la_prop_gasstation_ball_01x").anim_events[0].end), ("Cycle", 120.0));
 
     }
 
