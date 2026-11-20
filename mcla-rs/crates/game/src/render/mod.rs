@@ -946,8 +946,8 @@ impl Default for Globals {
 pub const SHORE_PROGRAM: u32 = 0x200;
 /// `mat_bgs` key bit of the sea's unfogged material (`pipeline_sea`)
 pub const SEA_NOFOG: u32 = 0x100;
-/// `mat_bgs` key bit of the shop signs' blended material (CityStoreSign, batch flag 1): `MaterialUniform::_pad[2]` = 1 -
-/// city.wgsl keeps the sign's own alpha and drops only alpha 0 (`world::sign_blend_on`)
+/// `mat_bgs` key bit of the signs' blended material (CityStoreSign, and CityNeon of batch flag 1): `MaterialUniform::_pad[2]`
+/// = 1 - city.wgsl keeps the sign's own alpha and drops only alpha 0 (`world::blended_bucket`)
 pub const SIGN_BLEND: u32 = 0x400;
 
 #[repr(C)]
@@ -2624,8 +2624,7 @@ impl Gpu {
             });
             mat_bgs.insert(mode | SHORE_PROGRAM, bg);
         }
-        {
-            let mode = MatMode::StoreSign as u32;
+        for mode in [MatMode::StoreSign as u32, MatMode::Neon as u32] {
             let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("mat sign blended"),
                 contents: bytemuck::bytes_of(&MaterialUniform { mode, _pad: [0, 0, 1] }),

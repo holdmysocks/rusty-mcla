@@ -544,7 +544,7 @@ struct Material {
     mode: u32,     // see MatMode in render/mod.rs
     nofog: u32,    // 1: no fog laid - the sea where the stencil holds 1 (render/mod.rs `pipeline_sea`)
     shore: u32,    // 1: the surf strip's own draw - the game's programs run on it (render/mod.rs `SHORE_PROGRAM`)
-    blend: u32,    // 1: a shop sign drawn blended (CityStoreSign, batch flag 1) - its own alpha kept, alpha 0 dropped
+    blend: u32,    // 1: a sign of the blended bucket (CityStoreSign; CityNeon of batch flag 1) - its own alpha kept, alpha 0 dropped
 };
 @group(2) @binding(0) var<uniform> mat: Material;
 
@@ -5378,6 +5378,15 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             } else {
                 lit = lit + albedo.rgb * second.rgb * sign_gain;
             }
+        }
+        // (the 24 neon signs of the city with batch flag 1: the original's blended bucket draws them SrcAlpha /
+        // InvSrcAlpha, depth written, alpha test > 0; PSCityNeon and its night program write alpha = the diffuse's
+        // alpha x gLightAmbient.w (1) - day 0aaf66bf1214f205 instruction 23, night 1cb00ddafecb3c88 instruction 65.
+        // world::blended_bucket; MCLA_SIGN_BLEND_OLD=1: opaque as before)
+        if (mat.blend == 1u) {
+            if (albedo.a <= 0.0) { discard; }
+            alpha = albedo.a;
+            amb_keep_a = true;
         }
     } else if (mat.mode == 24u) {
         // PSCityStoreSign: while it is on, the night texture times NightIntensity lies over

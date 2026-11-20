@@ -18088,8 +18088,8 @@ fn draw_sectors<'a>(pass: &mut wgpu::RenderPass<'_>, v: &SectorView<'a>, secs: i
         for b in &sec.batches {
             // (the surf strip: drawn after the sea of its sector, in phase 2 - world.rs `mark_shore`)
             let shore = v.sea_late && b.mode == MatMode::Blend && world::is_shore(&b.shader);
-            // (the shop signs: the original's blended bucket, batch flag 1 - world::sign_blend_on)
-            let sign_bl = b.mode == MatMode::StoreSign && world::sign_blend_on();
+            // (the shop signs and the flag-1 neon signs: the original's blended bucket - world::blended_bucket)
+            let sign_bl = world::blended_bucket(b.mode, b.b1);
             let blend = (matches!(b.mode, MatMode::Blend | MatMode::StoreGlass) || sign_bl) && !shore;
             if blend != (phase == 1) {
                 continue;
@@ -18257,7 +18257,7 @@ fn far_bundles_on() -> bool {
 fn far_bundle(gpu: &Gpu, sec: &world::GpuSector, vb: &world::BufPart, ib: &world::BufPart) -> (Arc<wgpu::RenderBundle>, usize) {
     let cur = render::ms::current();
     let mut key = cur.slot() as u64;
-    for b in sec.batches.iter().filter(|b| !matches!(b.mode, MatMode::Blend | MatMode::StoreGlass) && !(b.mode == MatMode::StoreSign && world::sign_blend_on())) {
+    for b in sec.batches.iter().filter(|b| !matches!(b.mode, MatMode::Blend | MatMode::StoreGlass) && !world::blended_bucket(b.mode, b.b1)) {
         if gpu.pipeline_opaque_mode[b.mode as usize].as_ref().and_then(|p| p.ready(cur)).is_some() {
             key |= 1 << (8 + (b.mode as u64).min(55));
         }
@@ -18291,7 +18291,7 @@ fn far_bundle(gpu: &Gpu, sec: &world::GpuSector, vb: &world::BufPart, ib: &world
     let mut n = 0usize;
     let mut runs: Vec<(u32, u32)> = Vec::new();
     for b in &sec.batches {
-        if matches!(b.mode, MatMode::Blend | MatMode::StoreGlass) || (b.mode == MatMode::StoreSign && world::sign_blend_on()) {
+        if matches!(b.mode, MatMode::Blend | MatMode::StoreGlass) || world::blended_bucket(b.mode, b.b1) {
             continue;
         }
         if let Some(o) = sec.obj.as_ref() {

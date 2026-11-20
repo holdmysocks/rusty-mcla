@@ -124,7 +124,7 @@ struct GeoItem {
 }
 
 fn geo_rank(b: &CpuBatch) -> u32 {
-    if b.mode.blended() || (b.mode == MatMode::StoreSign && sign_blend_on()) {
+    if b.mode.blended() || blended_bucket(b.mode, b.b1) {
         2
     } else if shadow_cutout(b.mode) {
         1
@@ -140,7 +140,7 @@ pub fn prepare_geo(batches: Vec<CpuBatch>) -> Geo {
     // blended WITH depth writes in that order, so of two panes one behind the other the first drawn decides
     // what shows - a shop door behind an angled front pane is not drawn, LIGHTING_WORK.md 2026-10-15)
     // (the blended shop signs go in the same run, in batch order between the panes, as the original's blended bucket)
-    src.sort_by_key(|(_, b)| if b.mode == MatMode::StoreGlass || (b.mode == MatMode::StoreSign && sign_blend_on()) { (geo_rank(b), MatMode::StoreGlass as u32, Default::default(), Default::default()) } else { (geo_rank(b), b.mode as u32, b.diffuse, b.second) });
+    src.sort_by_key(|(_, b)| if b.mode == MatMode::StoreGlass || blended_bucket(b.mode, b.b1) { (geo_rank(b), MatMode::StoreGlass as u32, Default::default(), Default::default()) } else { (geo_rank(b), b.mode as u32, b.diffuse, b.second) });
     let mut verts: Vec<Vertex> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
     let mut items = Vec::with_capacity(src.len());
@@ -192,6 +192,8 @@ pub struct CpuBatch {
     /// file's own sphere table has them -, the file's batch flags). The cars' environment map
     /// draws a sector batch by batch (main.rs, "environment, paraboloid half"). Empty: one run.
     pub parts: Vec<Part>,
+    /// a sector batch of the original's blended bucket (the file's batch flag 1) - see `blended_bucket`
+    pub b1: bool,
 }
 
 /// One batch of a sector file inside a merged batch: (first index, count, the centre and half diagonal of its box, the
@@ -349,6 +351,8 @@ pub struct SectorBatch {
     pub max: Vec3,
     /// the sector file's batches inside this range (see `CpuBatch::parts`; first index absolute)
     pub parts: Vec<Part>,
+    /// `CpuBatch::b1`
+    pub b1: bool,
 }
 
 fn fade_freeze() -> bool {
@@ -697,6 +701,13 @@ pub fn note_tex_miss(kind: &str, name: &str) {
 pub fn sign_blend_on() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("MCLA_SIGN_BLEND_OLD").is_none())
+}
+
+/// A sector batch drawn in the blended phase as the original's blended bucket (batch flag 1) draws it: every shop sign
+/// (CityStoreSign) and the 24 neon signs (CityNeon) of the city that carry flag 1 - SrcAlpha / InvSrcAlpha, depth written,
+/// alpha test > 0, the program's alpha kept (city.wgsl `mat.blend`). MCLA_SIGN_BLEND_OLD=1: both opaque, as before.
+pub fn blended_bucket(mode: MatMode, b1: bool) -> bool {
+    sign_blend_on() && (mode == MatMode::StoreSign || (mode == MatMode::Neon && b1))
 }
 
 fn water_old() -> bool {
@@ -1200,7 +1211,7 @@ fn merge_batches(batches: Vec<CpuBatch>) -> Vec<CpuBatch> {
         let c = (b.min + b.max) * 0.5;
         // Both texture identities must be compared. XORing them can merge
         // different terrain layers and bind the first material to both meshes.
-        let key = (b.diffuse, b.second, b.third, b.fourth, b.mode as u32 + if b.interior { 1000 } else { 0 }, (c.x / 128.0).floor() as i32, (c.z / 128.0).floor() as i32);
+        let key = (b.diffuse, b.second, b.third, b.fourth, b.mode as u32 + if b.interior { 1000 } else { 0 } + if b.b1 { 2000 } else { 0 }, (c.x / 128.0).floor() as i32, (c.z / 128.0).floor() as i32);
         match map.get_mut(&key) {
             Some(acc) => {
                 let base = acc.vertices.len() as u32;
@@ -1361,7 +1372,7 @@ pub fn decode_set(id: usize, path: &Path) -> Result<CpuSector> {
             mark_water(&mut vertices, mode);
             mark_pond(&mut vertices, sh, mode);
             mark_shore(&mut vertices, sh, mode);
-            batches.push(CpuBatch { vertices, indices: m.indices.clone(), diffuse, second, third, fourth, mode, min: mn, max: mx, shader: sh.name.clone(), interior: false, parts: Vec::new() });
+            batches.push(CpuBatch { vertices, indices: m.indices.clone(), diffuse, second, third, fourth, mode, min: mn, max: mx, shader: sh.name.clone(), interior: false, parts: Vec::new(), b1: false });
         }
     }
     let batches = merge_batches(batches);
@@ -1491,6 +1502,7 @@ pub fn decode_sector(id: usize, path: &Path) -> Result<CpuSector> {
             shader: sh.name.clone(),
             interior: b.flags & 4 != 0 && !matches!(mode, MatMode::Opaque | MatMode::AlphaTest),
             parts: vec![(0, m.indices.len() as u32, (mn + mx) * 0.5, (mx - mn).length() * 0.5, b.flags, (mx - mn) * 0.5)],
+            b1: b.flags & 1 != 0,
         });
     }
     let batches = merge_batches(batches);
@@ -1593,7 +1605,7 @@ pub fn decode_far(path: &Path, sectors: &[SectorInfo], records: &[SectorRecord])
             mark_shore(&mut vertices, sh, mode);
             // (the geometry's own sphere - F-73936's test, not used in the main view; the draw-list dump prints it)
             let parts = sphere(if gc > 1 { g + 1 } else { 0 }).map_or(Vec::new(), |(c, r)| vec![(0, mesh.indices.len() as u32, c, r, 0, Vec3::ZERO)]);
-            batches.push(CpuBatch { vertices, indices: mesh.indices, diffuse, second, third, fourth, mode, min: mn, max: mx, shader: sh.name.clone(), interior: false, parts });
+            batches.push(CpuBatch { vertices, indices: mesh.indices, diffuse, second, third, fourth, mode, min: mn, max: mx, shader: sh.name.clone(), interior: false, parts, b1: false });
         }
         let batches = merge_batches(batches);
         if batches.is_empty() {
@@ -2516,7 +2528,7 @@ impl World {
                 caster_min = caster_min.min(b.min);
                 caster_max = caster_max.max(b.max);
             }
-            batches.push(SectorBatch { interior: b.interior, shader: b.shader, first, count, bind, mode: b.mode, min: b.min, max: b.max, parts });
+            batches.push(SectorBatch { interior: b.interior, shader: b.shader, first, count, bind, mode: b.mode, min: b.min, max: b.max, parts, b1: b.b1 });
         }
         let mut pool = Vec::new();
         let (vb, ib) = if indices.is_empty() {
@@ -2556,7 +2568,7 @@ mod batch_tests {
             uv1: [0.0; 2], uv2: [0.0; 2], color: [255; 4], color1: [255; 4] };
         CpuBatch { vertices: vec![vertex; 3], indices: vec![0, 1, 2], diffuse: 10,
             second: 20, third, fourth, mode: MatMode::Terrain,
-            min: Vec3::ZERO, max: Vec3::ONE, shader: "CityTerrain".into(), interior: false, parts: Vec::new() }
+            min: Vec3::ZERO, max: Vec3::ONE, shader: "CityTerrain".into(), interior: false, parts: Vec::new(), b1: false }
     }
 
     #[test]
