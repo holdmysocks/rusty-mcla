@@ -1058,6 +1058,10 @@ pub struct VehState {
     /// roll it is heading for, the error of the last frame, frames until it may start again,
     /// and the roll acceleration it asks for
     pub two: i8,
+    /// the front wheel tune's +40 as the last update left it is LeanSteerLimit: the gyro's side (+18) was set going into
+    /// that update or coming out of it (F-53665 writes it while +18 != 0, F-17997's P23 restores it only while +18 == 0,
+    /// and P23 runs ahead of the gyro)
+    two_left: bool,
     pub two_target: f32,
     two_err: f32,
     two_trim: f32,
@@ -1284,7 +1288,7 @@ pub struct VehState {
 
 impl Default for VehState {
     fn default() -> Self {
-        VehState { fluid: None, shaft_speed_in: 0.0, wipe_dir: Vec3::ZERO, set_down: false, prev_up: None, body_exact: None, seen_exact: None, body_now: None, rest_exact: None, body_at_exact: None, sums_gyro: [Vec3::ZERO; 4], gyro_sums_exact: None, com_exact: None, body: None, momentum_exact: None, drift_level: 1.0, wheel_grip: [1.0; 4], hull_kept: Vec::new(), manifolds: Vec::new(), wipe: None, wipe_hit: false, rider_vel: None, rider: None, rider_out: None, rider_job: None, loose: Default::default(), hull_last: None, cell_ball: None, by: BurnTick { exact: false, state_in: 0, held: false, brake_layout: None, cg: None, cg_return: true, launch: None, launch_layout: 0 }, lift_err: 0.0, rev: RevLimit { cut: 0.0, timer: 0.0, on: false, left: 0.0, pad: 0.0 }, last_seen: None, push_turn_left: Vec3::ZERO, deep_count: 0, last_set: false, stuck: 0, stuck_at: Vec3::ZERO, stuck_timer: 0.0, stuck_cool: 0.0, still_timer: 0.0, last_speed: 0.0, drive: 255, engine_w: 100.0, gear: 1, shift_timer: 0.0, gear_change: GearChange::default(), engine_pedal: 0.0, engine_torque: 0.0, engine_roll: 0.0, engine_shake: 0.0, shake_rng: None, engine_auxiliary: 0.0, trans_inhibited: false, hold_gear: None, shift_mod: [1.0; 2], pedal_was: 0.0, hyd: Hydraulics::default(), air: AirRide::default(), two: 0, two_target: 0.0, two_err: 0.0, two_trim: 0.0, two_wait: 0, two_acc: 0.0, g96: 0.0, g100: 0, lean_cg: None, gyro_impulse: Vec3::ZERO, omega: [0.0; 2], diff: [1.0; 2], wheels: [WheelSim::default(); 4], boost_timer: 0.0, steer: 0.0, nitro_timer: 0.0, turn_err: 0.0, turn_force: 0.0, melt: 0.0, sst: super::sst::SsTurbo::default(), lean: 0.0, lean_acc: 0.0, wheelie: 0, wheelie_boost: 0.0, wheelie_pitch: 0.0, wheelie_err: 0.0, wheelie_lift: 0.0, air_roll: 0.0, air_acc: [0.0; 3], torque_mult: 1.0, clutch: true, auto_brake: 0.0, started: false, nitro_level: 0.0, nitro_held: false, nitro_burning: false, nitro_records: 0, nitro_fires: 0, air584: 0.0, air584_before: 0.0, nitro_rest: 0.0, nitro_view: 0.0, nitro_pad: 0.0, nitro_left: false, aero_damp: 1.0, fric_boost: false, grip_h: 1.0, air_time: 0.0, burn_state: 0, burn: 0.0, burn_yaw: 0.0, bump_phase: 0.0, rng: None, gauss_spare: None, last_force: Vec3::ZERO, last_torque: Vec3::ZERO, pulse: None, last_gyro: Vec3::ZERO, cg: [0.0; 2], cg_set: false, bike_vel: Vec3::ZERO, bike_acc: Vec3::ZERO, lean_scale: 0.0, lean_lat: 0.0, lean_target: 0.0, bike_turn: Vec3::ZERO, bike_push: Vec3::ZERO, sss_chassis: 1.0, pad_steer: 0.0, steer132: 0.0, w_then: [0.0; 4], bg: BikeGyro::default(), bike_spin: None, bike_pending: None, sss_chassis_exact: 1.0, way_after: 0, pad: super::pad::PadHeld { pedals: super::pad::Pedals { state: 0, throttle: 0.0, brake: 0.0, way: 1 }, steer_next: 0.0, stick_y: 0.0, stick_next: 0.0, x36: 0.0, x36_next: 0.0, start80: false, start80_next: false, btn40: false, btn40_next: false, second_tick: false, live: false, cruise: super::pad::CruiseHeld { on: false, speed: 0.0, quiet: false }, button: false, handbrake: false, goal: 0.0, stomp: false }, kick_fwd: None, steer_back: 0.0, out_steer: None, grid_reset: false, agro: Default::default(), engine_stopped: false, deact_seen: false, susp: None, live_axle: None }
+        VehState { fluid: None, shaft_speed_in: 0.0, wipe_dir: Vec3::ZERO, set_down: false, prev_up: None, body_exact: None, seen_exact: None, body_now: None, rest_exact: None, body_at_exact: None, sums_gyro: [Vec3::ZERO; 4], gyro_sums_exact: None, com_exact: None, body: None, momentum_exact: None, drift_level: 1.0, wheel_grip: [1.0; 4], hull_kept: Vec::new(), manifolds: Vec::new(), wipe: None, wipe_hit: false, rider_vel: None, rider: None, rider_out: None, rider_job: None, loose: Default::default(), hull_last: None, cell_ball: None, by: BurnTick { exact: false, state_in: 0, held: false, brake_layout: None, cg: None, cg_return: true, launch: None, launch_layout: 0 }, lift_err: 0.0, rev: RevLimit { cut: 0.0, timer: 0.0, on: false, left: 0.0, pad: 0.0 }, last_seen: None, push_turn_left: Vec3::ZERO, deep_count: 0, last_set: false, stuck: 0, stuck_at: Vec3::ZERO, stuck_timer: 0.0, stuck_cool: 0.0, still_timer: 0.0, last_speed: 0.0, drive: 255, engine_w: 100.0, gear: 1, shift_timer: 0.0, gear_change: GearChange::default(), engine_pedal: 0.0, engine_torque: 0.0, engine_roll: 0.0, engine_shake: 0.0, shake_rng: None, engine_auxiliary: 0.0, trans_inhibited: false, hold_gear: None, shift_mod: [1.0; 2], pedal_was: 0.0, hyd: Hydraulics::default(), air: AirRide::default(), two: 0, two_left: false, two_target: 0.0, two_err: 0.0, two_trim: 0.0, two_wait: 0, two_acc: 0.0, g96: 0.0, g100: 0, lean_cg: None, gyro_impulse: Vec3::ZERO, omega: [0.0; 2], diff: [1.0; 2], wheels: [WheelSim::default(); 4], boost_timer: 0.0, steer: 0.0, nitro_timer: 0.0, turn_err: 0.0, turn_force: 0.0, melt: 0.0, sst: super::sst::SsTurbo::default(), lean: 0.0, lean_acc: 0.0, wheelie: 0, wheelie_boost: 0.0, wheelie_pitch: 0.0, wheelie_err: 0.0, wheelie_lift: 0.0, air_roll: 0.0, air_acc: [0.0; 3], torque_mult: 1.0, clutch: true, auto_brake: 0.0, started: false, nitro_level: 0.0, nitro_held: false, nitro_burning: false, nitro_records: 0, nitro_fires: 0, air584: 0.0, air584_before: 0.0, nitro_rest: 0.0, nitro_view: 0.0, nitro_pad: 0.0, nitro_left: false, aero_damp: 1.0, fric_boost: false, grip_h: 1.0, air_time: 0.0, burn_state: 0, burn: 0.0, burn_yaw: 0.0, bump_phase: 0.0, rng: None, gauss_spare: None, last_force: Vec3::ZERO, last_torque: Vec3::ZERO, pulse: None, last_gyro: Vec3::ZERO, cg: [0.0; 2], cg_set: false, bike_vel: Vec3::ZERO, bike_acc: Vec3::ZERO, lean_scale: 0.0, lean_lat: 0.0, lean_target: 0.0, bike_turn: Vec3::ZERO, bike_push: Vec3::ZERO, sss_chassis: 1.0, pad_steer: 0.0, steer132: 0.0, w_then: [0.0; 4], bg: BikeGyro::default(), bike_spin: None, bike_pending: None, sss_chassis_exact: 1.0, way_after: 0, pad: super::pad::PadHeld { pedals: super::pad::Pedals { state: 0, throttle: 0.0, brake: 0.0, way: 1 }, steer_next: 0.0, stick_y: 0.0, stick_next: 0.0, x36: 0.0, x36_next: 0.0, start80: false, start80_next: false, btn40: false, btn40_next: false, second_tick: false, live: false, cruise: super::pad::CruiseHeld { on: false, speed: 0.0, quiet: false }, button: false, handbrake: false, goal: 0.0, stomp: false }, kick_fwd: None, steer_back: 0.0, out_steer: None, grid_reset: false, agro: Default::default(), engine_stopped: false, deact_seen: false, susp: None, live_axle: None }
     }
 }
 
@@ -3514,6 +3518,8 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
     // (the speed the car comes into this tick with - chassis +224, written before the step)
     let speed_in = st.vel.length();
     let air_then = st.airborne_time;
+    // (the gyro's side going into this update: with the side coming out of it, what the tune's +40 is left at)
+    let two_frame_in = vs.two;
     // (the car's up as its last update had it: what the wheels' contacts are weighed against,
     // F-50733 - they are found after the body has moved on, and judged before the car's
     // own matrix follows)
@@ -3961,7 +3967,12 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
             Some(r) => (Vec3::new(r[i][0], r[i][1], r[i][2]), r[i][3], r[i][4]),
             None => (Vec3::new(local.x, local.y - p.susp_rest, local.z), super::exact::pivot_arm(local.x, wt.pivot_offset, wt.width), ram),
         };
-        let angle = super::exact::steer_angle(if front { vs.steer } else { -vs.steer }, rest_at.x, wt.steering_limit, wt.steering_offset);
+        // (F-17997's P14 pushes the steering into the wheels - F-57353: wheel +492 = -(tune +40 x steer) - ahead of its P23,
+        // which puts back the tune's own +40 only while gyro +18 is 0: so the tick after a two-wheel end still steers with
+        // LeanSteerLimit. Recorded gy15 k1584: END B with the stick held, the wheels at the lean limit one more tick.
+        // MCLA_DBG_P14LIMIT: this tick's limit.)
+        let limit = if front && lean_new(vt) && vs.two_left && !dbg_flag("MCLA_DBG_P14LIMIT") { t.gyro.lean_steer_limit } else { wt.steering_limit };
+        let angle = super::exact::steer_angle(if front { vs.steer } else { -vs.steer }, rest_at.x, limit, wt.steering_offset);
         let steer = if exact_rows { -angle } else { steer };
         if exact_rows {
             rebuilt[i] = Some(super::exact::wheel_rebuilt_about(&body_rows, rest_at, pivot_exact, offset_exact, wt.steering_limit != 0.0, angle, t.steer_axis.filter(|_| front).map_or(Vec3::Y, Vec3::from)));
@@ -4541,6 +4552,16 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
             // (and its slide value stays what it was: only a wheel without any contact loses it)
             *ws = WheelSim { comp, comp_rate: rate, bump: ws.bump, bump_phase: ws.bump_phase, bump_height: ws.bump_height, bump_width: ws.bump_width, ground: ws.ground, kept: ws.kept, sink: ws.sink, camber: ws.camber, disp_lat, disp_long, slide: if dbg_flag("MCLA_DBG_OLDTYREIN") { 0.0 } else { ws.slide }, velocity_lat: if dbg_flag("MCLA_DBG_Y5") { 0.0 } else { v_lat }, ..Default::default() };
             if !dbg_flag("MCLA_DBG_ZEROTYRE") {
+                // (the tyre reads the wheel's own +468 / +472, which mcCarTireFric F-67816 has set for every wheel - the
+                // landing frictions while its flag is up, the melt on the driven ones - a hanging wheel too. Recorded gy15
+                // k1607: the rear wheel coming down after the two-wheel end, 28 N, on the landing frictions (3.465 / 3.4126).
+                // MCLA_DBG_HANGFRIC: the tune's own, as before.)
+                let (hang_static, hang_sliding) = if dbg_flag("MCLA_DBG_HANGFRIC") {
+                    (wt.static_fric, wt.sliding_fric)
+                } else {
+                    let (st_f, boosted) = if vs.fric_boost && tire_fric_runs(t) { landing_frictions(wt.static_fric, wt.sliding_fric) } else { (wt.static_fric, wt.sliding_fric) };
+                    (st_f, if vs_melt > 0.0 && powered(i) { fma32(t.tire_fric.spinning_fric - wt.sliding_fric, vs_melt, wt.sliding_fric) } else { boosted })
+                };
                 let k_lat = 2.0 * w_static / wt.disp_limit_lat.max(0.005);
                 let k_long = 2.0 * w_static / wt.disp_limit_long.max(0.005);
                 contacts[i] = Some(TyreFrame {
@@ -4548,7 +4569,7 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
                         radius, spin: 0.0, velocity_lat: v_lat, velocity_long: v_fwd,
                         load: second, surface: surf_grip, spring_lat: k_lat, spring_long: k_long,
                         damper_lat: 2.0 * wt.damp_coef_lat * (k_lat * m_w).sqrt(), damper_long: 2.0 * wt.damp_coef_long * (k_long * m_w).sqrt(), dt,
-                    }, arm, forward: wheel_fwd, lateral: wheel_lat, surf_drag: 0.0, surf_sink: 0.0, mass: m_w, sliding_fric: wt.sliding_fric, static_fric: wt.static_fric, normal: n, point: hit.point, damp: None,
+                    }, arm, forward: wheel_fwd, lateral: wheel_lat, surf_drag: 0.0, surf_sink: 0.0, mass: m_w, sliding_fric: hang_sliding, static_fric: hang_static, normal: n, point: hit.point, damp: None,
                 });
                 if let (true, Some(m), Some(c)) = (second != 0.0, rebuilt[i], contacts[i].as_mut()) {
                     c.forward = Vec3::ZERO - m[2];
@@ -7912,6 +7933,7 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
         let local = attach - Vec3::Y * (p.susp_rest + ram - vs.wheels[physical].comp);
         st.wheels[i].world_pos = st.pos + st.rot * local;
     }
+    vs.two_left = two_frame_in != 0 || vs.two != 0;
 }
 
 /// diagnostics: MCLA_NO_GYRO switches the turn gyro off
@@ -8265,7 +8287,7 @@ struct DamageRun {
 
 pub(super) fn dbg_flag(name: &'static str) -> bool {
     static FLAGS: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
-    FLAGS.get_or_init(|| ["MCLA_DBG_R1", "MCLA_DBG_R2", "MCLA_DBG_R3", "MCLA_DBG_R4", "MCLA_DBG_RB2", "MCLA_DBG_RB3", "MCLA_DBG_RB4", "MCLA_DBG_RB5", "MCLA_DBG_RB6", "MCLA_DBG_P1", "MCLA_DBG_P2", "MCLA_DBG_P3", "MCLA_DBG_RA1", "MCLA_DBG_RA2", "MCLA_DBG_RA3", "MCLA_DBG_RA4", "MCLA_DBG_RA5", "MCLA_DBG_RA6", "MCLA_DBG_RA7", "MCLA_DBG_RA8", "MCLA_DBG_RA9", "MCLA_DBG_RB1", "MCLA_DBG_RD1", "MCLA_DBG_A1", "MCLA_DBG_A2", "MCLA_DBG_A3", "MCLA_DBG_A4", "MCLA_DBG_A6", "MCLA_DBG_A7", "MCLA_DBG_A8", "MCLA_DBG_A9", "MCLA_DBG_Z1", "MCLA_DBG_Z2", "MCLA_DBG_HIT", "MCLA_DBG_OLDCOLLIDE", "MCLA_DBG_NORESOLVE", "MCLA_DBG_NODAMP", "MCLA_DBG_NOROLLBAR", "MCLA_DBG_YAW", "MCLA_DBG_SPHERES", "MCLA_DBG_RAYWHEEL", "MCLA_DBG_HANG", "MCLA_DBG_GYRO", "MCLA_DBG_NOBOX", "MCLA_DBG_NOSTEEP", "MCLA_DBG_NOCAMBER", "MCLA_DBG_NOLEANPROBE", "MCLA_DBG_OLDWHEEL", "MCLA_DBG_ZEROTYRE", "MCLA_DBG_TERMS", "MCLA_DBG_SUBDAMP", "MCLA_DBG_NOFREEZE", "MCLA_DBG_STEEPWHEEL", "MCLA_DBG_NOPIVOT", "MCLA_DBG_NOSETTLE", "MCLA_DBG_NOSTUCK", "MCLA_DBG_STUCK", "MCLA_DBG_SYMSOLVE", "MCLA_DBG_OLDWHEELPOSE", "MCLA_DBG_OLDSUSP", "MCLA_DBG_OLDROWS", "MCLA_DBG_OLDTYREIN", "MCLA_DBG_OLDSUMS", "MCLA_DBG_OLDSTEP", "MCLA_DBG_OLDPOSE", "MCLA_DBG_AXLEORDER", "MCLA_DBG_CALLS", "MCLA_DBG_OLDGYRO", "MCLA_DBG_NOBOTTOM", "MCLA_DBG_WHEELORDER", "MCLA_DBG_OLDMELT", "MCLA_DBG_OLDHANG", "MCLA_DBG_GEAR", "MCLA_DBG_OLDORDER", "MCLA_DBG_OLDSTEER", "MCLA_DBG_OLDDOWN", "MCLA_DBG_OLDDRIFT", "MCLA_DBG_NOENGINEROLL", "MCLA_DBG_OLDAUTOBRAKE", "MCLA_DBG_Y1", "MCLA_DBG_Y2", "MCLA_DBG_Y3", "MCLA_DBG_Y4", "MCLA_DBG_Y5", "MCLA_DBG_Y6", "MCLA_DBG_Y7", "MCLA_DBG_Y8", "MCLA_DBG_Y9", "MCLA_DBG_TRACE", "MCLA_DBG_WORLDHIT", "MCLA_DBG_NOWORLDHIT", "MCLA_DBG_SCRAPEPOST", "MCLA_DBG_STUCKROWS", "MCLA_DBG_HOLDLATE", "MCLA_DBG_BURNYAW0", "MCLA_DBG_TOUCHMOVE0", "MCLA_DBG_STOMPCHASSIS", "MCLA_DBG_KICKLATE", "MCLA_DBG_LEANTHR0", "MCLA_DBG_LEANSTEER0", "MCLA_DBG_BLENDOLD", "MCLA_DBG_TWOSHIFT", "MCLA_DBG_TWOBTNRAW", "MCLA_DBG_START80LEVEL"].into_iter().filter(|n| std::env::var(n).is_ok()).collect()).contains(&name)
+    FLAGS.get_or_init(|| ["MCLA_DBG_R1", "MCLA_DBG_R2", "MCLA_DBG_R3", "MCLA_DBG_R4", "MCLA_DBG_RB2", "MCLA_DBG_RB3", "MCLA_DBG_RB4", "MCLA_DBG_RB5", "MCLA_DBG_RB6", "MCLA_DBG_P1", "MCLA_DBG_P2", "MCLA_DBG_P3", "MCLA_DBG_RA1", "MCLA_DBG_RA2", "MCLA_DBG_RA3", "MCLA_DBG_RA4", "MCLA_DBG_RA5", "MCLA_DBG_RA6", "MCLA_DBG_RA7", "MCLA_DBG_RA8", "MCLA_DBG_RA9", "MCLA_DBG_RB1", "MCLA_DBG_RD1", "MCLA_DBG_A1", "MCLA_DBG_A2", "MCLA_DBG_A3", "MCLA_DBG_A4", "MCLA_DBG_A6", "MCLA_DBG_A7", "MCLA_DBG_A8", "MCLA_DBG_A9", "MCLA_DBG_Z1", "MCLA_DBG_Z2", "MCLA_DBG_HIT", "MCLA_DBG_OLDCOLLIDE", "MCLA_DBG_NORESOLVE", "MCLA_DBG_NODAMP", "MCLA_DBG_NOROLLBAR", "MCLA_DBG_YAW", "MCLA_DBG_SPHERES", "MCLA_DBG_RAYWHEEL", "MCLA_DBG_HANG", "MCLA_DBG_GYRO", "MCLA_DBG_NOBOX", "MCLA_DBG_NOSTEEP", "MCLA_DBG_NOCAMBER", "MCLA_DBG_NOLEANPROBE", "MCLA_DBG_OLDWHEEL", "MCLA_DBG_ZEROTYRE", "MCLA_DBG_TERMS", "MCLA_DBG_SUBDAMP", "MCLA_DBG_NOFREEZE", "MCLA_DBG_STEEPWHEEL", "MCLA_DBG_NOPIVOT", "MCLA_DBG_NOSETTLE", "MCLA_DBG_NOSTUCK", "MCLA_DBG_STUCK", "MCLA_DBG_SYMSOLVE", "MCLA_DBG_OLDWHEELPOSE", "MCLA_DBG_OLDSUSP", "MCLA_DBG_OLDROWS", "MCLA_DBG_OLDTYREIN", "MCLA_DBG_OLDSUMS", "MCLA_DBG_OLDSTEP", "MCLA_DBG_OLDPOSE", "MCLA_DBG_AXLEORDER", "MCLA_DBG_CALLS", "MCLA_DBG_OLDGYRO", "MCLA_DBG_NOBOTTOM", "MCLA_DBG_WHEELORDER", "MCLA_DBG_OLDMELT", "MCLA_DBG_OLDHANG", "MCLA_DBG_GEAR", "MCLA_DBG_OLDORDER", "MCLA_DBG_OLDSTEER", "MCLA_DBG_OLDDOWN", "MCLA_DBG_OLDDRIFT", "MCLA_DBG_NOENGINEROLL", "MCLA_DBG_OLDAUTOBRAKE", "MCLA_DBG_Y1", "MCLA_DBG_Y2", "MCLA_DBG_Y3", "MCLA_DBG_Y4", "MCLA_DBG_Y5", "MCLA_DBG_Y6", "MCLA_DBG_Y7", "MCLA_DBG_Y8", "MCLA_DBG_Y9", "MCLA_DBG_TRACE", "MCLA_DBG_WORLDHIT", "MCLA_DBG_NOWORLDHIT", "MCLA_DBG_SCRAPEPOST", "MCLA_DBG_STUCKROWS", "MCLA_DBG_HOLDLATE", "MCLA_DBG_BURNYAW0", "MCLA_DBG_TOUCHMOVE0", "MCLA_DBG_STOMPCHASSIS", "MCLA_DBG_KICKLATE", "MCLA_DBG_LEANTHR0", "MCLA_DBG_LEANSTEER0", "MCLA_DBG_BLENDOLD", "MCLA_DBG_TWOSHIFT", "MCLA_DBG_TWOBTNRAW", "MCLA_DBG_START80LEVEL", "MCLA_DBG_P14LIMIT", "MCLA_DBG_HANGFRIC"].into_iter().filter(|n| std::env::var(n).is_ok()).collect()).contains(&name)
 }
 
 fn dbg_angdrag() -> f32 {
