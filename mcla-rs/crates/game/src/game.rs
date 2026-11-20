@@ -4065,6 +4065,9 @@ impl Game {
             // port's old guess stands: the first half of the career.)
             None => self.mc4_layout_easy().unwrap_or((self.rep as f32 / crate::catalog::MAX_REP as f32) < 0.5),
         };
+        // (DECISIONS.md D61, the user's: a race whose open layout has no script on the disc - hl_ordered_ts_04 - always
+        // runs its easy layout; in the original the open layout cannot start, its starter waits on the missing script)
+        let easy_wanted = easy_wanted || easy_only(&def.id);
         let mut def = def;
         // (a time trial is one lap against the row's target time: `mc4_tt_apply`)
         self.mc4_tt_apply(&mut def);
@@ -17188,6 +17191,26 @@ mod ui_original_tests;
 mod tests {
     use super::Game;
 
+    /// D61: hl_ordered_ts_04 always runs its easy layout, and that layout gives the racers a course (the racing brain):
+    /// the same filter as `start_race_def` (two or more checkpoints, the last within 400 m of the race file's). Every
+    /// other race with an easy layout is not forced.
+    #[test]
+    fn hl_ordered_ts_04_always_gets_its_easy_course() {
+        let data = "D:/MCLA/extracted/cache";
+        if !std::path::Path::new(data).join("tune/race").exists() {
+            return;
+        }
+        let defs = crate::races::load(data);
+        let def = defs.iter().find(|d| d.id.eq_ignore_ascii_case("game/Race/Hills/Ordered/hl_ordered_ts_04")).expect("race");
+        assert!(super::easy_only(&def.id));
+        assert!(!def.easy_id.is_empty());
+        let c = crate::racescript::course(data, &def.easy_id, None).expect("the easy script's course");
+        assert!(c.cps.len() >= 2);
+        let last = *def.checkpoints.last().expect("file checkpoints");
+        assert!(c.cps[c.cps.len() - 1].pos.distance(last) < 400.0);
+        assert_eq!(defs.iter().filter(|d| super::easy_only(&d.id)).count(), 1);
+    }
+
     /// Left by EXIT GARAGE > YES (menu 2, the confirmation, over the top menu), the garage opens again at the
     /// top menu's first row (GitHub #59).
     #[test]
@@ -17758,4 +17781,11 @@ pub fn wager_range(base: i32, d: u32) -> (i32, i32, i32, i32) {
     let t = cut(mid as f32 * -0.8f32) / -20 * 20;
     let step = (mid - t) / 5 / 5 * 5;
     (mid - 5 * step, mid + 5 * step, mid, step)
+}
+
+/// DECISIONS.md D61 (user, 2026-11-19): the races that always run their easy layout. `hl_ordered_ts_04` is the only one
+/// of the 227 races whose open layout has no script on the disc; in the original its starter (RaceWrapper 0x125a,
+/// the series and tournament cores alike) waits forever on START_NEW_SCRIPT_WITH_ARGS, so that layout never runs.
+pub fn easy_only(race_id: &str) -> bool {
+    race_id.eq_ignore_ascii_case("game/Race/Hills/Ordered/hl_ordered_ts_04")
 }
