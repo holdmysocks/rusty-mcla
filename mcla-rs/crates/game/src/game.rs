@@ -1122,6 +1122,12 @@ pub struct Game {
     /// The box is a state chart's UIMessageBox (`open_message_box`), with its data as F-65053 stores them: the
     /// prompt strip F-90208 goes by their prompt mode (`box_prompts`)
     pub box_chart: Option<crate::flash_ui::BoxAttrs>,
+    /// The box's drawing layer: (its number, a box was up last frame). Each box that comes up gets a new layer
+    /// (`box_layer_id`), new to egui's list and so above the menus' layers, as the original's popup scene is
+    /// (#62): egui puts the layers that ask to be on top after the rest but keeps their order among themselves,
+    /// so one layer kept from box to box fell under the garage's (`flash_garage`), which asks every frame, after
+    /// the first box had gone - the later boxes took the input unseen.
+    pub box_layer: (u32, bool),
     /// the cheat page's confirm box is up (F-71949 opened it: the page's close was asked with a cheat on that the
     /// gate F-68910 counts); its answer goes to F-12731 - `message_box_ui`
     pub cheat_box: bool,
@@ -1810,6 +1816,7 @@ impl Game {
             message_box: None,
             box_back_only: false,
             box_chart: None,
+            box_layer: (0, false),
             cheat_box: false,
             arcade_info: None,
             nav_busy: false,
@@ -13690,6 +13697,10 @@ impl Game {
             self.box_page = self.message_box.is_some().then(|| MenuPage { prompts: vec![(st("prompt_accept").to_uppercase(), ICON_A), (st("prompt_back").to_uppercase(), crate::flash_ui::ICON_B)], list_max: 6, ..page.clone() });
             return out;
         }
+        if self.message_box.is_some() && !self.box_layer.1 {
+            self.box_layer.0 = self.box_layer.0.wrapping_add(1);
+        }
+        self.box_layer.1 = self.message_box.is_some();
         if let Some(fp) = self.flash_popup.as_mut() {
             if self.message_box.is_some() {
                 fp.show(&page);
@@ -13697,12 +13708,17 @@ impl Game {
                 fp.hide();
             }
             fp.movie.player.update(ctx.input(|i| i.stable_dt).min(0.1));
-            let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("flash_popup"));
+            let layer = box_layer_id(self.box_layer.0);
             ctx.move_to_top(layer);
             fp.movie.paint(ctx, &ctx.layer_painter(layer));
         }
         out
     }
+}
+
+/// The message box's layer: one per box that comes up (`Game::box_layer`).
+fn box_layer_id(n: u32) -> egui::LayerId {
+    egui::LayerId::new(egui::Order::Foreground, egui::Id::new(("flash_popup", n)))
 }
 
 impl Game {
@@ -17220,6 +17236,36 @@ mod tests {
 
     /// Left by EXIT GARAGE > YES (menu 2, the confirmation, over the top menu), the garage opens again at the
     /// top menu's first row (GitHub #59).
+    /// #62: the frame's order - the box's layer painted, then the garage's, each asking for the top - with a
+    /// box, none, and a box again. With one layer for every box the second fell under the garage; with a new
+    /// layer for each it is above the garage both times.
+    #[test]
+    fn every_box_is_drawn_above_the_garage() {
+        let ctx = egui::Context::default();
+        let garage = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("flash_garage"));
+        let mut frame = |boxed: Option<egui::LayerId>| {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                if let Some(l) = boxed {
+                    ctx.move_to_top(l);
+                }
+                ctx.move_to_top(garage);
+            });
+            boxed.map(|l| {
+                let order: Vec<egui::LayerId> = ctx.memory(|m| m.layer_ids().collect());
+                order.iter().position(|x| *x == l) > order.iter().position(|x| *x == garage)
+            })
+        };
+        frame(None);
+        let one = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("one_layer"));
+        assert_eq!(frame(Some(one)), Some(true));
+        frame(None);
+        // (the old way: the same layer again is under the garage)
+        assert_eq!(frame(Some(one)), Some(false));
+        assert_eq!(frame(Some(crate::game::box_layer_id(1))), Some(true));
+        frame(None);
+        assert_eq!(frame(Some(crate::game::box_layer_id(2))), Some(true));
+    }
+
     #[test]
     fn the_garage_opens_at_the_top_menu_again() {
         let mut g = Game::new(vec![std::path::PathBuf::from("v").join("vp_nsn_240sx_98")], 0);
