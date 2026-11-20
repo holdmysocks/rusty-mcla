@@ -6275,17 +6275,6 @@ impl App {
                 self.vehicles.player_tint = l.tint;
                 self.vehicles.player_glass = Some(l.glass);
             }
-            crate::ticktimes::mark(crate::ticktimes::S::Traffic);
-            self.vehicles.manage_traffic(&gpu, &world, focus, sim_dt);
-            // (the garage byte, F-86550 after the tracker's frame: on its rise every ambient car and walker goes at once,
-            // and the spawners and unspawners stand until it goes off - `Vehicles::garage_flag`)
-            if self.vehicles.garage_flag(self.game.mode == Mode::Garage) {
-                let n = self.peds.remove_all();
-                log::info!("ambient: garage - {n} walkers taken out");
-            }
-            self.peds.garage_hold = self.vehicles.garage_latch;
-            crate::ticktimes::mark(crate::ticktimes::S::Other);
-            self.vehicles.manage_parked(&gpu, focus);
         }
         // ---- the city's global triggers: rushing under an overpass, a gantry sign, into a tunnel, past a pillar (the
         // whoosh), driving hard through one of the dispatcher's places (a report on the air) ----
@@ -6853,6 +6842,26 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     c.state.vel = if sim_dt > 0.0 && was.distance(pos) < 2.0 { (pos - was) / sim_dt } else { Vec3::ZERO };
                     c.state.ang_vel = Vec3::ZERO;
                 }
+            }
+            // ---- the ambient manager's frame (the Ambients layer, F-60206 -> F-96156): in the original's game tick F-75502
+            // the last layer, after the physics sub-steps and the Player layer (recorded, cameras/g2_draw_order_rec.md) - so
+            // here after the vehicles' update (whose ride of the traffic and parked cars runs after its physics level), from
+            // the focus where the player now stands ----
+            if self.game.mode != Mode::Results {
+                let focus = if self.drive { self.vehicles.player().map(|c| c.state.pos).unwrap_or(self.cam.pos) } else { self.cam.pos };
+                let focus = self.cine.camera().map(|c| c.0).unwrap_or(focus);
+                let focus = self.titlecam.eye().unwrap_or(focus);
+                crate::ticktimes::mark(crate::ticktimes::S::Traffic);
+                self.vehicles.manage_traffic(&gpu, &world, focus, sim_dt);
+                // (the garage byte, F-86550 after the tracker's frame: on its rise every ambient car and walker goes at once,
+                // and the spawners and unspawners stand until it goes off - `Vehicles::garage_flag`)
+                if self.vehicles.garage_flag(self.game.mode == Mode::Garage) {
+                    let n = self.peds.remove_all();
+                    log::info!("ambient: garage - {n} walkers taken out");
+                }
+                self.peds.garage_hold = self.vehicles.garage_latch;
+                crate::ticktimes::mark(crate::ticktimes::S::Other);
+                self.vehicles.manage_parked(&gpu, focus);
             }
             crate::ticktimes::mark(crate::ticktimes::S::Other);
             if std::env::var_os("MCLA_STEER_DBG").is_some() && self.tick_no % 30 == 0 {

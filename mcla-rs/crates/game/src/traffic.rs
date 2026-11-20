@@ -5620,7 +5620,13 @@ impl Vehicles {
         }
         // the cruising ghosts: the request pool's step and their rides (not in `cars`: not drawn, no physics)
         self.ghost_frame(nav, col, dt);
+        // (the driver cars' lanes once a 30 Hz game frame, as the original's F-80793 / F-93055 - the port's ride runs every
+        // 60 Hz tick; with no riding car too: the player's lane does not wait for traffic)
+        let lanes_due = dt > 0.0 && crate::brain::frame_due(&mut self.lane_frame, dt);
         if !self.cars.iter().any(|c| c.rail.is_some()) {
+            if lanes_due {
+                self.update_driver_lanes(nav);
+            }
             return;
         }
         let root = self.data_root.clone();
@@ -5873,7 +5879,9 @@ impl Vehicles {
         self.tow_trailers(col, dt);
         // the rails' car lists and the driver cars' lanes
         self.stamp_rails(nav);
-        self.update_driver_lanes(nav);
+        if lanes_due {
+            self.update_driver_lanes(nav);
+        }
         // the drawn bodies' pitch and roll (every traffic car, trailers too)
         for c in self.cars.iter_mut() {
             let (pos, fwd, right) = (c.state.pos, c.state.forward(), c.state.right());

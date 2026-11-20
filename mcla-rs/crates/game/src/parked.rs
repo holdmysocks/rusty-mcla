@@ -51,15 +51,12 @@ impl Mwc {
     pub fn seed(s: u32) -> Mwc {
         Mwc { lo: s.wrapping_add((s == 0) as u32), carry: s ^ s.rotate_left(16) }
     }
-    /// A script context's generator as its constructor seeds it (F-36420 -> F-82174): with one draw `x & 0x7FFFFFFF` of the
-    /// game's global generator, which the original seeds from the time base at start-up (F-71171).
+    /// A script context's generator as its constructor seeds it (F-36420 -> F-82174 -> F-37317): one draw `x & 0x7FFFFFFF`
+    /// of the shared generator G2 at each script start (recorded: one G2 draw by F-36420 a script start,
+    /// cameras/g2_draw_order_rec.md).
+    #[track_caller]
     pub fn script() -> Mwc {
-        static GLOBAL: std::sync::OnceLock<std::sync::Mutex<Mwc>> = std::sync::OnceLock::new();
-        let g = GLOBAL.get_or_init(|| {
-            let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(1);
-            std::sync::Mutex::new(Mwc::seed(t as u32 ^ (t >> 32) as u32))
-        });
-        let s = g.lock().unwrap_or_else(|e| e.into_inner()).next() & 0x7FFF_FFFF;
+        let s = crate::brain::rng().next() & 0x7FFF_FFFF;
         Mwc::seed(s)
     }
     /// RAND_INT_RANGE (F-32828): hi < lo gives lo and draws nothing; else lo + (x & 0x7FFFFFFF) % (hi - lo + 1) in the

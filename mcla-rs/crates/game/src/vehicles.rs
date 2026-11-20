@@ -1481,6 +1481,9 @@ pub struct Vehicles {
     pub opp_start: i32,
     /// the game frame's clock of that step (`brain::frame_due`)
     pub opp_frame: f32,
+    /// the game frame's clock of the driver cars' lane update (`traffic.rs` `update_driver_lanes`): the original's racers
+    /// run it in their per-frame update F-80793 and the ambient cars in their slot 10 F-93055, once a 30 Hz frame
+    pub lane_frame: f32,
     /// a race is on as the ambient manager's byte +0x64251 has it (F-86550): the current race (F-27863), not a payback
     /// (race type 0 - 4, race +3096), not over (+3773, `$IsRaceFinish`) - set by the game each frame
     pub race_event: bool,
@@ -5527,16 +5530,10 @@ if keep || c.state.pos.distance(center) < 450.0 {
             crate::powerups::apply_ctl(&mut input, self.cars[i].pu_ctl);
             self.cars[i].input = CarInput { ai: input.ai || !self.cars[i].is_player, player: self.cars[i].is_player, lock: self.cars[i].lock, ..input };
         }
-        // (a new traffic or parked car is bound to its pooled instance before its first render update: the activate hook)
-        self.amb_pool_step();
         if self.data_root != world.assets.root {
             self.data_root = world.assets.root.clone();
             crate::render::aniso::init_from(&self.data_root);
         }
-        if let Some(nav) = world.nav.as_ref() {
-            self.ride_traffic(nav, &world.collider, dt.min(1.0 / 30.0));
-        }
-        self.parked_render(dt.min(1.0 / 30.0));
         // ---- one physics level for every car (physics/loose.rs): the loose props and pieces once a tick
         // before and after the cars, each car's step with the cars not yet stepped as bodies of its island
         // (each pair is solved in the earlier car's step) ----
@@ -5997,6 +5994,15 @@ if keep || c.state.pos.distance(center) < 450.0 {
             }
         }
 
+        // ---- the ambient cars' frame after the physics level, as in the original's tick (F-75502: the physics sub-steps,
+        // then the Player layer - the driver cars' lanes - then the Ambients layer, recorded in cameras/g2_draw_order_rec.md):
+        // the rides set the traffic and parked cars' poses the next tick's physics meets ----
+        // (a new traffic or parked car is bound to its pooled instance before its first render update: the activate hook)
+        self.amb_pool_step();
+        if let Some(nav) = world.nav.as_ref() {
+            self.ride_traffic(nav, &world.collider, dt.min(1.0 / 30.0));
+        }
+        self.parked_render(dt.min(1.0 / 30.0));
         // ---- the eased steering, every frame (F-98654 -> F-69494, steer_parts.rs): the racer's values as F-80793 copies
         // them in (a player: its pad's +36, +24 and +88 - F-13138, F-54401, F-51971; a computer driver: its input's +36 and
         // +24 and 1 - F-73863, F-72992, F-35724); the rates, the hold and (a rider's) the scale are what the driver's

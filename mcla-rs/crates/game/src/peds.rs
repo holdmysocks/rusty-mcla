@@ -16,6 +16,7 @@ use crate::assets::load_resource_file;
 use crate::physics::collision::WorldCollider;
 use crate::render::{Frustum, Gpu};
 use crate::skin::{blend_pose, Clip, SkinBuffer, SkinModel};
+use crate::physics::exact::{guest_cos, guest_sin};
 use glam::{Mat4, Quat, Vec3};
 use hashbrown::{HashMap, HashSet};
 use mcla_formats::rage::anim::{find_animations, Animation};
@@ -2688,6 +2689,26 @@ pub(crate) fn spawn_candidates(mesh: &NavMesh, focus: Vec3, r: f32) -> Vec<(u32,
     found.into_iter().map(|i| (i, mesh.polys[i as usize].area)).collect()
 }
 
+/// F-33044's / F-39594's side offset of `v` from the view line `d`: fma(v.y, 0, fma(v.z, d.x, v.x (-d.z))).
+fn side_offset(v: Vec3, d: Vec3) -> f32 {
+    use crate::physics::exact::fma;
+    fma(v.y, 0.0, fma(v.z, d.x, v.x * -d.z))
+}
+
+/// F-33044's polygon pick: x = (u23 x total) 2^-23 from `rng`; while x > 0 and k < n: x -= w[k], k += 1; then k at most
+/// n - 1. So the index is the one after the polygon whose weight takes x to 0 or below (the original's), the last when
+/// none does; x <= 0 at once gives 0.
+fn spawn_pick(w: &[f32], total: f32, rng: &mut crate::vehicles::parked::Mwc) -> usize {
+    let mut x = (rng.next() & 0x7F_FFFF) as f32 * total * (1.0 / 8_388_608.0);
+    let n = w.len();
+    let mut k = 0;
+    while x > 0.0 && k < n {
+        x -= w[k];
+        k += 1;
+    }
+    k.min(n.saturating_sub(1))
+}
+
 /// A random point of a polygon as the original picks it (F-76960): a triangle of the
 /// fan from the first corner, chosen by area with `r1`, the rest of `r1` across it and
 /// sqrt(`r2`) from the first corner towards the far edge. The weights are the cross products' lengths
@@ -3492,11 +3513,28 @@ impl Peds {
     /// to the side of the view line, or further than the unspawn radius ahead (half of it
     /// behind).
     fn out_of_range(&self, focus: Vec3, pos: Vec3) -> bool {
+        // (F-39594: the side offset over half the box width; else the distance dz dz + dx dx fused over the radius squared,
+        // the radius halved behind: fma(v.x, d.x, fma(v.y, d.y, v.z d.z)) < 0)
+        use crate::physics::exact::fma;
         let v = pos - focus;
-        let dir = self.view_dir;
-        let lateral = (v.z * dir.x - v.x * dir.z).abs();
-        let lim = if v.dot(dir) < 0.0 { self.tune.unspawn * 0.5 } else { self.tune.unspawn };
-        lateral > self.tune.box_width * 0.5 || flat(v).length() > lim
+        let d = self.view_dir;
+        if side_offset(v, d).abs() > self.tune.box_width * 0.5 {
+            return true;
+        }
+        let lim = if fma(v.x, d.x, fma(v.y, d.y, v.z * d.z)) < 0.0 { self.tune.unspawn * 0.5 } else { self.tune.unspawn };
+        fma(v.z, v.z, v.x * v.x) > lim * lim
+    }
+
+    /// The spawner frame's type (F-33044 -> F-65817 -> F-55277 -> F-36934 on G2): the people distribution's weights at the
+    /// focus; no district data at all: one draw over the sets (the port's own fallback).
+    fn draw_type(&mut self, focus: Vec3) -> Option<usize> {
+        if !self.districts.loaded() {
+            let n = self.dirs.len() as u32;
+            return (n > 0).then(|| self.dodge_rng.pick.index(n) as usize);
+        }
+        let k = self.districts.draw(focus, self.hour, &mut self.dodge_rng.pick)?;
+        let name = self.districts.all.get(k)?.clone();
+        self.dirs.iter().position(|d| d.0.eq_ignore_ascii_case(&name))
     }
 
     /// One run of the original's pedestrian spawner (F-33044) and unspawner
@@ -3511,33 +3549,43 @@ impl Peds {
             }
         }
         self.districts.set_use(&|n| live.get(n).copied().unwrap_or(0), &|_| false);
-        // unspawn: 30 random checks a frame, while the traffic's region list has roads (F-75661)
+        // unspawn: 30 tries a frame (M+2132), while the traffic's region list has roads (F-75661). Each picks a person of
+        // the people's pool from G2 (F-46838 -> F-69170: (x & 0x7FFFFFFF) % count; an empty pool draws nothing and ends
+        // the tries) and asks for its removal (F-51512, reason 9) when out of range; the requests are taken after the tries,
+        // so the pool stays as it was through them (a person asked for twice goes once)
+        let mut out: Vec<usize> = Vec::new();
         for _ in 0..if self.traffic_regions == Some(0) { 0 } else { 30 } {
             if self.list.is_empty() {
                 break;
             }
-            let i = (self.rand() * self.list.len() as f32) as usize % self.list.len();
+            let i = self.dodge_rng.pick.index(self.list.len() as u32) as usize;
             // (an item's person goes like any walker, F-39594: no item test)
-            if self.out_of_range(focus, self.list[i].pos) {
-                let p = self.list.swap_remove(i);
-                if std::env::var("MCLA_PED_DUMP").is_ok() {
-                    let v = p.pos - focus;
-                    log::info!("ped unspawn {} dist {:.1} ahead {:.1} lateral {:.1}", p.key.1, flat(v).length(), v.dot(self.view_dir), (v.z * self.view_dir.x - v.x * self.view_dir.z).abs());
-                }
+            if self.out_of_range(focus, self.list[i].pos) && !out.contains(&i) {
+                out.push(i);
             }
         }
+        out.sort_unstable();
+        for &i in out.iter().rev() {
+            let p = self.list.remove(i);
+            if std::env::var("MCLA_PED_DUMP").is_ok() {
+                let v = p.pos - focus;
+                log::info!("ped unspawn {} dist {:.1} ahead {:.1} lateral {:.1}", p.key.1, flat(v).length(), v.dot(self.view_dir), side_offset(v, self.view_dir).abs());
+            }
+        }
+        // the type, first of the spawner's frame F-33044 (F-65817 -> F-55277: the people distribution's draw F-36934 on G2,
+        // whatever the count and the candidates)
+        let drawn = self.draw_type(focus);
         // candidates: the sidewalk polygons touching the sphere of the outer spawn radius,
         // the first 128 (F-47658)
         self.cands = spawn_candidates(mesh, focus, self.tune.spawn_outer);
         let total: f32 = self.cands.iter().map(|c| c.1).sum();
         // area times the density, times the focus district's density at this hour
         self.target = total * self.tune.density * self.districts.density_at(focus, self.hour);
-        if self.list.len() as f32 >= self.target || self.cands.is_empty() {
+        // (no type: none this frame; a target truncated to 0, fctiwz: none either)
+        let Some(ti) = drawn else { return };
+        if self.list.len() as f32 >= self.target || self.cands.is_empty() || self.target as i32 == 0 {
             return;
         }
-        // one type per frame, from the focus district's list
-        let r0 = self.rand();
-        let Some(ti) = self.pick_type(focus, (r0 * 16777216.0) as u32) else { return };
         if !self.load_type(gpu, ti) {
             return;
         }
@@ -3545,29 +3593,28 @@ impl Peds {
         let dir = self.view_dir;
         // (not in the cutscene mode, F-33044's first test of F-97032)
         let cut = self.cutscene;
-        let weights: Vec<f32> = self.cands.iter().map(|&(i, a)| if cut.is_none() && (mesh.polys[i as usize].center - focus).dot(dir) > 0.0 { a * 10.0 } else { a }).collect();
-        let wsum: f32 = weights.iter().sum();
+        let ahead = |p: Vec3| {
+            let v = p - focus;
+            crate::physics::exact::fma(v.x, dir.x, crate::physics::exact::fma(v.y, dir.y, v.z * dir.z)) > 0.0
+        };
+        let weights: Vec<f32> = self.cands.iter().map(|&(i, a)| if ahead(mesh.polys[i as usize].center) && cut.is_none() { a * 10.0 } else { a }).collect();
+        let mut wsum = 0.0f32;
+        for &w in &weights {
+            wsum = w + wsum;
+        }
         let mut spawned = 0;
         let mut occ: Option<Option<crate::occluder::Selected>> = None;
         for _ in 0..60 {
             if spawned >= 3 || self.list.len() as f32 >= self.target {
                 break;
             }
-            let mut x = self.rand() * wsum;
-            let mut k = weights.len() - 1;
-            for (j, w) in weights.iter().enumerate() {
-                x -= w;
-                if x < 0.0 {
-                    k = j;
-                    break;
-                }
-            }
+            let k = spawn_pick(&weights, wsum, &mut self.dodge_rng.pick);
             let pi = self.cands[k].0;
             let q = &mesh.polys[pi as usize];
-            let (r1, r2) = (self.rand(), self.rand());
+            let (r1, r2) = (self.dodge_rng.pick.float(), self.dodge_rng.pick.float());
             let mut pos = random_point(q, r1, r2);
             let v = pos - focus;
-            if cut.is_none() && (v.z * dir.x - v.x * dir.z).abs() > self.tune.box_width * 0.5 {
+            if cut.is_none() && side_offset(v, dir).abs() > self.tune.box_width * 0.5 {
                 continue;
             }
             // the cutscene mode: in view when inside all six of the viewport's planes (the outcode 0: every
@@ -3584,6 +3631,9 @@ impl Peds {
                     continue;
                 }
             }
+            // the facing, drawn before the room test (F-33044: u23 x (2 pi 2^-23, 0x35490FDB), the guest's cos and sin)
+            let a = (self.dodge_rng.pick.next() & 0x7F_FFFF) as f32 * f32::from_bits(0x3549_0FDB);
+            let face = Vec3::new(guest_sin(a as f64) as f32, 0.0, guest_cos(a as f64) as f32);
             // room (F-70932; the gate M+2116 is 1 from the ctor F-10264, its only writer): the cars and
             // the walkers of the grid's 3 x 3 cells round the point
             let (s1, s2) = (self.tune.ped_spacing, self.tune.type_spacing);
@@ -3597,8 +3647,6 @@ impl Peds {
                     pos.y = g.point.y;
                 }
             }
-            let a = self.rand() * std::f32::consts::TAU;
-            let face = Vec3::new(a.sin(), 0.0, a.cos());
             let id = self.next_id;
             self.next_id = self.next_id.wrapping_add(1);
             let seed = hash(id, pi);
@@ -5435,6 +5483,32 @@ mod tests {
         }
         assert_eq!(n, 6000);
         assert!(off < 10, "{off} cases past the last triangle");
+    }
+
+    /// F-33044's polygon pick as read from its code: the index after the polygon that takes x to 0 or below, at most the
+    /// last; one draw each (u23 x total x 2^-23).
+    #[test]
+    fn spawn_pick_takes_the_next_polygon() {
+        use crate::vehicles::parked::Mwc;
+        let w = [1.0f32, 2.0, 3.0, 4.0];
+        // a generator whose next u23 is the given value: lo x 0x5CDCFAA7 + carry, low 23 bits
+        let with = |u: u32| Mwc { lo: 0, carry: u };
+        let pick = |u: u32| {
+            let mut m = with(u);
+            let k = super::spawn_pick(&w, 10.0, &mut m);
+            assert_eq!((m.lo, m.carry), (u, 0));
+            k
+        };
+        assert_eq!(pick(0), 0);
+        // x = 0.5: takes w[0] to -0.5 -> index 1
+        assert_eq!(pick(0x06_6666), 1);
+        // x just over 1 (1.0000002): w[0] leaves it above 0, w[1] takes it below -> index 2
+        assert_eq!(pick(0x0C_CCCD), 2);
+        // x = 5.0: 5 - 1 - 2 = 2 > 0, - 3 = -1 -> index 3
+        assert_eq!(pick(0x40_0000), 3);
+        // x near 10: past the last -> the last
+        assert_eq!(pick(0x7F_FFFF), 3);
+        assert_eq!(super::spawn_pick(&[], 1.0, &mut with(5)), 0);
     }
 
     #[test]
