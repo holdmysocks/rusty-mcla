@@ -2187,6 +2187,50 @@ fn at_occ(pos: Vec3, occ: u16) -> Req {
 /// The call signs the cruisers are given, in the order of the PoliceVoices OFFICER group (F-23825).
 const CALLSIGNS: [&str; 6] = ["3ADAM5", "1LINCOLN4", "4ADAM8", "4ADAM13", "2ADAM6", "1EDWARD7"];
 
+/// The radio manager's call-sign book: the used bits (+40), the released bits (+48) and the cursor (+56).
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
+pub struct CallsignBook {
+    pub used: [u32; 2],
+    pub released: [u32; 2],
+    pub cursor: i32,
+}
+
+impl CallsignBook {
+    /// F-40359: the cursor's index is handed out and marked used; the cursor moves on (mod n, the voice table's count)
+    /// and past the used indices, at most n steps (all used: it stays on a used one, which the next take hands out again).
+    pub fn take(&mut self, n: u16) -> i32 {
+        let k = self.cursor;
+        self.used[(k >> 5) as usize & 1] |= 1 << (k & 31);
+        let m = n as i32 - 1;
+        let step = |c: i32| -> i32 {
+            let c = c.wrapping_add(1);
+            if m == 0 {
+                0
+            } else if m < 0 {
+                c
+            } else {
+                c.wrapping_rem(m + 1) + if c < 0 { m + 1 } else { 0 }
+            }
+        };
+        self.cursor = step(k);
+        for _ in 0..n {
+            let c = self.cursor;
+            if self.used[(c >> 5) as usize & 1] & (1 << (c & 31)) == 0 {
+                break;
+            }
+            self.cursor = step(c);
+        }
+        k
+    }
+
+    /// F-94030: index k given back (used bit cleared, released bit set), when its cruiser goes (F-88521) or takes a new one
+    pub fn release(&mut self, k: i32) {
+        let (w, b) = ((k >> 5) as usize & 1, 1u32 << (k & 31));
+        self.used[w] &= !b;
+        self.released[w] |= b;
+    }
+}
+
 struct Entry {
     /// the car's `uid`: the entry follows its car when the list moves (cars before it removed)
     uid: u32,
@@ -2293,9 +2337,9 @@ struct PoliceAudio {
     /// the cruisers of the running tactic, and every chasing cruiser of the last update (spawn order, cop 0 leads)
     tactic: Vec<usize>,
     cops: Vec<usize>,
-    /// call signs handed out (car -> index into CALLSIGNS) and the round-robin cursor
+    /// call signs handed out (car -> index into CALLSIGNS) and the radio manager's book of them
     callsigns: HashMap<usize, usize>,
-    cursor: usize,
+    book: CallsignBook,
     bullhorn: Option<Handle>,
     /// the junction warn (siren/RULE.md 2): tactic+116 down time, the cops not allowed to warn (+1148 = 0), the warning cop
     warn_down: f32,
@@ -2304,15 +2348,10 @@ struct PoliceAudio {
 }
 
 impl PoliceAudio {
-    /// A cruiser's call sign (F-23825): handed out round robin the first time one is needed.
+    /// A cruiser's call sign (F-23825): taken from the book (F-52637 -> F-40359) the first time one is needed.
     fn callsign(&mut self, car: usize) -> &'static str {
-        let n = CALLSIGNS.len();
-        let cursor = &mut self.cursor;
-        let k = *self.callsigns.entry(car).or_insert_with(|| {
-            let k = *cursor % n;
-            *cursor += 1;
-            k
-        });
+        let book = &mut self.book;
+        let k = *self.callsigns.entry(car).or_insert_with(|| book.take(CALLSIGNS.len() as u16) as usize);
         CALLSIGNS[k]
     }
 }
@@ -2844,8 +2883,15 @@ impl Fleet {
                 }
             }
         }
-        // call signs go back when their cruiser leaves
-        self.pol.callsigns.retain(|i, _| v.cars.get(*i).is_some_and(|c| c.cop && c.placed));
+        // call signs go back when their cruiser leaves (the cop's destructor F-88521 releases its index, F-94030)
+        let book = &mut self.pol.book;
+        self.pol.callsigns.retain(|i, k| {
+            let keep = v.cars.get(*i).is_some_and(|c| c.cop && c.placed);
+            if !keep {
+                book.release(*k as i32);
+            }
+            keep
+        });
         // the worldized chatter (F-65788 / F-33221), every frame in any state: the nearest police car within
         // 35 m of the listener (not the player's); started for 4 s, kept alive 0.15 s at a time while it stays nearest
         if let Some((i, h, t)) = &mut self.chatter {
@@ -3279,6 +3325,43 @@ pub fn pool_cmp(a: f32, b: f32) -> i32 {
 
 #[cfg(test)]
 mod tests {
+
+    /// tools/callsign_book_reference.py ran the original's take F-40359 and release F-94030 offline: 400 books of 1 - 64
+    /// voices, 60 random takes / releases each from a random state; every return, used / released word and cursor equal
+    #[test]
+    fn the_callsign_book_is_the_originals() {
+        let hx = |s: &str| u32::from_str_radix(&s[1..], 16).unwrap();
+        let mut n = 0;
+        let mut book = super::CallsignBook::default();
+        let mut voices = 0u16;
+        for l in include_str!("testdata/callsign_book_ref.txt").lines().filter(|l| !l.is_empty()) {
+            let t: Vec<&str> = l.split_whitespace().collect();
+            match t[0] {
+                "B" => {
+                    voices = hx(t[1]) as u16;
+                    book = super::CallsignBook {
+                        used: [hx(t[2]), hx(t[3])],
+                        released: [hx(t[4]), hx(t[5])],
+                        cursor: hx(t[6]) as i32,
+                    };
+                }
+                op => {
+                    let r = if op == "T" { book.take(voices) } else { book.release(hx(t[1]) as i32); 0 };
+                    let want = super::CallsignBook {
+                        used: [hx(t[3]), hx(t[4])],
+                        released: [hx(t[5]), hx(t[6])],
+                        cursor: hx(t[7]) as i32,
+                    };
+                    assert_eq!(book, want, "{l}");
+                    if op == "T" {
+                        assert_eq!(r as u32, hx(t[2]), "{l}");
+                    }
+                    n += 1;
+                }
+            }
+        }
+        assert_eq!(n, 24000);
+    }
 
     /// tools/pool_compare_reference.py ran the original's compare F-34621 offline on 30,400 pairs (every pair of 20
     /// special floats, random pairs, a third equal): the port's pool_cmp gives the same answer on each
