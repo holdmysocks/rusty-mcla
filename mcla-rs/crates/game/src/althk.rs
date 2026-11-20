@@ -398,8 +398,12 @@ pub struct RaceState {
     pub radius: f32,
     /// the red light men's last landmark (`LastGrid`, by id)
     pub last_goal: HashMap<u32, usize>,
-    /// the hookman script's generator (RAND_INT_RANGE, RAND_INT_RANGE_DIFFERENT: the script context's MWC)
-    rng: Option<Mwc>,
+    /// each man's script context's generator (RAND_INT_RANGE, RAND_INT_RANGE_DIFFERENT, RAND_FLOAT_RANGE), by his id:
+    /// seeded by one draw of the game's generator when his script starts (F-36420 -> F-37317, `Mwc::script`), dropped
+    /// when it no longer runs (`roamers::alt_men`); RAND_RESET reseeds it (`RaceState::go`)
+    pub rngs: HashMap<u32, Mwc>,
+    /// the red light man's EvaluatePolice roll, drawn on his generator at the flash (`Police::evaluate`)
+    pub police_roll: Option<f32>,
     /// the registry's `raceBack`: 1 from a red light race's start, 0 once raced back
     pub back_offer: bool,
     /// RACE BACK chosen on the race-over menu: the caller makes the race
@@ -420,9 +424,23 @@ pub struct RaceState {
 }
 
 impl RaceState {
-    /// The script context's generator, seeded when first drawn from (`Mwc::script`).
-    fn rng(&mut self) -> &mut Mwc {
-        self.rng.get_or_insert_with(Mwc::script)
+    /// The man's script context's generator (a man whose script start the port has not seen yet - no career - gets
+    /// his now).
+    pub fn rng(&mut self, id: u32) -> &mut Mwc {
+        self.rngs.entry(id).or_insert_with(Mwc::script)
+    }
+
+    /// A race's go (`Game::update_race`): the red light man's script waits for Race_IsRaceTimerEnabled, then ReplayMgr_Begin
+    /// and RAND_RESET (Hollywood 0x59b3: 0x5b85 / 0x5bba, the same in all five) - his generator reseeded by the game's
+    /// generator (RAND_RESET: 31 bits, as at a script's start) - and the first taunt's RAND_INT_RANGE(30000, 40000) ms
+    /// (0x5cce).
+    pub fn go(&mut self, redlight: bool) {
+        if !redlight || !self.taunt_on {
+            return;
+        }
+        let uid = self.last_uid;
+        self.rngs.insert(uid, Mwc::script());
+        self.taunt_at = self.rng(uid).int_range(30_000, 40_000) as f32 * 0.001;
     }
 }
 
@@ -509,9 +527,12 @@ impl Game {
         self.man_diff = Some(man.difficulty);
         self.althk.diff = Some(man.difficulty.clamp(0, 3) as usize);
         self.althk.voice = man.name.clone();
-        self.alt_race_begin(def.id);
+        self.alt_race_begin(def.id, def.kind == AltKind::RedLight);
         match def.kind {
             AltKind::RedLight => {
+                // EvaluatePolice (Hollywood 0x4594 -> 0x3fd3, chance 0): its RAND_FLOAT_RANGE(0, 1) on the man's generator
+                // (0x424e), before the start place and the landmark draw (0x4874, 0x5560..)
+                self.althk.police_roll = Some(self.althk.rng(man.uid).float_range(0.0, 1.0));
                 // (the registry's raceBack = 1: RACE BACK is offered after this race, 0x461e)
                 self.althk.back_offer = true;
                 let start = self.alt_redlight_start(def, data, redlights, pp, None, man);
@@ -526,7 +547,7 @@ impl Game {
                 let hook = vehicles.cars.iter().find(|c| man.owns(c))?;
                 let hp = hook.state.pos;
                 // RAND_INT_RANGE(4, 6), inclusive
-                let count = self.althk.rng().int_range(4, 6) as usize;
+                let count = self.althk.rng(man.uid).int_range(4, 6) as usize;
                 let (first, cps) = freeway_course(&def.pts, hp, count);
                 let n = def.pts.len();
                 let last = (first + cps.len().max(1) - 1) % n.max(1);
@@ -557,15 +578,17 @@ impl Game {
     }
 
     /// What every race against the man starts with: who he is, no result yet, and the
-    /// in-race taunts - the first RAND_INT_RANGE(30000, 40000) ms into the race (red light
-    /// 0x5cce, freeway 0x10e4).
-    fn alt_race_begin(&mut self, uid: u32) {
+    /// in-race taunts - the first RAND_INT_RANGE(30000, 40000) ms into the race: a freeway
+    /// man's at the flash (0x10e4, before his checkpoints' draw), a red light man's at the go
+    /// after RAND_RESET (0x5cce, `RaceState::go`).
+    fn alt_race_begin(&mut self, uid: u32, redlight: bool) {
         self.althk.last_uid = uid;
         self.althk.won = None;
         self.althk.taunt_on = true;
-        // (0x5cce: RAND_INT_RANGE(30000, 40000) ms)
-        self.althk.taunt_at = self.althk.rng().int_range(30_000, 40_000) as f32 * 0.001;
+        self.althk.taunt_at = if redlight { f32::INFINITY } else { self.althk.rng(uid).int_range(30_000, 40_000) as f32 * 0.001 };
     }
+
+
 
     /// The red light race from the district's place nearest `pp` (0x47e7). `back`: a race
     /// back - the finish is the landmark nearest the right-hand slot of the first pose of the
@@ -590,7 +613,7 @@ impl Game {
             }
             None => {
                 let mut last = self.althk.last_goal.get(&def.id).copied().unwrap_or(0);
-                let g = redlight_goal(&marks, start, fwd, &mut last, self.althk.rng());
+                let g = redlight_goal(&marks, start, fwd, &mut last, self.althk.rng(man.uid));
                 self.althk.last_goal.insert(def.id, last);
                 g
             }
@@ -651,7 +674,7 @@ impl Game {
         self.man_diff = Some(man.difficulty);
         self.althk.diff = Some(man.difficulty.clamp(0, 3) as usize);
         self.althk.voice = man.name.clone();
-        self.alt_race_begin(uid);
+        self.alt_race_begin(uid, true);
         self.alt_redlight_start(def, data, redlights, pp, prev, &man)
     }
 
@@ -713,7 +736,8 @@ impl Game {
         // (0x668a: RAND_INT_RANGE(Race_GetTimer + 45000, Race_GetTimer + 70000) ms; the timer in ms from the port's race
         // time)
         let ms = (t * 1000.0) as i32;
-        self.althk.taunt_at = self.althk.rng().int_range(ms.wrapping_add(45_000), ms.wrapping_add(70_000)) as f32 * 0.001;
+        let uid = self.althk.last_uid;
+        self.althk.taunt_at = self.althk.rng(uid).int_range(ms.wrapping_add(45_000), ms.wrapping_add(70_000)) as f32 * 0.001;
         log::info!("alt hookman: {} at {:.1} s, the next at {:.1} s", scenario, t, self.althk.taunt_at);
     }
 
@@ -812,6 +836,20 @@ impl Game {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn redlight_go_reseeds_the_mans_generator() {
+        // a red light race's go: RAND_RESET (a new generator for the man) and the first taunt RAND_INT_RANGE(30000, 40000) ms
+        let mut s = RaceState { last_uid: 352, taunt_on: true, taunt_at: f32::INFINITY, ..Default::default() };
+        s.rngs.insert(352, Mwc::seed(7));
+        s.go(true);
+        assert!((30.0..=40.0).contains(&s.taunt_at));
+        // any other race (a freeway man's, drawn at the flash): nothing drawn or reseeded at the go
+        let mut f = RaceState { last_uid: 301, taunt_on: true, taunt_at: 33.0, ..Default::default() };
+        f.rngs.insert(301, Mwc::seed(7));
+        f.go(false);
+        assert_eq!((f.taunt_at, f.rngs[&301].lo), (33.0, Mwc::seed(7).lo));
+    }
     use super::*;
 
     /// Math_VecRotateY against the original's handler F-39460 run offline on 5,120 cases

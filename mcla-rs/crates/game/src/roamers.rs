@@ -864,7 +864,12 @@ impl Roamers {
     /// scripts' main), the other three and the freeway men already drawn. Hollywood's red light man while REDLIGHT_GH_01 is not complete is GH_01
     /// in his `vp_vw_scirocco_88` (0x35e0..0x365a) and is not drawn again. He is not shown on
     /// the maps until he is visible (`Game::alt_visible`); hidden, he still drives.
-    fn alt_men(&mut self, game: &Game, player_car: &str, men: &mut Vec<Man>) {
+    ///
+    /// Each man's script has a generator of its own (`althk::RaceState::rngs`): one draw of the game's generator when the
+    /// port first sees his script run (F-36420 -> F-37317), dropped when it stops. His difficulty is RAND_INT_RANGE(0, 3)
+    /// and the red light man's name RAND_INT_RANGE(0, n - 1) of the district's table (Beaches 0x3379 / 0x3503, again
+    /// 0x3b4b / 0x3be5; freeway 0x5c5, again 0xd6d - the freeway man's name is his one).
+    fn alt_men(&mut self, game: &mut Game, player_car: &str, men: &mut Vec<Man>) {
         if self.alt_car != player_car || self.alt_suspended {
             let keep_mission = !self.alt_car.is_empty() && self.alt_car == player_car;
             self.alt_roll.retain(|_, r| keep_mission && r.mission);
@@ -872,9 +877,18 @@ impl Roamers {
             self.alt_suspended = false;
         }
         let defs = self.alt.defs.clone();
+        for d in &defs {
+            if !game.alt_running(&d.script) {
+                game.althk.rngs.remove(&d.id);
+            }
+        }
         for d in defs {
             if !game.alt_running(&d.script) {
                 continue;
+            }
+            // (his script starts: its context's generator)
+            if !game.althk.rngs.contains_key(&d.id) {
+                game.althk.rngs.insert(d.id, crate::vehicles::parked::Mwc::script());
             }
             let mission = d.id == 350 && game.career.mission_active("REDLIGHT_GH_01");
             if self.alt_roll.get(&d.id).map_or(false, |r| r.mission != mission) {
@@ -891,8 +905,15 @@ impl Roamers {
                     // 0x34e6 / 0x3454 - and at RAND_INT_RANGE(0, 3) in the other three; a freeway man
                     // at RAND_INT_RANGE(0, 3); both drawn again when the player's car type changes)
                     let fixed = d.kind == crate::althk::AltKind::RedLight && first && (d.script.starts_with("hw_") || d.script.starts_with("sc_"));
-                    let diff = if fixed { 0 } else { ((self.rand() * 4.0) as i32).min(3) };
-                    let name = if d.names.is_empty() { None } else { Some(d.names[((self.rand() * d.names.len() as f32) as usize).min(d.names.len() - 1)].clone()) };
+                    let diff = if fixed { 0 } else { game.althk.rng(d.id).int_range(0, 3) };
+                    let name = match d.kind {
+                        _ if d.names.is_empty() => None,
+                        crate::althk::AltKind::RedLight => {
+                            let k = game.althk.rng(d.id).int_range(0, d.names.len() as i32 - 1);
+                            d.names.get(k.max(0) as usize).cloned()
+                        }
+                        crate::althk::AltKind::Freeway => d.names.first().cloned(),
+                    };
                     name.and_then(|n| game.mc4_character_car(&n, diff).map(|(car, config, m)| AltRoll { name: n, car, config, mod_value: m, difficulty: diff, mission: false }))
                 };
                 match roll {

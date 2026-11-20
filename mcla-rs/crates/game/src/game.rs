@@ -4821,6 +4821,9 @@ impl Game {
                     // the red light race script's RnIntersectionAmbient_SetRedLightRace(0) once Race_GetTimer >= 0
                     // (`<district>_redlight_hk1`, Hollywood 0x5e93; only that script sets the byte)
                     vehicles.signals.red_light_race = false;
+                    // (the man's RAND_RESET and first taunt draw once the race timer runs - `althk::RaceState::go`;
+                    // approx.: taken at the go, the moment Race_IsRaceTimerEnabled turns on was not traced)
+                    self.althk.go(self.active_def.as_ref().map_or(false, |d| d.id == crate::althk::REDLIGHT_RACE_ID));
                     if let Some(c) = vehicles.player_mut() {
                         c.engine_off = false;
                         c.deactivated = false;
@@ -10335,7 +10338,7 @@ impl Game {
                                     self.wager = Some(w);
                                     self.current_race = Some(n);
                                     self.warp_with_cut = true;
-                                    self.police_eval = Some(crate::police::PoliceEval::NEVER); // NEXT WAGER re-runs wager_hangout_core's EvaluatePolice, chance 0: 0x2293
+                                    self.police_eval = Some(crate::police::PoliceEval::NEVER.again()); // NEXT WAGER re-runs wager_hangout_core's EvaluatePolice, chance 0: 0x2293
                                     action = MenuAction::StartRace;
                                 }
                             }
@@ -10507,7 +10510,7 @@ impl Game {
                     Some(20) => {
                         if self.mc4_next_race_take().is_some() {
                             self.menu_sel = 0;
-                            self.police_eval = Some(crate::police::PoliceEval::GATED); // (generic_local_hookman's nextRace re-runs EvaluatePolice, 25 %, gated: 0x3230)
+                            self.police_eval = Some(crate::police::PoliceEval::GATED.again()); // (generic_local_hookman's nextRace re-runs EvaluatePolice, 25 %, gated: 0x3230)
                             action = MenuAction::StartRace;
                         }
                     }

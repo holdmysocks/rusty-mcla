@@ -2419,18 +2419,28 @@ pub struct PoliceEval {
     pub chase_type: u8,
     /// SetRaceChaseTarget's racer (manager +208) is the player
     pub chase_player: bool,
+    /// the same script runs EvaluatePolice again (NEXT WAGER, generic_local_hookman's nextRace, a series' /
+    /// tournament's / race list's next race): its context's generator goes on; else a newly started launcher's
+    pub again: bool,
+    /// the roll already drawn by the launching script (a red light man's own script context, `Game::alt_race`)
+    pub roll: Option<f32>,
 }
 
 impl PoliceEval {
     /// chance 0: wager / pink slip, delivery, time trial, tournament, series, red light, seven story cores
-    pub const NEVER: PoliceEval = PoliceEval { chance: 0.0, gate5: false, props: [true; 3], chase_type: race_chase_type(0, None), chase_player: false };
+    pub const NEVER: PoliceEval = PoliceEval { chance: 0.0, gate5: false, props: [true; 3], chase_type: race_chase_type(0, None), chase_player: false, again: false, roll: None };
     /// 25 % with the racers gate: generic_local_hookman, the *_CHAMP_CORE and BEAT_SH_0x cores, RaceWrapper
-    pub const GATED: PoliceEval = PoliceEval { chance: 0.25, gate5: true, props: [true; 3], chase_type: race_chase_type(0, None), chase_player: false };
+    pub const GATED: PoliceEval = PoliceEval { chance: 0.25, gate5: true, props: [true; 3], chase_type: race_chase_type(0, None), chase_player: false, again: false, roll: None };
     /// 25 %, no gate: TelephoneChallenge
-    pub const PHONE: PoliceEval = PoliceEval { chance: 0.25, gate5: false, props: [true; 3], chase_type: race_chase_type(0, None), chase_player: false };
+    pub const PHONE: PoliceEval = PoliceEval { chance: 0.25, gate5: false, props: [true; 3], chase_type: race_chase_type(0, None), chase_player: false, again: false, roll: None };
     /// BEAT_SH_04B_CORE: always, the player the zone's target, no tracking, no race retarget
     pub const SH_04B: PoliceEval =
-        PoliceEval { chance: 1.0, gate5: false, props: [false, false, true], chase_type: race_chase_type(1, Some(true)), chase_player: true };
+        PoliceEval { chance: 1.0, gate5: false, props: [false, false, true], chase_type: race_chase_type(1, Some(true)), chase_player: true, again: false, roll: None };
+
+    /// The same launcher runs EvaluatePolice again (`again`).
+    pub const fn again(self) -> PoliceEval {
+        PoliceEval { again: true, ..self }
+    }
 }
 
 /// The race's cop zone (PoliceManager +188 zone, +192 lap, +196 state, +212 timer).
@@ -2661,7 +2671,8 @@ pub struct Police {
     rdo_rng: (u32, u32),
     time: f32,
     rng: u32,
-    /// the launching scripts' generator for EvaluatePolice's roll (a script context's MWC, seeded when first drawn from)
+    /// the launching script's generator for EvaluatePolice's roll: its script context's MWC, seeded by one draw of the
+    /// game's generator when the launcher starts (F-36420 -> F-37317, `Mwc::script`)
     script_rng: Option<Mwc>,
     glow_buf: Option<wgpu::Buffer>,
     glow_count: u32,
@@ -3316,13 +3327,22 @@ impl Police {
     /// CreatePolice (units 400 - 402) and the streak back to 0. Then SetChaseProperties(a, b, c), SetRaceChaseTarget.
     /// `racers` is the race's racer count (+3080, the player included) for the launchers' gate: more than
     /// mcRacerManager_GetNumRacersAllowedForPolice (5) - chance 0. The roll is RAND_FLOAT_RANGE (F-47737) on the
-    /// launching script's generator (`script_rng`).
+    /// launching script's generator: a new one for a newly started launcher, the same one when the launcher runs it
+    /// again (`PoliceEval::again`), or the roll the launcher drew itself (`PoliceEval::roll`, a red light man's script).
     pub fn evaluate(&mut self, e: PoliceEval, racers: usize, zones: usize, unlocked: bool, vehicles: &mut Vehicles) {
         let mut chance = if e.gate5 && racers > 5 { 0.0 } else { e.chance };
         if chance > 0.0 && self.no_cop_races >= 4 {
             chance = 1.0;
         }
-        let r = self.script_rng.get_or_insert_with(Mwc::script).float_range(0.0, 1.0);
+        let r = match e.roll {
+            Some(r) => r,
+            None => {
+                if !e.again || self.script_rng.is_none() {
+                    self.script_rng = Some(Mwc::script());
+                }
+                self.script_rng.as_mut().map_or(1.0, |g| g.float_range(0.0, 1.0))
+            }
+        };
         if zones == 0 || r > chance {
             self.destroy_all(vehicles);
             if chance > 0.0 {

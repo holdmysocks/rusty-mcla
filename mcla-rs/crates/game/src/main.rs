@@ -6448,7 +6448,9 @@ impl App {
                 self.game.hookman_race = st.mission;
                 self.game.prerace_scene = st.scene;
                 self.game.menu_sel = 0;
-                self.game.police_eval = Some(police::PoliceEval::NEVER); // (RACE BACK of a red light man: his EvaluatePolice, chance 0)
+                // (RACE BACK of a red light man: chance 0 as his first race; no roll is drawn - the script goes back to 0x4657,
+                // past EvaluatePolice's RAND_FLOAT_RANGE)
+                self.game.police_eval = Some(police::PoliceEval { roll: Some(1.0), ..police::PoliceEval::NEVER });
                 self.pending_action = MenuAction::StartRace;
                 if let Some(t) = st.announce.and_then(|k| self.game.career.strings.get(&k).map(|s| s.to_string())) {
                     self.news.push_back((t.to_uppercase(), None));
@@ -8261,7 +8263,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             }
                             self.game.prerace_scene = st.scene;
                             // (the red light men's EvaluatePolice, chance 0: 0x3fce; the freeway men have none)
-                            self.game.police_eval = (man.kind != roamers::ManKind::Freeway).then_some(police::PoliceEval::NEVER);
+                            // (the roll drawn on the man's generator at the flash, `Game::alt_race`)
+                            let roll = self.game.althk.police_roll.take();
+                            self.game.police_eval = (man.kind != roamers::ManKind::Freeway).then_some(police::PoliceEval { roll, ..police::PoliceEval::NEVER });
                             self.pending_action = MenuAction::StartRace;
                             if let Some(t) = st.announce.and_then(|k| self.game.career.strings.get(&k).map(|s| s.to_string())) {
                                 self.news.push_back((t.to_uppercase(), None));

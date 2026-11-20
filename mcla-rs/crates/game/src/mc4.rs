@@ -10823,11 +10823,12 @@ impl Game {
 
     /// The next race of an event (NEXT RACE IN SERIES, CONTINUE TOURNAMENT, a career event's next race): a series'
     /// core (OrderedSeriesCore 0x27a4) and a tournament's (0x999) pass chance 0, a career race list's is RaceWrapper's.
+    /// The same core runs it again: its script context's generator goes on (`PoliceEval::again`).
     pub fn next_event_police(&self) -> crate::police::PoliceEval {
         if self.series.is_some() || self.career.tour_table.is_some() {
-            crate::police::PoliceEval::NEVER
+            crate::police::PoliceEval::NEVER.again()
         } else {
-            self.race_launch_police()
+            self.race_launch_police().again()
         }
     }
 }
