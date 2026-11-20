@@ -385,7 +385,8 @@ struct App {
     /// draws (the shared MWC, 0x82860890 - the port's own instance) and a scene seen last frame
     weather_timer: f32,
     weather_auto: bool,
-    weather_rng: vehicles::parked::Mwc,
+    /// the auto change's draws: the game's shared generator G2 (`brain::rng`), or the test hook's own stream
+    weather_rng: Option<vehicles::parked::Mwc>,
     weather_scene: bool,
     cycle_weather: bool,
     props: props::Props,
@@ -1553,7 +1554,7 @@ impl App {
             casc_scale: [1.0, 1.0],
             weather_timer: 0.0,
             weather_auto: false,
-            weather_rng: Default::default(),
+            weather_rng: None,
             weather_scene: false,
             cycle_weather: false,
             props: props::Props::empty(),
@@ -1942,7 +1943,7 @@ impl App {
             if let Ok(v) = std::env::var("MCLA_WEATHER_TEST") {
                 let n: Vec<u32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
                 self.weather_timer = n.first().copied().unwrap_or(10) as f32;
-                self.weather_rng = vehicles::parked::Mwc { lo: n.get(1).copied().unwrap_or(1), carry: 1 };
+                self.weather_rng = Some(vehicles::parked::Mwc { lo: n.get(1).copied().unwrap_or(1), carry: 1 });
             }
         }
         if !self.weather_auto && self.tick_no % 30 == 0 && self.game.career.mission_started("HANGOUT_SERIES_HOLLYWOODB") {
@@ -1983,7 +1984,10 @@ impl App {
             if self.weather_timer <= 0.0 {
                 self.weather_timer = 300.0;
                 if self.weather_auto {
-                    let r = self.weather_rng.float();
+                    let r = match self.weather_rng.as_mut() {
+                        Some(m) => m.float(),
+                        None => brain::rng().float(),
+                    };
                     let w = match target(self) {
                         Nice => if r < 0.45 { Nice } else { Cloudy },
                         Cloudy => if r < 0.70 { Nice } else if r < 0.75 { Cloudy } else { Foggy },
