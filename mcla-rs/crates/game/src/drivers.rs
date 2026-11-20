@@ -636,8 +636,11 @@ impl BikeClips {
 /// What the rider machine's gatherer (F-28290, through F-71604) hands its states each frame, mapped onto the port's car (main.rs).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RideIn {
-    /// CockpitCamActive (bit 21): the local human's drive view is the cockpit one
+    /// CockpitCamActive (bit 21): the local human's drive view is the cockpit one (a frame late: `rider_cockpit`)
     pub ck: bool,
+    /// EnteringCockpit / LeavingCockpit (bits 19 / 20, F-71405's self-transition test ctx+8 & 0x18_0000): the drive view's
+    /// test this frame against last frame's bit 21 (`rider_cockpit`)
+    pub ck_edge: bool,
     /// ReadSpeed, ctx+96: the body's velocity along its forward axis (m/s)
     pub speed: f32,
     /// ReadSmoothedSteeringParam, ctx+28 (= ctx+44, the phase input): the car-parts object's eased steering over its
@@ -691,6 +694,7 @@ impl RideIn {
         let reversing = st.gear < 0 && speed < -0.5;
         RideIn {
             ck: false,
+            ck_edge: false,
             speed,
             x: sp.out / sp.scale,
             throttle: if reversing { -input.throttle } else { input.throttle },
@@ -740,6 +744,10 @@ enum St {
 struct Ride {
     state: St,
     ck: bool,
+    /// the gatherer's bytes +422 .. +425 (`rider_cockpit`)
+    ck_hist: [u8; 4],
+    /// the racer's resets seen (`Seat::resets`): a new one resets the rider (`Ride::reset`)
+    resets: u32,
     fade: f32,
     rate: f32,
     /// the reverse enter's second request (its overlay) and its crossfade, over the tree the first request left
@@ -1317,6 +1325,36 @@ fn rider_parts(c: &RideCtx, drv408: &mut f32, dt: f32) -> (RiderParts, bool) {
 
 /// The rider machine's frame without the pose (the graph's transitions in the builder's order, the enters' timers and the
 /// crossfade they start, the cruise update's timer B): what `ride_pose` poses from. `time`: the clock the start's idle runs on.
+/// The gatherer's cockpit part for the local human's rider (F-28290's human branch, as `drvmachine::gather` for the car
+/// drivers): the drive view's test this frame (`view_ck`, the camera manager's view +80 == 1; none while a cutscene's camera
+/// runs, r30 = -1; the player manager's cockpit tests taken as false, as the car drivers' - `DrvIn::of`) against last frame's
+/// CockpitCamActive (`last`) gives EnteringCockpit (bit 19) or LeavingCockpit (bit 20); the flag itself (bit 21) waits a
+/// frame unless the player manager's test changed (the bytes +422 .. +425 in `hist`). Returns (bit 21, bit 19 | bit 20): a
+/// view change gives the edge on two frames, the second with the new flag (k4 of work/cutscenes2/skel, recorded).
+impl Ride {
+    /// The driver instance's reset F-94693 for a rider (the racer's Reset / ResetWithDamageIntact, F-89258 / F-39106 /
+    /// F-67152 - the police station reset after an arrest, k2 of work/cutscenes2/skel frame 2,179): the sequencer's tree
+    /// cleared (F-23174), driver +408 = 1, the context F-81756 (its flags and words 0 - the cockpit flag too, so the next
+    /// gather sees the entering edge; timers A / B 0; +52 = 1, +56 / +60 the tune's 7 / 20, +64 = 1), the machine back in
+    /// "start here" (F-20966). The states' own words (the fidget counter, state +96; the gesture pickers) and the driver's
+    /// bytes +422 .. +425 stay.
+    fn reset(&mut self) {
+        *self = Ride { fidgets: self.fidgets, ck_hist: self.ck_hist, gest_rr: self.gest_rr, resets: self.resets, ..Ride::default() };
+    }
+}
+
+fn rider_cockpit(hist: &mut [u8; 4], last: bool, view_ck: bool, cine: bool) -> (bool, bool) {
+    let r29 = false;
+    let raw = !r29 && view_ck && !cine;
+    let edge = raw != last;
+    let (o422, o424) = (hist[0], hist[2]);
+    hist[2] = r29 as u8;
+    hist[3] = o424;
+    hist[1] = o422;
+    hist[0] = raw as u8;
+    (if hist[2] == hist[3] { o422 != 0 } else { raw }, edge)
+}
+
 fn ride_state(r: &mut Ride, b: &BikeClips, i: &RideIn, time: f32, dt: f32) {
     ride_state_to(r, b, i, time, dt, &mut ())
 }
@@ -1325,7 +1363,7 @@ fn ride_state(r: &mut Ride, b: &BikeClips, i: &RideIn, time: f32, dt: f32) {
 fn ride_state_to(r: &mut Ride, b: &BikeClips, i: &RideIn, time: f32, dt: f32, o: &mut dyn RideSink) {
     let ck = i.ck;
     let ck_before = r.ck;
-    let edge = ck != r.ck && r.state != St::Start;
+    let edge = i.ck_edge;
     r.ck = ck;
     r.timer_a += dt;
     r.timer_b += dt;
@@ -2406,7 +2444,14 @@ impl Drivers {
             let mut rider_machine = false;
             if let (true, Some(b)) = (s.bike, rig.bike.as_ref()) {
                 let ride = self.rides.entry(s.id).or_default();
-                let mut i = RideIn { ck: s.player && self.ckpt_view, ..s.ride };
+                if ride.resets != s.resets {
+                    ride.reset();
+                    ride.resets = s.resets;
+                }
+                let mut i = s.ride;
+                if s.player {
+                    (i.ck, i.ck_edge) = rider_cockpit(&mut ride.ck_hist, ride.ck, self.ckpt_view, i.cutscene);
+                }
                 // (ctx+4: the racer's +684, the scene's gesture - the machine's own path only)
                 rider_machine = machines && !rig.dict.is_empty();
                 if rider_machine {
@@ -3684,6 +3729,21 @@ mod ride_tests {
         assert!(picked > 200, "{picked}");
     }
 
+    /// `rider_cockpit` on view changes (k4 of work/cutscenes2/skel, frames 42 .. 46: bits 21 / 20 / 19 = 100, 110, 010, 000;
+    /// entering the same way, 101 then 101 again on the next frame): the edge on two frames, the flag a frame late.
+    #[test]
+    fn rider_cockpit_waits_a_frame() {
+        let (mut h, mut last) = ([0u8; 4], false);
+        let mut got = Vec::new();
+        for v in [true, true, true, false, false, false, true, false, true] {
+            let (ck, e) = rider_cockpit(&mut h, last, v, false);
+            last = ck;
+            got.push((ck, e));
+        }
+        let (t, f) = (true, false);
+        assert_eq!(got, [(f, t), (t, t), (t, f), (t, t), (f, t), (f, f), (f, t), (t, f), (f, f)]);
+    }
+
     #[test]
     fn ride_states() {
         let bones = vec![crate::skin::Bone { parent: None, pos: Vec3::ZERO, rot: Quat::IDENTITY, bind: Vec3::ZERO, rest: [[0.0; 4], [0.0, 0.0, 0.0, 1.0]] }];
@@ -3704,12 +3764,12 @@ mod ride_tests {
         assert_eq!(r.state, St::Stopped);
         step(&mut r, go(0.6));
         assert_eq!((r.state, r.rate), (St::Cruise, 1.0 / 0.45));
-        step(&mut r, RideIn { ck: true, ..go(10.0) });
+        step(&mut r, RideIn { ck: true, ck_edge: true, ..go(10.0) });
         assert_eq!((r.state, r.rate), (St::Cruise, 1.0 / 0.01));
         step(&mut r, RideIn { ck: true, ..go(0.05) });
         assert_eq!((r.state, r.rate), (St::Stopped, 1.0 / 0.35));
         // (the rolling rule comes before the self-transition: out to cruise, with the edge's blend)
-        step(&mut r, go(10.0));
+        step(&mut r, RideIn { ck_edge: true, ..go(10.0) });
         assert_eq!((r.state, r.rate), (St::Cruise, 1.0 / 0.01));
         step(&mut r, go(10.0));
         assert_eq!(r.state, St::Cruise);
@@ -4139,7 +4199,8 @@ mod ride_recorded_tests {
     /// The composed pose against the original's skeleton (cutscenes2, 2026-11-18): the player rider's set
     /// (drv_mp_01_mot_set_h) posed by the composer from the ride's own motion tree, `finish` into the skeleton's locals, against
     /// the locals the original's finish (F-59653) left in its skeleton (composer +28; recorded at the next driver update, DSKL),
-    /// rides k1 (chase view), k2 (cockpit view) and k3 (chase view, the burnouts) and k5 (cockpit view, the burnouts) of work/cutscenes2/skel.
+    /// rides k1 (chase view), k2 (cockpit view, ending in an arrest, view changes a frame apart and the station reset), k3 (chase view, the burnouts), k4 (cockpit
+    /// view, then the chase view) and k5 (cockpit view, the burnouts) of work/cutscenes2/skel.
     #[test]
     #[ignore]
     fn ride_poses_match_the_recorded_bones() {
@@ -4182,17 +4243,10 @@ mod ride_recorded_tests {
         }
         let poser = RigPoser { bones: &bones, dofs: &dofs, layout: c.frame_layout, clips: &clips, dofw: &dofw };
         let names: Vec<String> = c.bones.iter().map(|b| b.name.clone()).collect();
-        for run in ["k1", "k2", "k3", "k5"] {
+        for run in ["k1", "k2", "k3", "k4", "k5"] {
             let Ok(fix) = std::fs::read_to_string(format!("D:/MCLA/work/cutscenes2/skel/{run}.fix")) else {
                 eprintln!("no {run}.fix, skipped");
                 continue;
-            };
-            // (k2 ends in several view changes a frame apart from frame 2088 on: compared up to there)
-            let cut = if run == "k2" { 2088 } else { usize::MAX };
-            let fix: String = {
-                let mut n = 0;
-                fix.lines().take_while(|l| { n += l.starts_with("F ") as usize; n <= cut }).map(|l| format!("{l}
-")).collect()
             };
             let mut prev: Option<Vec<(Quat, Vec3)>> = None;
             let (mut frames, mut worst_r, mut worst_t, mut worst_at) = (0, [0.0f32; 2], 0.0f32, String::new());
@@ -4287,6 +4341,7 @@ mod ride_recorded_tests {
         let mut notes = Vec::new();
         let mut rec_pan = true;
         let (mut i, mut first, mut time) = (0, true, 0.0);
+        let (mut prev_w, mut resets, mut reset_at): (Option<Vec<u32>>, usize, usize) = (None, 0, 0);
         while i + 3 < lines.len() {
             let fw: Vec<u32> = lines[i].split_whitespace().skip(1).map(hex).collect();
             let a: Vec<u32> = lines[i + 1].split_whitespace().skip(1).map(hex).collect();
@@ -4322,10 +4377,24 @@ mod ride_recorded_tests {
                 // (the anim player as the stopped idle's enter left it, outside the cockpit)
                 ride_enter(St::Stopped, r.ck, false, true, 0, 0.0, None, &mut RideSeq { seq: &mut r.seq, pan: &mut r.pan_clip, dict, clips, rec: None });
             }
+            // (the driver instance's reset: the context before this update is not the one the last update left - k2's
+            // station reset after the arrest; the pose compare waits 30 frames, as at the start)
+            if prev_w.as_ref().is_some_and(|p| *p != a) {
+                r.reset();
+                resets += 1;
+                reset_at = frames;
+                notes.push(format!("frame {}: driver reset", frames + 1));
+            }
+            prev_w = Some(w.clone());
+            let k_line = if resets > 0 && frames < reset_at + 30 { None } else { k_line };
+            // (on the reset frame the gatherer's smoothed steering +28 is in the reset context's scale +64 = 1; the recorded
+            // word after the update is in the scale the cruise enter's rescale F-34842 left, the angle +64 x +28 kept)
+            let reset_now = resets > 0 && frames == reset_at;
             let inp = RideIn {
                 ck: fl & 0x20_0000 != 0,
+                ck_edge: fl & 0x18_0000 != 0,
                 speed: f(&w, 96),
-                x: f(&w, 28),
+                x: if reset_now { f(&w, 28) * f(&w, 64) / f(&a, 64) } else { f(&w, 28) },
                 throttle: f(&w, 92),
                 goal_steer: f(&w, 20),
                 tuck: fl & 0x80_0000 != 0,
@@ -4451,7 +4520,8 @@ mod ride_recorded_tests {
                 let v: Vec<&str> = c.split_whitespace().collect();
                 let (clip, blend) = if v[0] == "play" { (v[1], v[2]) } else { (v[1], v[3]) };
                 let blend = f32::from_bits(hex(blend));
-                let ok = clip_of(&r).is_some_and(|k| clip.ends_with(k)) && r.state != was && (1.0 / blend).to_bits() == r.rate.to_bits();
+                // (a cockpit edge's self-transition enters the state it was in)
+                let ok = clip_of(&r).is_some_and(|k| clip.ends_with(k)) && (r.state != was || inp.ck_edge) && (1.0 / blend).to_bits() == r.rate.to_bits();
                 if !ok {
                     bad_enter += 1;
                     if notes.len() < 30 {
@@ -4543,6 +4613,7 @@ mod ride_transition_tests {
             let bit = |b: u32| fl >> b & 1 != 0;
             let i = RideIn {
                 ck: bit(21),
+                ck_edge: bit(19) || bit(20),
                 speed: f(7),
                 x: f(4),
                 throttle: f(6),
