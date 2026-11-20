@@ -4726,7 +4726,11 @@ impl Game {
             let laps = self.race.as_ref().map_or(1, |r| r.laps.max(1));
             let rubber = (!self.rubber.is_empty()).then(|| self.rubber[step.min(self.rubber.len() - 1)].clone());
             let ids: Vec<usize> = self.race.as_ref().map(|r| r.participants.clone()).unwrap_or_default();
-            let easy_deact = self.race.as_ref().map_or(false, |r| r.kind == RaceKind::Race);
+            // (not the freeway race: its script races him itself - Race_Create, BrainRacing_SetupRace, no checkpoint
+            // core - and calls no Racer_Deactivate; with its rolling start there is no go to undo it, and a difficulty
+            // 0 man, GH_08, stood still the whole race - docs/AI.md 2026-11-20)
+            let freeway = self.active_def.as_ref().map_or(false, |d| d.id == crate::althk::FREEWAY_RACE_ID);
+            let easy_deact = self.race.as_ref().map_or(false, |r| r.kind == RaceKind::Race) && !freeway;
             for i in ids {
                 let Some(c) = vehicles.cars.get_mut(i) else { continue };
                 // (the core's grid set-up resets each racer's car before BrainRacing_SetupRace: mcCarSim's
