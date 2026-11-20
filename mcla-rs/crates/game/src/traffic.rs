@@ -5670,7 +5670,7 @@ impl Vehicles {
         let focus = self.amb_focus();
         let blockers = self.frame_blockers(nav);
         let paths: Vec<Option<(bool, bool)>> = self.cars.iter().map(|c| c.item.and_then(|h| self.layout.get(h as usize)?.as_ref()?.path.as_ref().map(|p| (p.referenced, p.fired)))).collect();
-        let shared = std::cell::Cell::new(self.park_rng);
+        let shared = std::cell::Cell::new(self.park_rng.get());
         let (rail_cars, grid) = self.gather_lists(nav);
         let pool0 = std::cell::Cell::new(0);
         let ghost_pool0 = self.ghosts.live.cars.iter().filter(|g| holds_pool0(&g.rider)).count();
@@ -6002,7 +6002,7 @@ impl Vehicles {
                 }
             }
         }
-        self.park_rng = shared.get();
+        self.park_rng.set(shared.get());
         for (ji, p) in waits {
             self.signals.wait(ji, p);
         }
@@ -6106,7 +6106,7 @@ impl Vehicles {
         self.cars[idx].state.relocate(ground, Quat::from_mat3(&glam::Mat3::from_cols(right, normal, -f)).normalize());
         let rseed = (self.rand() * 16777216.0) as u32 | 1;
         let mut rider = Rider::new(nav, ty, link, s, rseed);
-        rider.choose_next(nav, &mut self.park_rng);
+        self.park_rng.with(|g2| rider.choose_next(nav, g2));
         rider.born = self.clock;
         (rider.life, rider.off_timer, rider.wait, rider.bonus, rider.mwc) = (init.life, init.off_timer, init.wait, init.bonus, init.car);
         rider.seat = Some(Seat::new(ground, normal, f));
@@ -6154,7 +6154,7 @@ impl Vehicles {
         if ty.cab || ty.trailer {
             let name = self.cars[idx].model.name.clone();
             let cars = &self.cars;
-            let r = id_draws(&mut self.park_rng, |r| cars.iter().enumerate().any(|(k, c)| k != idx && c.amb_id == r && c.model.name == name));
+            let r = self.park_rng.with(|g2| id_draws(g2, |r| cars.iter().enumerate().any(|(k, c)| k != idx && c.amb_id == r && c.model.name == name)));
             self.cars[idx].amb_id = r;
         }
         // (the manager's byte +0x64234, read by F-60230: its writer is not traced; 0 as everywhere in the port)
@@ -9367,7 +9367,7 @@ impl Vehicles {
                 None => {
                     let off = &self.race_clearing.off;
                     let rl = nav.records.road_lanes.get(ri as usize).map_or(&[][..], |v| v.as_slice());
-                    let Some((li, t)) = pick_lane(rl, |l| if off.contains(&l) { 0.0 } else { nav.lane_len(l) }, &mut self.park_rng) else { continue };
+                    let Some((li, t)) = self.park_rng.with(|g2| pick_lane(rl, |l| if off.contains(&l) { 0.0 } else { nav.lane_len(l) }, g2)) else { continue };
                     let Some(at) = lane_link_at(nav, lanes(nav), rl[li], t) else { continue };
                     at
                 }
@@ -10656,7 +10656,7 @@ pub fn path_start_standing(parked: bool, referenced: bool, fired: bool) -> bool 
 
 impl Vehicles {
     /// The shared random numbers (the MWC at 0x82860890) for the race script's draws.
-    pub fn shared_mwc(&mut self) -> &mut super::parked::Mwc {
+    pub fn shared_mwc(&mut self) -> &mut crate::brain::G2Rng {
         &mut self.park_rng
     }
 
@@ -11061,13 +11061,13 @@ impl Vehicles {
             let p = c.state.pos;
             let uid = c.uid;
             // (the draws: the car's own MWC when the obstacle has a car, else the shared one)
-            let mut mwc = own.unwrap_or(self.park_rng);
+            let mut mwc = own.unwrap_or_else(|| self.park_rng.get());
             let mut dl = self.driver_lanes.remove(&uid).unwrap_or_default();
             lane_update(nav, &mut dl, p, w, &mut mwc, uid);
             self.driver_lanes.insert(uid, dl);
             let c = &mut self.cars[i];
             match (own.is_some(), c.rail.as_mut()) {
-                (false, _) => self.park_rng = mwc,
+                (false, _) => self.park_rng.set(mwc),
                 (true, Some(r)) => r.mwc = mwc,
                 (true, None) => c.amb_mwc = Some(mwc),
             }
@@ -11132,7 +11132,7 @@ impl Vehicles {
         let mut r = Rider::new(nav, ty, link, s, seed);
         r.set_phase(nav, lanes, route.lane_t);
         r.ds_lane = usize::MAX;
-        r.choose_next(nav, &mut self.park_rng);
+        self.park_rng.with(|g2| r.choose_next(nav, g2));
         r.born = self.clock;
         r.race_lane = Some(route.lane);
         if !route.rails.is_empty() {
@@ -11250,7 +11250,7 @@ impl Vehicles {
                             r.link = link;
                             r.set_phase(nav, lanes, rt.lane_t);
                             r.ds_lane = usize::MAX;
-                            r.choose_next(nav, &mut self.park_rng);
+                            self.park_rng.with(|g2| r.choose_next(nav, g2));
                         }
                         r.path = None;
                         r.quiet = pr.quiet;
@@ -12149,7 +12149,7 @@ impl PoolRec {
 /// logs: L, C, c, B, b, D, P, I, K, N).
 pub trait PoolWorld {
     /// the shared MWC (`Vehicles::shared_mwc`)
-    fn shared(&mut self) -> &mut GMwc;
+    fn shared(&mut self) -> &mut crate::brain::G2Rng;
     /// the route's start lane's slot 8 at `t`: point and tangent
     fn lane_point(&mut self, lane: u32, t: f32) -> (Vec3, Vec3);
     /// a car of the proxy pool (F-21879; 0: none) and one given back (F-73520)
@@ -12689,7 +12689,7 @@ impl FrameWorld<'_> {
 }
 
 impl PoolWorld for FrameWorld<'_> {
-    fn shared(&mut self) -> &mut GMwc {
+    fn shared(&mut self) -> &mut crate::brain::G2Rng {
         &mut self.v.park_rng
     }
     fn lane_point(&mut self, lane: u32, t: f32) -> (Vec3, Vec3) {
@@ -12750,7 +12750,7 @@ pub fn ghost_net() -> Option<&'static crate::railroute::RailNet> {
 /// The pool's world in the game.
 struct LiveWorld<'a> {
     g: &'a mut GhostLive,
-    shared: &'a mut GMwc,
+    shared: &'a mut crate::brain::G2Rng,
     /// the second shared MWC (F-77422's three draws for the ghost car too)
     shared2: &'a mut GMwc,
     nav: Option<(&'static NavSys, &'static Lanes, &'static crate::railroute::RailNet)>,
@@ -12761,7 +12761,7 @@ struct LiveWorld<'a> {
 }
 
 impl PoolWorld for LiveWorld<'_> {
-    fn shared(&mut self) -> &mut GMwc {
+    fn shared(&mut self) -> &mut crate::brain::G2Rng {
         self.shared
     }
     fn lane_point(&mut self, lane: u32, t: f32) -> (Vec3, Vec3) {
@@ -12823,7 +12823,7 @@ impl PoolWorld for LiveWorld<'_> {
             lc: None,
         };
         // behaviour slot 10 (F-28180) -> slot 16: the next lane by the route (F-74277), its indices -1
-        let next = crate::ghostroute::route_next(&ride.route, net, nav, ride.track.last, o.start.0, &mut ride.rng, self.shared);
+        let next = self.shared.with(|g2| crate::ghostroute::route_next(&ride.route, net, nav, ride.track.last, o.start.0, &mut ride.rng, g2));
         rider.next = next.and_then(|l| lanes.links.get(l as usize).and_then(|x| x.first().copied()));
         rider.ghost = Some(Box::new(ride));
         self.g.cars.push(GhostCar { id: r.car, owner: r.owner, rider, rail: None, fresh: true });
@@ -12951,7 +12951,7 @@ impl Vehicles {
         }
         let others = self.ghost_others(nav);
         let blockers = self.frame_blockers(nav);
-        let shared = std::cell::Cell::new(self.park_rng);
+        let shared = std::cell::Cell::new(self.park_rng.get());
         let (rail_cars, grid) = self.gather_lists(nav);
         let pool0 = std::cell::Cell::new(self.cars.iter().filter(|c| c.rail.as_ref().is_some_and(holds_pool0)).count() + self.ghosts.live.cars.iter().filter(|g| holds_pool0(&g.rider)).count());
         let root = self.data_root.clone();
@@ -13009,7 +13009,7 @@ impl Vehicles {
                 removes.push((g.id, reason, g.owner));
             }
         }
-        self.park_rng = shared.get();
+        self.park_rng.set(shared.get());
         for (id, reason, owner) in removes {
             self.ghosts.pool.submit_remove(id, reason, owner);
         }
@@ -13062,7 +13062,7 @@ impl crate::cruiser::GhostTraffic for Vehicles {
     fn ghost(&self, ghost: u32) -> Option<crate::cruiser::GhostView> {
         self.ghost_view(ghost)
     }
-    fn rng(&mut self) -> &mut GMwc {
+    fn rng(&mut self) -> &mut crate::brain::G2Rng {
         &mut self.park_rng
     }
 }
@@ -13088,7 +13088,7 @@ mod ghost_tests {
     struct Replay<'a> {
         lines: Vec<Vec<&'a str>>,
         at: usize,
-        shared: GMwc,
+        shared: crate::brain::G2Rng,
         beh: hashbrown::HashMap<u32, u32>,
         owner: hashbrown::HashMap<u32, u32>,
         calls: hashbrown::HashMap<&'static str, usize>,
@@ -13105,7 +13105,7 @@ mod ghost_tests {
     }
 
     impl PoolWorld for Replay<'_> {
-        fn shared(&mut self) -> &mut GMwc {
+        fn shared(&mut self) -> &mut crate::brain::G2Rng {
             &mut self.shared
         }
         fn lane_point(&mut self, lane: u32, t: f32) -> (Vec3, Vec3) {
@@ -13170,7 +13170,7 @@ mod ghost_tests {
     #[test]
     fn ghost_pool_matches_the_original() {
         let text = include_str!("testdata/ghost_pool_ref.txt");
-        let mut w = Replay { lines: text.lines().map(|l| l.split_whitespace().collect()).collect(), at: 0, shared: GMwc { lo: 0, carry: 0 }, beh: Default::default(), owner: Default::default(), calls: Default::default() };
+        let mut w = Replay { lines: text.lines().map(|l| l.split_whitespace().collect()).collect(), at: 0, shared: crate::brain::G2Rng::own(GMwc { lo: 0, carry: 0 }), beh: Default::default(), owner: Default::default(), calls: Default::default() };
         let mut pool = GhostPool::new(0);
         let (mut ops, mut steps, mut g_n, mut m_n) = (0usize, 0usize, 0usize, 0usize);
         while w.at < w.lines.len() {
@@ -13180,7 +13180,7 @@ mod ghost_tests {
             match l[0] {
                 "Z" => {
                     pool = GhostPool::new(hx(l[1]) as i32);
-                    w.shared = GMwc { lo: hx(l[2]), carry: hx(l[3]) };
+                    w.shared = crate::brain::G2Rng::own(GMwc { lo: hx(l[2]), carry: hx(l[3]) });
                     w.beh.clear();
                     w.owner.clear();
                 }
@@ -13206,7 +13206,7 @@ mod ghost_tests {
                     let at = w.at + 1;
                     let s = w.take("S");
                     let want: Vec<u32> = s[1..7].iter().map(|x| hx(x)).collect();
-                    assert_eq!(vec![pool.count as u32, pool.max as u32, pool.budget as u32, pool.used as u32, w.shared.lo, w.shared.carry], want, "line {at}: count, max, budget, used, shared MWC");
+                    assert_eq!(vec![pool.count as u32, pool.max as u32, pool.budget as u32, pool.used as u32, w.shared.get().lo, w.shared.get().carry], want, "line {at}: count, max, budget, used, shared MWC");
                     steps += 1;
                 }
                 "G" => {
@@ -13403,12 +13403,12 @@ mod ghost_tests {
     #[test]
     fn a_trailer_request_is_queued_inside_the_step() {
         struct W {
-            mwc: GMwc,
+            mwc: crate::brain::G2Rng,
             order: Vec<u32>,
             trailer: Option<PoolRec>,
         }
         impl PoolWorld for W {
-            fn shared(&mut self) -> &mut GMwc {
+            fn shared(&mut self) -> &mut crate::brain::G2Rng {
                 &mut self.mwc
             }
             fn lane_point(&mut self, _l: u32, _t: f32) -> (Vec3, Vec3) {
@@ -13453,7 +13453,7 @@ mod ghost_tests {
         // one pending (the cab): the trailer goes to record 1, past the loop's count - made at the next step
         let mut pool = GhostPool::new(0);
         pool.submit_amb(req(1));
-        let mut w = W { mwc: GMwc { lo: 3, carry: 1 }, order: vec![], trailer: Some(trailer()) };
+        let mut w = W { mwc: crate::brain::G2Rng::own(GMwc { lo: 3, carry: 1 }), order: vec![], trailer: Some(trailer()) };
         pool.step(dt, &mut w);
         assert_eq!((w.order.clone(), pool.count, pool.recs[1].state, pool.recs[1].wanted), (vec![1], 1, 2, 0x84));
         pool.step(dt, &mut w);
@@ -13466,7 +13466,7 @@ mod ghost_tests {
         }
         pool.recs[1].state = 0;
         pool.count = 2;
-        let mut w = W { mwc: GMwc { lo: 3, carry: 1 }, order: vec![], trailer: Some(trailer()) };
+        let mut w = W { mwc: crate::brain::G2Rng::own(GMwc { lo: 3, carry: 1 }), order: vec![], trailer: Some(trailer()) };
         pool.step(dt, &mut w);
         assert_eq!((w.order.clone(), pool.count, pool.recs[2].state), (vec![1, 9], 1, 2));
         pool.step(dt, &mut w);
@@ -13485,11 +13485,11 @@ mod ghost_tests {
         assert_eq!((id, r.kind, r.wanted, r.timeout.to_bits(), r.state), (0, 0x80, 0x84, 0x3F80_0000, 2));
         assert_eq!(pool.parked_pending().collect::<Vec<_>>(), vec![17]);
         struct W {
-            mwc: GMwc,
+            mwc: crate::brain::G2Rng,
             made: Vec<(u32, u32)>,
         }
         impl PoolWorld for W {
-            fn shared(&mut self) -> &mut GMwc {
+            fn shared(&mut self) -> &mut crate::brain::G2Rng {
                 &mut self.mwc
             }
             fn lane_point(&mut self, _l: u32, _t: f32) -> (Vec3, Vec3) {
@@ -13521,7 +13521,7 @@ mod ghost_tests {
                 true
             }
         }
-        let mut w = W { mwc: GMwc { lo: 3, carry: 1 }, made: vec![] };
+        let mut w = W { mwc: crate::brain::G2Rng::own(GMwc { lo: 3, carry: 1 }), made: vec![] };
         pool.step(1.0 / 30.0, &mut w);
         // (the seed: the shared MWC's next lo & 0x7FFFFFFF, F-42724)
         let mut m = GMwc { lo: 3, carry: 1 };
@@ -13565,13 +13565,13 @@ mod ghost_tests {
     #[test]
     fn spawner_requests_step_as_the_originals() {
         struct W {
-            mwc: GMwc,
+            mwc: crate::brain::G2Rng,
             take: bool,
             ground: bool,
             made: Vec<u32>,
         }
         impl PoolWorld for W {
-            fn shared(&mut self) -> &mut GMwc {
+            fn shared(&mut self) -> &mut crate::brain::G2Rng {
                 &mut self.mwc
             }
             fn lane_point(&mut self, _l: u32, _t: f32) -> (Vec3, Vec3) {
@@ -13613,7 +13613,7 @@ mod ghost_tests {
         let r = &pool.recs[id as usize];
         assert_eq!((id, r.state, r.kind, r.wanted, r.timeout.to_bits(), r.owner), (0, 2, 0x80, 0xA4, 0x3F80_0000, 0));
         // no budget: pending, no draw, timed out once its time passes 1.0 s
-        let mut w = W { mwc: GMwc { lo: 7, carry: 1 }, take: false, ground: true, made: vec![] };
+        let mut w = W { mwc: crate::brain::G2Rng::own(GMwc { lo: 7, carry: 1 }), take: false, ground: true, made: vec![] };
         let mut steps = 0;
         while pool.recs[0].state == 2 {
             pool.step(dt, &mut w);
@@ -13626,13 +13626,13 @@ mod ghost_tests {
             t += dt;
             want += 1;
         }
-        assert_eq!((pool.recs[0].state, steps, pool.count, w.made.len(), w.mwc.lo), (3, want, 0, 0, 7));
+        assert_eq!((pool.recs[0].state, steps, pool.count, w.made.len(), w.mwc.get().lo), (3, want, 0, 0, 7));
         // made at the first step, with the shared MWC's draw as its seed
         for (ground, state) in [(true, 0), (false, 5)] {
             let mut pool = GhostPool::new(0);
             pool.submit_amb(req());
-            let mut w = W { mwc: GMwc { lo: 0x8000_0003, carry: 9 }, take: true, ground, made: vec![] };
-            let mut m = w.mwc;
+            let mut w = W { mwc: crate::brain::G2Rng::own(GMwc { lo: 0x8000_0003, carry: 9 }), take: true, ground, made: vec![] };
+            let mut m = w.mwc.get();
             let seed = m.next() & 0x7FFF_FFFF;
             pool.step(dt, &mut w);
             assert_eq!((pool.recs[0].state, pool.count, w.made.clone(), pool.recs[0].matrix[3]), (state, 0, vec![seed], Vec3::new(1.0, 2.0, 3.0)));
@@ -13643,8 +13643,8 @@ mod ghost_tests {
         for _ in 0..3 {
             pool.submit_amb(req());
         }
-        let mut w = W { mwc: GMwc { lo: 11, carry: 2 }, take: true, ground: true, made: vec![] };
-        let mut m = w.mwc;
+        let mut w = W { mwc: crate::brain::G2Rng::own(GMwc { lo: 11, carry: 2 }), take: true, ground: true, made: vec![] };
+        let mut m = w.mwc.get();
         let seeds: Vec<u32> = (0..3).map(|_| m.next() & 0x7FFF_FFFF).collect();
         pool.step(dt, &mut w);
         assert_eq!((w.made, pool.count), (seeds, 0));

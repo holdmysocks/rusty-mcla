@@ -490,8 +490,9 @@ use std::sync::Arc;
 /// game state's init F-71171 resets it again with the low word of the CPU's time base (read until it is not 0)
 /// through F-37317 - so every power-on draws a different sequence (grid releases, rev cycles, ...).
 /// MCLA_RANDOMSEED=<n> stands for the parameter, as for `sst_trail::game_rng`. Drawn by the brains, police, the car-hit
-/// strike, the physics' road bumps, engine shake and head-on rule (`vehsim::g2_next`, `headon::run`); traffic, parked
-/// cars, peds and the weather still have states of their own (docs/reference/cameras/replay_shared_g2_design.md).
+/// strike, the physics' road bumps, engine shake and head-on rule (`vehsim::g2_next`, `headon::run`), the traffic, the
+/// parked cars, the ghost pool, the race script's action pick (`Vehicles::park_rng`, a `G2Rng`), the peds' clip pick and
+/// path seeds (`Peds::g2`) and the weather's auto change (docs/reference/cameras/replay_shared_g2_design.md).
 /// (approx.: the draw order is the port's tick's, not the original's frame's)
 pub fn rng() -> std::sync::MutexGuard<'static, Mwc> {
     static R: std::sync::OnceLock<std::sync::Mutex<Mwc>> = std::sync::OnceLock::new();
@@ -506,6 +507,69 @@ pub fn rng() -> std::sync::MutexGuard<'static, Mwc> {
     })
     .lock()
     .unwrap_or_else(|e| e.into_inner())
+}
+
+/// A draw state that is the shared generator G2 (`rng`) in the game, or - in the unit tests and for a test hook - a
+/// stream of its own. Every draw locks G2 only for the draw, so no draw can deadlock; `get` / `set` lend a copy for a
+/// stretch that passes a `&mut Mwc` on (the traffic riders' step, the peds' update), which nothing else may draw from G2
+/// inside: `set` warns (once) when G2 moved while the copy was out.
+#[derive(Clone, Copy, Debug)]
+pub struct G2Rng {
+    own: Option<Mwc>,
+    lent: Option<Mwc>,
+}
+
+impl Default for G2Rng {
+    fn default() -> Self {
+        // (the unit tests keep the stream they drew before, the parked-car generator's old default seed)
+        if cfg!(test) { G2Rng::own(Mwc::default()) } else { G2Rng { own: None, lent: None } }
+    }
+}
+
+impl G2Rng {
+    /// A stream of its own (a test's recorded state).
+    pub fn own(m: Mwc) -> Self {
+        G2Rng { own: Some(m), lent: None }
+    }
+    /// The state now (a copy lent out until `set`).
+    pub fn get(&mut self) -> Mwc {
+        let m = match self.own { Some(m) => m, None => *rng() };
+        self.lent = Some(m);
+        m
+    }
+    /// Puts back the state drawn on from `get`.
+    pub fn set(&mut self, m: Mwc) {
+        match &mut self.own {
+            Some(o) => *o = m,
+            None => {
+                let mut g = rng();
+                if self.lent.is_some_and(|l| (l.lo, l.carry) != (g.lo, g.carry)) {
+                    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                    if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                        log::warn!("G2 was drawn while a copy of it was lent out; those draws are overwritten");
+                    }
+                }
+                *g = m;
+            }
+        }
+        self.lent = None;
+    }
+    /// `f` draws on the state as a `&mut Mwc`.
+    pub fn with<R>(&mut self, f: impl FnOnce(&mut Mwc) -> R) -> R {
+        let mut m = self.get();
+        let r = f(&mut m);
+        self.set(m);
+        r
+    }
+    pub fn next(&mut self) -> u32 {
+        match &mut self.own { Some(m) => m.next(), None => rng().next() }
+    }
+    pub fn float(&mut self) -> f32 {
+        match &mut self.own { Some(m) => m.float(), None => rng().float() }
+    }
+    pub fn index(&mut self, n: u32) -> u32 {
+        match &mut self.own { Some(m) => m.index(n), None => rng().index(n) }
+    }
 }
 
 /// What the brain reads of its car each frame.

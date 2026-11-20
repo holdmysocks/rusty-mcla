@@ -1560,7 +1560,7 @@ pub struct Vehicles {
     /// the random numbers the parked-car spawner draws (the original's shared MWC)
     pub parking: mcla_formats::rage::parking::ParkingTree,
     park_lists: Vec<u32>,
-    park_rng: parked::Mwc,
+    park_rng: crate::brain::G2Rng,
     /// the second shared MWC (the 8 bytes 16 below `park_rng` in the image, a = 0x5CDCFAA7): F-77422 draws an ambient car's
     /// hour and blink offsets from it (`traffic::init_draws`); its seed and its other users are not modelled
     amb_rng2: parked::Mwc,

@@ -863,7 +863,7 @@ impl Vehicles {
             occluders: None,
             why: [0; 3],
         };
-        let got = park_spawn_core(&mut env, &mut self.park_rng, &views, 60, cruise, sp.tune.parked_density, (focus.x, focus.z), sp.tune.parked_radius);
+        let got = self.park_rng.with(|g2| park_spawn_core(&mut env, g2, &views, 60, cruise, sp.tune.parked_density, (focus.x, focus.z), sp.tune.parked_radius));
         for (k, n) in env.why.into_iter().enumerate() {
             self.park_why[2 + k] += n;
         }
@@ -966,7 +966,7 @@ impl Vehicles {
             path: item.path.map(|p| (p.lane, p.parked)),
             item: Some((item.script, item.path.map(|p| (p.referenced, p.fired)))),
         };
-        let shade = match item_spawn_choice(inp, &mut self.park_rng) {
+        let shade = match self.park_rng.with(|g2| item_spawn_choice(inp, g2)) {
             None => return false,
             Some(ItemSpawn::Person) => {
                 // (the people's spawner places it)
@@ -1001,7 +1001,8 @@ impl Vehicles {
         let (occ, cruise) = (self.spots_taken(), self.cruise());
         let mut env = PortUnspawnEnv { cars: &self.cars, amb, peds: &self.ped_list, parking: &self.parking, layout: &self.layout, occ, cruise, clock: self.clock };
         // (M+2132: the constructor's 30)
-        let Some(u) = park_unspawn_core(&mut env, &mut self.park_rng, 30, &self.park_lists, (focus.x, focus.z), sp.tune.unspawn_inner, sp.tune.parked_density) else { return };
+        let lists = &self.park_lists;
+        let Some(u) = self.park_rng.with(|g2| park_unspawn_core(&mut env, g2, 30, lists, (focus.x, focus.z), sp.tune.unspawn_inner, sp.tune.parked_density)) else { return };
         let dump = std::env::var("MCLA_PARK_DUMP").is_ok();
         if u.pool == 2 {
             if dump {

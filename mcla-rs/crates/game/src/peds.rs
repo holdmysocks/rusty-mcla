@@ -2310,7 +2310,8 @@ impl DodgeWorld for PedDodgeWorld<'_> {
 }
 
 /// The dodge's two generators: the speech MWC (0x82860880) and the shared one the clip pick draws from (0x82860890;
-/// in the original also drawn by others).
+/// in the original also drawn by others). `pick` is G2's copy for the update: `Peds::update` loads it from `Peds::g2`
+/// and puts it back after.
 #[derive(Default)]
 pub(crate) struct DodgeRng {
     speech: crate::vehicles::parked::Mwc,
@@ -3014,6 +3015,8 @@ pub struct Peds {
     pub evades: u32,
     evade_radius: f32,
     dodge_rng: DodgeRng,
+    /// the shared generator G2 (`brain::G2Rng`) the clip pick and the path seeds draw from (`dodge_rng.pick` in the update)
+    g2: crate::brain::G2Rng,
     voices: Option<HashMap<String, String>>,
     /// the speech banks' scan, started ahead on a thread (`scan_voices_ahead`)
     voices_scan: Option<std::thread::JoinHandle<HashMap<String, String>>>,
@@ -3109,6 +3112,7 @@ impl Peds {
             crossings: 0,
             evade_radius: std::env::var("MCLA_PED_EVADE").ok().and_then(|v| v.parse().ok()).unwrap_or(2.3),
             dodge_rng: DodgeRng::default(),
+            g2: Default::default(),
             voices: None,
             voices_scan: None,
             buf: SkinBuffer::default(),
@@ -3796,7 +3800,17 @@ impl Peds {
         }
     }
 
+    /// The walkers' frame; the clip pick and the path seeds draw from G2 (a copy lent for the frame: nothing else
+    /// draws from G2 inside it).
+    #[allow(clippy::too_many_arguments)]
     pub fn update(&mut self, gpu: &mut Gpu, nav: &NavSys, col: &WorldCollider, obstacles: &dyn Fn(Vec3, f32, &mut Vec<Obst>), ahead: &dyn Fn(usize, Vec3, f32) -> Option<crate::vehicles::traffic::AheadHit>, center: Vec3, threats: &[Threat], signals: Option<(&crate::signals::Signals, f32)>, hour: f32, dt: f32) {
+        self.dodge_rng.pick = self.g2.get();
+        self.update_frame(gpu, nav, col, obstacles, ahead, center, threats, signals, hour, dt);
+        self.g2.set(self.dodge_rng.pick);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn update_frame(&mut self, gpu: &mut Gpu, nav: &NavSys, col: &WorldCollider, obstacles: &dyn Fn(Vec3, f32, &mut Vec<Obst>), ahead: &dyn Fn(usize, Vec3, f32) -> Option<crate::vehicles::traffic::AheadHit>, center: Vec3, threats: &[Threat], signals: Option<(&crate::signals::Signals, f32)>, hour: f32, dt: f32) {
         self.hour = hour;
         if !self.enabled || self.dirs.is_empty() {
             return;

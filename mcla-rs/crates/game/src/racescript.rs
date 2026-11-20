@@ -901,7 +901,7 @@ impl Runtime {
     /// TriggerManager_ResetTriggers: every trigger chooses its events.
     fn reset_triggers(&mut self, vehicles: &mut Vehicles) {
         for (ti, t) in self.d.triggers.iter().enumerate() {
-            self.chosen[ti] = select(vehicles.shared_mwc(), t.actions.len(), t.n_min, t.n_max, t.randomness);
+            self.chosen[ti] = vehicles.shared_mwc().with(|g2| select(g2, t.actions.len(), t.n_min, t.n_max, t.randomness));
             if std::env::var_os("MCLA_RACEPATH_LOG").is_some() {
                 log::info!("race trigger {ti}: {} events, randomness {} min {} max {} -> {:?}", t.actions.len(), t.randomness, t.n_min, t.n_max, self.chosen[ti]);
             }

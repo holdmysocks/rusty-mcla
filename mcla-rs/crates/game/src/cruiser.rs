@@ -47,7 +47,7 @@ pub trait GhostTraffic {
     fn release_ghost(&mut self, ghost: u32);
     fn ghost(&self, ghost: u32) -> Option<GhostView>;
     /// the shared ambient random numbers (the shared MWC of the rail walk's next-rail pick, F-20639)
-    fn rng(&mut self) -> &mut Mwc;
+    fn rng(&mut self) -> &mut crate::brain::G2Rng;
 }
 
 /// The car's side: its matrix (rows a, b, c, place), velocity, yaw rate, the vehicle tune's +48, the speed the rail goals
@@ -195,7 +195,8 @@ impl<T: GhostTraffic, C: CruiseCar> CruiseEnv for World<'_, '_, T, C> {
     fn rail_goals(&mut self, b: &mut Cruising) -> bool {
         let m = self.car.matrix();
         let mut rp = rail_of(b);
-        let g = self.rails.goals(&mut rp, m.pos, m.c, Some(self.car.speed()), b.offset, self.traffic.rng());
+        let (rails, speed) = (&mut self.rails, self.car.speed());
+        let g = self.traffic.rng().with(|g2| rails.goals(&mut rp, m.pos, m.c, Some(speed), b.offset, g2));
         set_rail(b, rp);
         let Some(g) = g else { return false };
         self.apply(&g);
@@ -223,7 +224,8 @@ impl<T: GhostTraffic, C: CruiseCar> CruiseEnv for World<'_, '_, T, C> {
         let car = &*self.car;
         let ambient = self.traffic.present();
         let mut rp = rail_of(b);
-        let d = self.rails.drive_to_nearest_rail(&mut rp, m.pos, m.c, Some(car.speed()), b.offset, w0, ambient, |p| car.on_mesh(p), self.traffic.rng());
+        let rails = &mut self.rails;
+        let d = self.traffic.rng().with(|g2| rails.drive_to_nearest_rail(&mut rp, m.pos, m.c, Some(car.speed()), b.offset, w0, ambient, |p| car.on_mesh(p), g2));
         set_rail(b, rp);
         match d {
             Drive::Rail(g) => {
