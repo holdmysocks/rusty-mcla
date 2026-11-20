@@ -1,8 +1,8 @@
 """The ambient manager's race / garage byte step (F-86550), run offline: the generated code whole and unchanged.
 
 Each case sets the garage byte (0x82908D5D), the manager's bytes (+0x64250 .. +0x64253, the threaded byte +0x64259), the
-current race (F-27863's answer: none, or an object with its type +3096), the race's two answers F-49120 (low byte) and
-F-75906 (word), and the stack byte the message is made from; F-99126 (the removal) and F-60395 (the threaded queue) log
+current race (F-27863's answer: none, or an object with its type +3096), the race's two answers F-18769 (low byte) and
+F-98822 (word), and the stack byte the message is made from; F-99126 (the removal) and F-60395 (the threaded queue) log
 the message byte, the railnet's vfunc 4 (S+0x64140) logs its call.
 
 Writes <out-dir>/garage_latch_ref.txt:
