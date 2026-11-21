@@ -4339,9 +4339,10 @@ impl Vehicles {
         let mut ai = None;
         if !is_player {
             let mut d = AiDriver::new(self.rng ^ 0x9e3779b9);
-            // (ambient traffic keeps to the road's speed - 40 mph on nearly every road, which is
-            // also every ambient type's fMaxSpeed - some a little under it)
-            d.target_speed = 17.88 * (0.86 + self.rand() * 0.14);
+            // (the old driver's speed, 40 mph: the road's speed on nearly every road and every ambient type's fMaxSpeed. An
+            // ambient car on its lane never drives by it - its speed is the rider's controller, its sound's target +416 -, and
+            // the cars driven by this driver set their own; the port drew 0.86 - 1.0 of it from its own generator)
+            d.target_speed = 17.88;
             ai = Some(d);
         }
         self.next_uid += 1;

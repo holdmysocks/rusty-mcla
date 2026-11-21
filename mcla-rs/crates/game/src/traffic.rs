@@ -973,6 +973,9 @@ pub struct Rider {
     /// the car ahead the speed controller's entry 0 found (behaviour +432, the same obstacle as the
     /// entry's id +456): the length of its car's velocity (its slot 2, F-59415: car +208); None: no obstacle
     pub obst_v: Option<f32>,
+    /// the speed controller's target +416 (F-30960): the chosen entry's target speed (entry +8), free driving the want
+    /// +152; the traffic sound's E+236 (car +416 x 2.237, TRAFFIC_AUDIO_RULE 2)
+    pub want_v: f32,
     /// the front wheels' drawn steer (F-37033: the mean of the draw object's ring, `SteerRing`, within 45 m; else 0)
     pub steer: f32,
     /// its place in its rail's car list (`RAIL_SEQ` when it took the rail: at its spawn, or when
@@ -1036,7 +1039,7 @@ impl Rider {
             phys_pair: false,
             quiet: false,
             path_referenced: false,
-            obst_v: None, steer: 0.0,
+            obst_v: None, want_v: 0.0, steer: 0.0,
             rail_seq: next_rail_seq(),
             rail_key: None,
             rail_fresh: true,
@@ -3393,6 +3396,7 @@ fn control(r: &mut Rider, v: f32, want: f32, half_len: f32, ahead: &Ahead, other
     if r.quiet {
         let t = SlotTune { band_d: ty.min_decel_band, min_d: ty.min_decel, max_d: max_decel, band_a: ty.min_accel_band, min_a: ty.min_accel, up };
         let mut on = [r.on[0], r.on[1], r.on[2], r.ghost.as_ref().is_some_and(|g| g.on3)];
+        r.want_v = 0.0;
         return pick_div(&[None; 4], &mut on, &t, 0.0, 0.0, v, dt, &mut r.waited, r.wait);
     }
     let mut entries: [Option<(f32, f32, bool)>; 4] = [None; 4];
@@ -3434,6 +3438,9 @@ fn control(r: &mut Rider, v: f32, want: f32, half_len: f32, ahead: &Ahead, other
     let mut on = [r.on[0], r.on[1], r.on[2], r.ghost.as_ref().is_some_and(|g| g.on3)];
     let t = SlotTune { band_d: ty.min_decel_band, min_d: ty.min_decel, max_d: max_decel, band_a: ty.min_accel_band, min_a: ty.min_accel, up };
     let (a, chosen) = pick(&entries, &mut on, &t, want, v, dt, &mut r.waited, r.wait);
+    // +416: the chosen entry's target (car ahead its speed, stop line 0, slower lane / destination their speed), else the want
+    let targets = [ahead.vt, 0.0, slower.map_or(0.0, |x| x.0), dest.map_or(0.0, |x| x.0)];
+    r.want_v = chosen.map_or(want, |k| targets[k]);
     r.on = [on[0], on[1], on[2]];
     if let Some(g) = r.ghost.as_mut() {
         g.on3 = on[3];
@@ -6910,7 +6917,7 @@ mod tests {
     }
 
     fn vrider(ty: AmbType) -> Rider {
-        Rider { ty, link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, mwc: mwc_seed(7), ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, race_lane: None, phys_pair: false, quiet: false, path_referenced: false, obst_v: None, steer: 0.0, rail_seq: 0, rail_key: None, rail_fresh: true, ghost: None, mark: None }
+        Rider { ty, link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, mwc: mwc_seed(7), ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, race_lane: None, phys_pair: false, quiet: false, path_referenced: false, obst_v: None, want_v: 0.0, steer: 0.0, rail_seq: 0, rail_key: None, rail_fresh: true, ghost: None, mark: None }
     }
 
     /// The brake lamp's flag (F-56024 with F-86955, F-17857 and F-59415) against the original's code run offline on 4,000
@@ -7574,7 +7581,7 @@ mod tests {
     #[test]
     fn a_physical_or_resting_car_is_not_put_back_on_its_seat() {
         // (a seat from before the hit: physical or at rest the instance stays where the collider left it)
-        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, mwc: mwc_seed(7), ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, race_lane: None, phys_pair: false, quiet: false, path_referenced: false, obst_v: None, steer: 0.0, rail_seq: 0, rail_key: None, rail_fresh: true, ghost: None, mark: None };
+        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, mwc: mwc_seed(7), ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, race_lane: None, phys_pair: false, quiet: false, path_referenced: false, obst_v: None, want_v: 0.0, steer: 0.0, rail_seq: 0, rail_key: None, rail_fresh: true, ghost: None, mark: None };
         r.seat = Some(Seat::new(Vec3::ZERO, Vec3::Y, Vec3::NEG_Z));
         assert!(seat_poses(&r));
         for (state, active) in [(4, false), (4, true), (5, false), (5, true), (1, true)] {
@@ -7607,7 +7614,7 @@ mod tests {
     /// its rail (slot 20 / F-86858: the follower has a rail).
     #[test]
     fn a_physical_path_car_pairs_only_while_on_a_rail() {
-        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, mwc: mwc_seed(7), ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, race_lane: None, phys_pair: false, quiet: false, path_referenced: false, obst_v: None, steer: 0.0, rail_seq: 0, rail_key: None, rail_fresh: true, ghost: None, mark: None };
+        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, mwc: mwc_seed(7), ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, race_lane: None, phys_pair: false, quiet: false, path_referenced: false, obst_v: None, want_v: 0.0, steer: 0.0, rail_seq: 0, rail_key: None, rail_fresh: true, ghost: None, mark: None };
         assert!(!r.pairs_inactive());
         r.phys_pair = true;
         for (state, yes) in [(1u8, true), (9, true), (10, false), (0, false), (4, false), (5, false), (6, false)] {
@@ -9289,6 +9296,7 @@ impl Vehicles {
     }
 
     /// F-92144: up to 60 tries, at most min(target - current, 6) cars.
+    /// (The region pick: `region_pick`.)
     #[allow(clippy::too_many_arguments)]
     fn spawn_frame(&mut self, sp: &mut Spawner, _gpu: &crate::render::Gpu, world: &crate::world::World, nav: &NavSys, focus: Vec3, view: Vec3, mph: f32, player_link: Option<usize>) {
         let mut n = (sp.target as i32 - sp.current as i32).min(6);
@@ -9304,17 +9312,22 @@ impl Vehicles {
         }
         let t = sp.tune;
         let occ = crate::occluder::city(&sp.data_dir).map(|c| c.select_around(focus + Vec3::Y * 1.75, OCC_RANGE));
-        let total: f32 = sp.list.iter().map(|x| x.1).sum::<f32>() + sp.int_weight;
+        // the regions' weights summed in the list's order (fadds from 0); a total of 0 ends the frame before any try
+        // (the front-end mode's regions are `list` and `fe_ints`, not `order`)
+        let total: f32 = if sp.frontend.is_some() { sp.list.iter().map(|x| x.1).sum::<f32>() + sp.int_weight } else { sp.order.iter().fold(0.0f32, |a, x| a + x.1) };
+        if total == 0.0 {
+            return;
+        }
         let mut made: Vec<(Vec3, Vec3, Vec3)> = Vec::new();
         let mut room_cars: Option<Vec<RoomCar>> = None;
         for _ in 0..if fe { 1 } else { 60 } {
             if n <= 0 {
                 break;
             }
-            // a type (the focus district's list at this hour; trailers and full pools are skipped)
-            let r = self.rand();
-            let models = &self.models;
-            let Some(name) = self.ambient.pick(focus, self.hour, r, &|m| models.iter().any(|x| x.name.eq_ignore_ascii_case(m))).map(|s| s.to_string()) else {
+            // a type: the car distribution's draw on G2 (F-13973 -> F-36934 at the focus and hour); none, a trailer (+112)
+            // or a type with no pool (+4: the port's model not loaded) wastes the try
+            let (amb, hour) = (&self.ambient, self.hour);
+            let Some(name) = self.park_rng.with(|g2| amb.draw(focus, hour, g2)).and_then(|k| amb.all.get(k)).cloned() else {
                 sp.why[0] += 1;
                 continue;
             };
@@ -9339,29 +9352,21 @@ impl Vehicles {
                 if sp.fe_pts.pts.is_empty() {
                     continue;
                 }
-                let k = (self.rand() * sp.fe_pts.pts.len() as f32) as usize % sp.fe_pts.pts.len();
+                let k = (self.park_rng.next() & 0x7FFF_FFFF) as usize % sp.fe_pts.pts.len();
                 let Some((link, s)) = sp.fe_pts.pts[k].3 else { continue };
                 let Some(ri) = sp.road_of(nav, link) else { continue };
                 Some((ri, link, s))
             } else {
                 None
             };
-            // a region by weight (a junction wastes the try)
-            let mut x = self.rand() * total;
-            let mut pick = None;
-            for &(node, w) in &sp.order {
-                if x < w {
-                    pick = match node {
-                        NavNode::Road(r) => Some(r as u32),
-                        NavNode::Junction(_) => None,
-                    };
-                    break;
-                }
-                x -= w;
-            }
+            // a region by weight (F-92144: x = (u23 x total) x 2^-23 on G2, k past each weight x is above, at most the
+            // last; a junction - its record's +4 without bit 2 - wastes the try). Not in the front-end mode.
             let pick = match fe_at {
                 Some((ri, _, _)) => Some(ri),
-                None => pick,
+                None => match sp.order[region_pick(&sp.order, total, self.park_rng.next())].0 {
+                    NavNode::Road(r) => Some(r as u32),
+                    NavNode::Junction(_) => None,
+                },
             };
             let Some(ri) = pick else {
                 sp.why[2] += 1;
@@ -14374,3 +14379,44 @@ mod wheel_roll_tests;
 #[cfg(test)]
 #[path = "lane_entry_tests.rs"]
 mod lane_entry_tests;
+
+/// F-92144's region pick from one draw `g` of G2: x = (u23 x total) x 2^-23 (two f32 roundings); k = 0; while x > w[k]:
+/// x -= w[k], k += 1; then k is at most the last. (The original's loop has no bound: past the last weight it reads on through
+/// its stack; the port stops there.)
+pub(crate) fn region_pick(order: &[(NavNode, f32)], total: f32, g: u32) -> usize {
+    let n = order.len();
+    let mut x = (g & 0x7F_FFFF) as f32 * total * f32::from_bits(0x3400_0000);
+    let mut k = 0;
+    while k < n && x > order[k].1 {
+        x -= order[k].1;
+        k += 1;
+    }
+    k.min(n.saturating_sub(1))
+}
+
+#[cfg(test)]
+mod region_pick_tests {
+    use super::*;
+
+    /// F-92144's loop: past each weight x is strictly above, clamped to the last; x at a weight exactly stays on it
+    #[test]
+    fn region_pick_as_read_from_the_code() {
+        let o = |w: &[f32]| w.iter().enumerate().map(|(i, &w)| (NavNode::Road(i), w)).collect::<Vec<_>>();
+        let w = o(&[1.0, 2.0, 1.0]);
+        // u23 = 0: x = 0, not above w[0]
+        assert_eq!(region_pick(&w, 4.0, 0), 0);
+        // x = 1.0 exactly (u23 = 2^21 of total 4): not above w[0] = 1 -> 0
+        assert_eq!(region_pick(&w, 4.0, 0x20_0000), 0);
+        // one step more: past w[0], 1e-6 is not above w[1]
+        assert_eq!(region_pick(&w, 4.0, 0x20_0001), 1);
+        // the top of the range: x below 4, ends on the last
+        assert_eq!(region_pick(&w, 4.0, 0x7F_FFFF), 2);
+        // a total above the sum (the weights' roundings): the clamp to the last
+        assert_eq!(region_pick(&w, 8.0, 0x7F_FFFF), 2);
+        // only the low 23 bits count
+        assert_eq!(region_pick(&w, 4.0, 0xFF80_0000), 0);
+        // a zero weight is passed over by any x above 0
+        let z = o(&[0.0, 1.0]);
+        assert_eq!(region_pick(&z, 1.0, 1), 1);
+    }
+}

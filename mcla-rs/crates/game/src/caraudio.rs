@@ -1968,8 +1968,8 @@ impl Traffic {
         let st = &c.state;
         let pos = st.pos;
         let v = st.forward().dot(st.vel) * MPH;
-        // E+236 = the AI's wanted speed of this frame, unsmoothed
-        self.tgt = c.ai.as_ref().map_or(0.0, |ai| ai.target_speed) * MPH;
+        // E+236 = car +416 x 2.237 (the speed controller's target of this frame, F-30960), unsmoothed
+        self.tgt = c.rail.as_ref().map_or(0.0, |r| r.want_v) * MPH;
         // E+240: mph gained over one frame (the original's 30 Hz frame)
         let acc = self.prev_v.map_or(0.0, |p| (v - p) / dt.max(1e-6) / 30.0);
         self.prev_v = Some(v);
