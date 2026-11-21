@@ -571,7 +571,6 @@ pub fn elements(game: &crate::game::Game, vehicles: &crate::vehicles::Vehicles, 
             if matches!(kind, Kind::Series) {
                 e.colour = [1.0, 1.0, 0.0, 1.0];
             }
-            e.selected = pick.map_or(false, |q| q.distance(e.pos) < 30.0);
             push(e);
         }
     }
@@ -736,7 +735,20 @@ pub fn elements(game: &crate::game::Game, vehicles: &crate::vehicles::Vehicles, 
         e.back = back;
         push(e);
     }
-    layers.into_iter().flatten().collect()
+    let mut list: Vec<Element> = layers.into_iter().flatten().collect();
+    // (the GPS target's own element is selected - F-83952 -> F-74967: the target object's element, +124 = 1, the old
+    // one's cleared - whatever it is: a place, a gas station, a hookman; so it stays on the minimap through filter 4)
+    if let Some(i) = pick.and_then(|q| target_element(&list, q)) {
+        list[i].selected = true;
+    }
+    list
+}
+
+/// The listed element the GPS map's target stands on (the place the port keeps as `gps_pick`; a hookman's follows him):
+/// the nearest within 30 m that the map's cursor can take - not a vehicle arrow or a checkpoint.
+pub fn target_element(list: &[Element], at: Vec3) -> Option<usize> {
+    let can = |k: &Kind| !matches!(k, Kind::Player | Kind::Cop | Kind::OtherCar | Kind::RedCar | Kind::Checkpoint(_));
+    list.iter().enumerate().filter(|(_, e)| can(&e.kind) && e.pos.distance(at) < 30.0).min_by(|a, b| a.1.pos.distance(at).total_cmp(&b.1.pos.distance(at))).map(|(i, _)| i)
 }
 
 /// What the map keeps between frames: its pictures, the minimap target and texture, the clocks
@@ -4626,6 +4638,24 @@ pub fn nav_open_rows(s: CamRows, t: f32) -> CamRows {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The GPS target's own element is the selected one, whatever its kind (F-83952 -> F-74967): a hookman's ring as a
+    /// place's, the nearest within 30 m, never the player's arrow or a cop's standing at the same spot (GitHub report
+    /// 2026-11-20: with a hookman as the target the minimap kept only the player, cops and gas stations, and not him).
+    #[test]
+    fn the_gps_target_element_is_the_selected_one() {
+        let at = Vec3::new(100.0, 0.0, 200.0);
+        let list = vec![
+            Element::at(Kind::Player, at),
+            Element::at(Kind::Cop, at),
+            Element::at(Kind::Gas, at + Vec3::X * 25.0),
+            Element::at(Kind::Racer(3), at + Vec3::X * 2.0),
+            Element::at(Kind::Garage, at + Vec3::X * 300.0),
+        ];
+        assert_eq!(target_element(&list, at), Some(3));
+        assert_eq!(target_element(&list, at + Vec3::X * 24.0), Some(2));
+        assert_eq!(target_element(&list, at + Vec3::X * 150.0), None);
+    }
 
     /// The map's walk F-83806 passes over a vehicle's element while it is in Stealth and not the local player's
     /// (F-54047, F-65988): a cop, a racer and a race car beside the player, with and without the flag.
