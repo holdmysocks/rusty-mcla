@@ -1,6 +1,6 @@
 {
   "productName": "RustyMCLA",
-  "version": "0.24.1",
+  "version": "0.25.0",
   "identifier": "org.rustymcla.launcher",
   "build": { "frontendDist": "./ui" },
   "app": {
