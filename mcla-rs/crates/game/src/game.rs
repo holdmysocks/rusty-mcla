@@ -771,6 +771,12 @@ pub struct Game {
     pub map_sel_pos: Option<Vec3>,
     /// the selection's reach `NM+568` at the stick's release (`F-30942`)
     pub map_reach: f32,
+    /// the GPS map's icons of its last frame that the cursor can take (`hudmap::targetable`, not in Stealth): the
+    /// cursor's places are these, as the original's cursor runs over the map's registered targets - None before the
+    /// map has drawn (the old map without `hudmap`: every place)
+    pub map_drawn: Option<Vec<Vec3>>,
+    /// the counts last logged ("gps map: ...")
+    map_drawn_log: (usize, usize, usize, usize),
     /// where the dyno graph goes (from the car's garage file)
     pub dyno_rect: Option<[f32; 4]>,
     /// the garage's CART page is up: its cursor
@@ -1660,6 +1666,8 @@ impl Game {
             map_drift: None,
             map_sel_pos: None,
             map_reach: 90.0,
+            map_drawn: None,
+            map_drawn_log: (0, 0, 0, 0),
             dyno_rect: None,
             cart_open: None,
             loading_tag: 0.0,
@@ -10949,6 +10957,7 @@ impl Game {
                     // each in the 3D scene of the map camera, sized by its distance from it
                     if let (true, Some(vp)) = (self.hm.is_some() && self.flash_navsys.is_some() && self.editor.is_none(), hud.map_vp) {
                         let els = crate::hudmap::elements(self, vehicles, hud.heat >= 2);
+                        self.map_drawn = Some(els.iter().filter(|e| !e.stealth && crate::hudmap::targetable(&e.kind)).map(|e| e.pos).collect());
                         let racing = self.race_current();
                         let strobe_on = self.race.as_ref().map_or(true, |r| r.rivals_checkpoints.is_none());
                         let hm = self.hm.as_mut().unwrap();
@@ -13942,6 +13951,7 @@ impl Game {
                     self.opt_x.s23b.ui_obj = Some("MISSION_LOG_SELECT_CONFIRMATION_MASTER");
                 }
                 self.gps_armed = self.mission_target.is_some();
+                log::info!("gps: target from the mission log: {:?} (at {:?}, the man's {})", self.mission_target, self.gps_target_pos(), self.gps_on_man());
                 self.career.stats.entry("tut:target_set".into()).or_insert(1);
             }
         }
@@ -14011,6 +14021,51 @@ impl Game {
         } else {
             Vec::new()
         };
+        // (the cursor takes the map's drawn icons only - the original's cursor (F-99017, F-97746) runs over the targets
+        // the map draws: a place with no icon under it (a race start the career lists, a hangout the map does not show)
+        // is put out of reach, keeping the indices. User report 2026-11-20: the cursor stopped on nothing - the career's
+        // race starts, often beside their hookman, so SET took the empty start instead of him)
+        let mut places = places;
+        if let (true, Some(drawn)) = (hidden, self.map_drawn.as_ref()) {
+            // (out of reach: NaN fails every test of the pickers - direction, reach, the screen)
+            const OFF: Vec3 = Vec3::NAN;
+            let near = |a: Vec3, b: Vec3| (a - b).length() < 30.0;
+            let mut off = 0;
+            let mut gone: Vec<(Vec3, usize)> = Vec::new();
+            for (i, p) in places.iter_mut().enumerate().skip(1) {
+                if !drawn.iter().any(|d| near(*d, p.0)) {
+                    gone.push((p.0, i));
+                    p.0 = OFF;
+                    off += 1;
+                }
+            }
+            let extra: Vec<Vec3> = drawn.iter().copied().filter(|d| !places.iter().any(|p| near(*d, p.0))).collect();
+            // (an icon with no place takes the place left out within 60 m - a hangout's entry stands off its icon; the
+            // others - the garages, deliveries, paybacks - stay out of the cursor's reach, as before: whether the
+            // original registers them as targets is not read)
+            let named: Vec<(Vec3, String, String)> = extra
+                .iter()
+                .filter_map(|d| {
+                    let k = gone.iter().position(|g| (g.0 - *d).length() < 60.0)?;
+                    let j = gone.remove(k).1;
+                    Some((*d, places[j].1.clone(), places[j].2.clone()))
+                })
+                .collect();
+            let counts = (places.len(), drawn.len(), off, named.len());
+            if counts != self.map_drawn_log {
+                self.map_drawn_log = counts;
+                log::info!("gps map: {} places, {} drawn icons; {} places without an icon left out, {} icons added", counts.0, counts.1, counts.2, counts.3);
+                if std::env::var("MCLA_NAV_LOG").is_ok() {
+                    for (k, p) in places.iter().enumerate().filter(|(_, p)| p.0.is_nan()) {
+                        log::info!("gps map: no icon at place {k} {:?} {:?}", p.1, p.2);
+                    }
+                    for d in &named {
+                        log::info!("gps map: icon added at {:?} {:?}", d.0, d.1);
+                    }
+                }
+            }
+            places.extend(named);
+        }
         let mut cursor_at: Option<(egui::Pos2, String, String)> = None;
         if std::env::var("MCLA_NAV_LOG").is_ok() && hidden && self.map_cursor >= places.len() {
             for (k, p) in places.iter().enumerate() {
@@ -14077,6 +14132,7 @@ impl Game {
                 let m = if self.gps_on_man() { None } else { self.career.rival_mission().or_else(|| self.career.hookman_mission().map(|m| m.to_string())) };
                 (self.gps_pick, self.mission_target) = (None, m);
                 self.gps_armed = self.mission_target.is_some();
+                log::info!("gps: target set on the mission's man: {:?}", self.mission_target);
                 self.career.stats.entry("tut:target_set".into()).or_insert(1);
             } else if enter && self.map_cursor > 0 {
                 (self.gps_pick, self.mission_target) = (Some(places[self.map_cursor].0), None);

@@ -744,11 +744,15 @@ pub fn elements(game: &crate::game::Game, vehicles: &crate::vehicles::Vehicles, 
     list
 }
 
+/// An element the GPS map's cursor can take as the target: the places and the men, not a vehicle arrow or a checkpoint
+pub fn targetable(k: &Kind) -> bool {
+    !matches!(k, Kind::Player | Kind::Cop | Kind::OtherCar | Kind::RedCar | Kind::Checkpoint(_))
+}
+
 /// The listed element the GPS map's target stands on (the place the port keeps as `gps_pick`; a hookman's follows him):
 /// the nearest within 30 m that the map's cursor can take - not a vehicle arrow or a checkpoint.
 pub fn target_element(list: &[Element], at: Vec3) -> Option<usize> {
-    let can = |k: &Kind| !matches!(k, Kind::Player | Kind::Cop | Kind::OtherCar | Kind::RedCar | Kind::Checkpoint(_));
-    list.iter().enumerate().filter(|(_, e)| can(&e.kind) && e.pos.distance(at) < 30.0).min_by(|a, b| a.1.pos.distance(at).total_cmp(&b.1.pos.distance(at))).map(|(i, _)| i)
+    list.iter().enumerate().filter(|(_, e)| targetable(&e.kind) && e.pos.distance(at) < 30.0).min_by(|a, b| a.1.pos.distance(at).total_cmp(&b.1.pos.distance(at))).map(|(i, _)| i)
 }
 
 /// What the map keeps between frames: its pictures, the minimap target and texture, the clocks
