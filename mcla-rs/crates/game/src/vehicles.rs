@@ -9206,6 +9206,7 @@ mod plate_tests {
     /// 512 x 256, three rewrites in a row). Skipped when no adapter is found.
     #[test]
     fn rewritten_plate_is_a_new_plate() {
+        let _gpu = crate::render::gpu_test_lock();
         let mut r = 0x2545_F491u32;
         let mut next = move || {
             r ^= r << 13;

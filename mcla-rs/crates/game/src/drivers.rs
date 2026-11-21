@@ -3310,6 +3310,7 @@ mod cabin_tests {
     /// One compute pass of `wgsl` over `cases` (8 vec4 a case), `n` vec4 back; None without an adapter.
     async fn run_compute(wgsl: &str, cases: &[f32], n: usize) -> Option<Vec<f32>> {
         use wgpu::util::DeviceExt;
+        let _gpu = crate::render::gpu_test_lock();
         let inst = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
         let ad = inst.request_adapter(&wgpu::RequestAdapterOptions::default()).await?;
         let (dev, q) = ad.request_device(&wgpu::DeviceDescriptor::default(), None).await.ok()?;

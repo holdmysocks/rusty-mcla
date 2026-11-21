@@ -1905,6 +1905,7 @@ mod tests {
     /// for word against `skin_vertex`) passes too.
     #[test]
     fn gpu_skin_falls_back_below_its_limits() {
+        let _gpu = crate::render::gpu_test_lock();
         let e = gpu_skin_limits_ok(&wgpu::Limits::downlevel_webgl2_defaults()).unwrap_err();
         assert!(e.contains("max_storage_buffers_per_shader_stage"), "{e}");
         gpu_skin_limits_ok(&wgpu::Limits::downlevel_defaults()).unwrap();
@@ -1930,6 +1931,7 @@ mod tests {
     /// 3 km out, weights, normals and tangents, zero vectors, negative zeros): prints the words that differ per field.
     #[test]
     fn gpu_skin_matches_the_cpu() {
+        let _gpu = crate::render::gpu_test_lock();
         use wgpu::util::DeviceExt;
         let mut r = 0x9e37_79b9u32;
         let mut f = move || {

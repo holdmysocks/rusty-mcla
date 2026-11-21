@@ -337,6 +337,7 @@ mod tests {
     #[test]
     #[ignore = "requires a GPU and MCLA_DATA_DIR with the extracted disc"]
     fn top_arrow_gpu_matches_the_cpu_picture() {
+        let _gpu = crate::render::gpu_test_lock();
         let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
         let t = crate::mc4::TopArrowTune::load(&dir);
         let m = crate::mc4::top_arrow_model(&dir).expect("model");

@@ -20,6 +20,15 @@ use mcla_formats::rage::xenos::TexFormat;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
+/// The unit tests that make a GPU instance take this for their whole run (2026-11-20): two tests creating or dropping
+/// wgpu instances, adapters and devices at once deadlock inside the drivers on the Windows loader lock (the NVIDIA
+/// Vulkan ICD, the Vulkan loader and D3D12Core in thread dumps of hung `cargo test` runs, at zero CPU).
+#[cfg(test)]
+pub(crate) fn gpu_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static L: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    L.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, Debug)]
 pub struct Vertex {
